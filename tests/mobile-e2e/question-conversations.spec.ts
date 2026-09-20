@@ -1,0 +1,34 @@
+import { seedLocalSession, configureLocalModel, modelSse, modelPass, lastModelInput } from './local-fixture.js';
+import { test, expect } from "@playwright/test";
+import { SessionViewSchema, RunViewSchema } from "../../packages/contracts/src/http.js";
+import { makeSafeAgentError } from "../../packages/contracts/src/agent.js";
+const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+test("replies, clarification and retry remain below their question through reload (UI fixture)", async ({ page }, info) => {
+  const now = new Date().toISOString(); const image = await page.screenshot({ type: "jpeg" });
+  const candidate = { schemaVersion: 1, kind: "answer", problem: { text: "自编两题", subject: "math", uncertainties: [] }, answer: "两题已解答", steps: [{ id: "a", title: "甲题代入", explanation: "甲题条件" }, { id: "b", title: "乙题移项", explanation: "乙题条件" }], questions: [{ number: 1, answer: "甲题结论", stepIds: ["a"], figureIds: [] }, { number: 2, answer: "乙题结论", stepIds: ["b"], figureIds: [] }], knowledgePoints: [], citationIds: [], clarificationQuestions: [] };
+  const session = SessionViewSchema.parse({ schemaVersion: 1, id: id(1), subject: "math", createdAt: now, upload: { schemaVersion: 1, id: id(2), mimeType: "image/jpeg", bytes: 100, width: 400, height: 100, expiresAt: new Date(Date.now() + 3600000).toISOString(), previewUrl: `/api/v1/uploads/${id(2)}/image` }, runs: [{ schemaVersion: 1, id: id(3), sessionId: id(1), status: "completed", message: "解答两题", createdAt: now, seq: 5, outcome: { schemaVersion: 1, status: "completed", candidate, verified: true, warning: null, verification: { schemaVersion: 1, verdict: "pass", checked: ["transcription"], issues: [] } } }] });
+  const posted: unknown[] = [];
+  await page.route('https://fixture-model.invalid/v1/chat/completions', async route => {
+    const data = lastModelInput(route.request().postDataJSON()); posted.push(data);
+    if (posted.length === 2) return route.fulfill({ status: 503, body: 'fixture unavailable' });
+    const clarification = { schemaVersion: 1, kind: 'clarification', problem: candidate.problem, knowledgePoints: [], citationIds: [], answer: null, steps: [], clarificationQuestions: ['乙题需要解释等式性质还是运算？'] };
+    const completed = { ...candidate, questions: undefined, answer: '乙题追问的解释', steps: [{ id: 'reply-step', title: '利用等式性质', explanation: '乙题两边同时进行相同运算。' }] };
+    await route.fulfill({ contentType: 'text/event-stream', body: modelSse(posted.length === 3 ? completed : clarification, route.request().postDataJSON()) });
+  });
+  await seedLocalSession(page, session, image); await configureLocalModel(page);
+  const q1 = page.getByRole('region', { name: '第1题解答', exact: true }); const q2 = page.getByRole('region', { name: '第2题解答', exact: true });
+  await expect(q1.getByText('甲题结论', { exact: true })).toBeVisible(); await expect(q2).not.toBeVisible(); await page.getByRole('tab', { name: '跳转第2题', exact: true }).click(); await expect(q1).not.toBeVisible(); await expect(q2.getByText('乙题结论', { exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: '跳转第1题', exact: true }).click(); await q1.getByLabel('继续问第1题').fill('甲题的草稿'); await page.getByRole('tab', { name: '跳转第2题', exact: true }).click(); await q2.locator('.step-details>summary').click(); await q2.getByRole('button', { name: '这一步不懂' }).click(); await expect(q2.getByLabel('继续问第2题')).toBeFocused();
+  await q2.getByLabel('继续问第2题').fill('乙题为什么移项？'); await q2.getByRole('button', { name: '发送第2题追问' }).click();
+  await expect(q2.getByText('乙题需要解释等式性质还是运算？')).toBeVisible(); await page.getByRole('tab', { name: '跳转第1题', exact: true }).click(); await expect(q1.getByLabel('继续问第1题')).toHaveValue('甲题的草稿'); await page.getByRole('tab', { name: '跳转第2题', exact: true }).click();
+  expect(posted[0]).toMatchObject({ focus: { kind: 'step', sourceRunId: id(3), content: expect.stringContaining('乙题移项') } }); await expect(q1.getByText('乙题为什么移项？', { exact: false })).toHaveCount(0);
+  await page.reload(); await configureLocalModel(page); await page.getByRole('tab', { name: '跳转第2题', exact: true }).click(); await expect(q2.getByText('乙题需要解释等式性质还是运算？')).toBeVisible();
+  await q2.getByLabel('继续问第2题').fill('等式性质'); await q2.getByRole('button', { name: '发送第2题追问' }).click(); await expect(q2.getByRole('heading', { name: '这次没能完成解题' })).toBeVisible();
+  expect(posted[1]).toMatchObject({ message: '等式性质', focus: { kind: 'reply', content: expect.stringContaining('第2题') } }); await expect(q1.getByRole('button', { name: '重新尝试' })).toHaveCount(0);
+  await page.reload(); await configureLocalModel(page); await page.getByRole('tab', { name: '跳转第2题', exact: true }).click(); await q2.getByRole('button', { name: '重新尝试' }).click(); await expect(q2.getByText('乙题追问的解释', { exact: true })).toBeVisible(); expect(posted[2]).toMatchObject({ message: '等式性质', focus: { kind: 'reply' } });
+  await page.reload(); await configureLocalModel(page); await page.getByRole('tab', { name: '跳转第2题', exact: true }).click(); await expect(q2.getByText('乙题追问的解释', { exact: true })).toBeVisible(); await expect(q1.getByText('乙题追问的解释', { exact: true })).toHaveCount(0); await expect(page.getByRole('region', { name: /^第[12]题解答$/ })).toHaveCount(1);
+  await q2.getByLabel('继续问第2题').fill('还能再解释吗？'); await q2.getByRole('button', { name: '发送第2题追问' }).click(); await expect(q2.getByText('乙题需要解释等式性质还是运算？')).toBeVisible(); expect(posted[3]).toMatchObject({ focus: { kind: 'reply', content: expect.stringContaining('乙题追问的解释') } });
+  await page.setViewportSize({ width: 320, height: 700 }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const within = await q2.getByLabel('继续问第2题').evaluate(node => { const parent = node.closest('[role="region"]')!.getBoundingClientRect(); const child = node.getBoundingClientRect(); return child.left >= parent.left && child.right <= parent.right && child.bottom <= parent.bottom; }); expect(within).toBe(true);
+  await page.screenshot({ path: `.runtime/screenshots/${info.project.name}-question-conversations.png`, fullPage: true });
+});

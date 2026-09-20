@@ -1,0 +1,48 @@
+{
+  "name": "@solveflow/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "dev": "node ../../scripts/prepare-mobile-assets.mjs && expo start --localhost --port 3100",
+    "typecheck": "tsc --noEmit",
+    "build": "node ../../scripts/prepare-mobile-assets.mjs && expo export --platform all",
+    "build:web": "node ../../scripts/prepare-mobile-assets.mjs && expo export --platform web",
+    "prebuild": "node ../../scripts/prepare-mobile-assets.mjs && expo prebuild --no-install",
+    "android": "expo run:android --port 3100",
+    "ios": "expo run:ios --port 3100",
+    "eas-build-post-install": "node ../../scripts/native-build.mjs prepare"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "57.0.15",
+    "@solveflow/agent": "workspace:*",
+    "@solveflow/client": "workspace:*",
+    "@solveflow/contracts": "workspace:*",
+    "expo": "57.0.22",
+    "expo-camera": "57.0.5",
+    "expo-crypto": "57.0.3",
+    "expo-file-system": "57.0.7",
+    "expo-image-manipulator": "57.0.17",
+    "expo-image-picker": "57.0.17",
+    "expo-secure-store": "57.0.4",
+    "expo-splash-screen": "57.0.9",
+    "expo-sqlite": "57.0.3",
+    "katex": "0.18.7",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-markdown": "10.1.0",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "5.7.0",
+    "react-native-web": "0.21.2",
+    "react-native-webview": "13.16.1",
+    "remark-gfm": "4.0.1",
+    "remark-math": "6.0.0",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/katex": "0.16.8",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "typescript": "6.0.3"
+  }
+}

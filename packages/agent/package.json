@@ -1,0 +1,28 @@
+{
+  "name": "@solveflow/agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./application": {
+      "types": "./dist/application.d.ts",
+      "default": "./dist/application.js"
+    },
+    "./mobile": {
+      "types": "./dist/pi/mobile.d.ts",
+      "default": "./dist/pi/mobile.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@solveflow/contracts": "workspace:*",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-ai": "0.85.1",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.5.4",
+    "sharp": "0.35.4",
+    "@earendil-works/pi-agent-core": "0.85.1"
+  }
+}

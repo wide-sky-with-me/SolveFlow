@@ -1,0 +1,35 @@
+import { seedLocalSession, configureLocalModel, modelSse, lastModelInput } from './local-fixture.js';
+import { test, expect } from "@playwright/test";
+import { SessionViewSchema, RunViewSchema } from "../../packages/contracts/src/http.js";
+const id = (n: number) => `10000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+test("shows question text and original crops before answers and keeps knowledge discussion in its question (UI fixture)", async ({ page }, info) => {
+  const now = new Date().toISOString(); const image = await page.screenshot({ type: "jpeg" }); const imageUrl = `/api/v1/uploads/${id(2)}/image`;
+  const problem = (n: number) => ({ text: n === 1 ? "已知函数 $y=x^2$，求 $x=2$ 时的值。" : "需求 $P=10-Q$，供给 $P=2+Q$，求均衡及剩余。", subject: n === 1 ? "math" : "economics", uncertainties: [], ...(n === 1 ? { illustrations: [{ id: "source", alt: "原题抛物线示意", x: .5, y: .1, width: .4, height: .6 }] } : {}) });
+  const knowledge = (n: number) => [{ name: n === 1 ? "函数求值" : "市场均衡", explanation: n === 1 ? "将自变量代入对应关系。" : "价格使供给量与需求量相等。", application: n === 1 ? "代入x=2求平方。" : "联立两条价格函数。", pitfall: "先检查定义域与单位。" }];
+  const session = SessionViewSchema.parse({ schemaVersion: 1, id: id(1), subject: "general", createdAt: now, upload: { schemaVersion: 1, id: id(2), mimeType: "image/jpeg", bytes: image.length, width: 1000, height: 800, expiresAt: new Date(Date.now() + 3600000).toISOString(), previewUrl: imageUrl }, runs: [{ schemaVersion: 1, id: id(3), sessionId: id(1), status: "completed", message: "解答两题", createdAt: now, seq: 5, outcome: { schemaVersion: 1, status: "completed", verified: true, warning: null, verification: { schemaVersion: 1, verdict: "pass", checked: ["transcription", "diagram"], issues: [] }, candidate: { schemaVersion: 1, kind: "answer", problem: { text: "两题", subject: "general", uncertainties: [] }, answer: "解答如下", steps: [{ id: "a", title: "代入", explanation: "2²=4" }, { id: "b", title: "联立", explanation: "Q=4，P=6" }], questions: [1, 2].map(n => ({ number: n, problem: problem(n), knowledgeDetails: knowledge(n), answer: n === 1 ? "y=4" : "Q=4，P=6", stepIds: [n === 1 ? "a" : "b"], figureIds: n === 2 ? ["economic"] : [] })), knowledgePoints: [], citationIds: [], clarificationQuestions: [], figures: [{ schemaVersion: 1, kind: "coordinate", id: "economic", title: "供需均衡与消费者剩余", description: "阴影为消费者剩余8元。", xRange: [0, 10], yRange: [0, 12], equalAspect: false, xLabel: "数量Q（件）", yLabel: "价格P（元/件）", elements: [{ kind: "polygon", points: [[0, 10], [0, 6], [4, 6]], label: "消费者剩余" }, { kind: "polyline", points: [[0, 10], [10, 0]], label: "需求" }, { kind: "polynomial", coefficients: [2, 1], label: "供给" }, { kind: "point", at: [4, 6], label: "均衡E" }] }] } } }] });
+  const posted: unknown[] = [];
+  await page.route('https://fixture-model.invalid/v1/chat/completions', async route => { posted.push(lastModelInput(route.request().postDataJSON())); await route.fulfill({ contentType: 'text/event-stream', body: modelSse({ schemaVersion: 1, kind: 'clarification', problem: { text: '知识点追问', subject: 'economics', uncertainties: [] }, answer: null, steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: ['希望补充哪一部分？'] }, route.request().postDataJSON()) }); });
+  await seedLocalSession(page, session, image); await configureLocalModel(page);
+  const q1 = page.getByRole("region", { name: "第1题解答", exact: true }); const q2 = page.getByRole("region", { name: "第2题解答", exact: true });
+  await expect(q1.getByRole("region", { name: "题目原文", exact: true })).toContainText("已知函数");
+  const box = (await q1.locator(".original-illustration svg").getAttribute("viewBox"))!.split(" ").map(Number);
+  [470, 56, 460, 528].forEach((value, index) => expect(box[index]).toBeCloseTo(value, 4));
+  await expect(q1.locator(".original-illustration image")).toHaveAttribute("href", /^data:image\/jpeg;base64,/);
+  expect(await q1.evaluate(node => node.querySelector(".problem-statement")!.getBoundingClientRect().bottom < node.querySelector(".final-answer")!.getBoundingClientRect().top)).toBe(true);
+  await page.getByRole('tab', { name: '跳转第2题', exact: true }).click();
+  await expect(q2.getByRole("region", { name: "题目原文", exact: true })).toContainText("需求");
+  await expect(q2.locator(".step-details .answer-figure polygon")).toHaveCount(1); await expect(q2.locator(".step-details .answer-figure svg")).toContainText("价格P（元/件）");
+  await q2.getByText("市场均衡", { exact: true }).click(); await expect(q2.getByText("联立两条价格函数。", { exact: true })).toBeVisible();
+  await q2.getByRole("button", { name: "追问这个知识点" }).click(); await expect(q2.getByLabel("继续问第2题")).toBeFocused();
+  await expect(q2.getByLabel("继续问第2题")).toHaveValue(/市场均衡/);
+  await q2.getByRole("button", { name: "发送第2题追问" }).click();
+  await expect(q2.getByText("希望补充哪一部分？")).toBeVisible();
+  expect(posted[0]).toMatchObject({ focus: { kind: "knowledge", sourceRunId: id(3), content: expect.stringContaining("第2题的知识点：市场均衡") } });
+  await page.reload(); await page.getByRole('tab', { name: '跳转第2题', exact: true }).click(); await expect(q2.getByText("希望补充哪一部分？")).toBeVisible(); await expect(q1.locator(".thread-progress")).toHaveCount(0);
+  await page.setViewportSize({ width: 320, height: 800 }); await page.getByRole('tab', { name: '跳转第1题', exact: true }).click(); await q1.getByRole("button", { name: "放大原题图" }).click();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(await q1.locator(".original-crop-viewport").evaluate(node => node.scrollWidth > node.clientWidth)).toBe(true);
+  // Next has an empty route-announcer alert; assert the application error surfaces.
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.screenshot({ path: `.runtime/screenshots/${info.project.name}-learning-content.png`, fullPage: true });
+});

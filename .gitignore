@@ -1,0 +1,21 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+.runtime/
+*.tsbuildinfo
+test-results/
+playwright-report/
+.expo/
+apps/mobile/android/
+apps/mobile/ios/
+apps/mobile/.generated/
+
+# Native signing material stays outside source control.
+credentials.json
+*.jks
+*.keystore
+*.p12
+*.mobileprovision

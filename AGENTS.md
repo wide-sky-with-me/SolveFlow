@@ -1,10 +1,16 @@
 # AGENTS.md — SolveFlow AI 开发规范
 
+> 2026-09-18最新用户授权：设备思考设置改为两级（服务默认/关闭/开启，开启后选强度，参数协议单独选择）；知识点与详细步骤一样按需生成（focus.kind=knowledge-list），详细步骤/校验/知识点三类按需请求可并发（上限 3）；同步优化打包与提示词/Skill。见[ADR 0016](docs/adr/0016-thinking-control-and-on-demand-concurrency.md)。
+
+> 2026-09-17最新用户授权：本地 App/Web 默认简洁答案、核心结果加粗，完整步骤按需生成并缓存；校验默认关闭，只做生成后的“校验”按钮。下文强制独立校验规则仅适用于保留的旧自动校验路径。本地行为与兼容见[ADR 0015](docs/adr/0015-on-demand-answer-details.md)。
+
+> 2026-09-15最新用户授权：手机直连模型、完整迁移本地应用，见[ADR 0013](docs/adr/0013-local-device-agent.md)。默认RN App/Web使用本地Pi核心、SQLite/IndexedDB及设备模型设置；下文服务端专属架构和API密钥仅服务端规则只适用于保留的旧服务路径。新路径密钥由用户在设备设置中输入，安卓安全存储、Web仅内存；不打包服务器.env。Pi导入仍仅允许packages/agent/src/pi/，不重写Agent循环。iOS原生构建暂停。
+
 ## 1. 作用域与当前状态
 
 本文件适用于整个仓库，是给参与开发的 AI coding agent 的工作规范，不是拍题模型的 SYSTEM Prompt。禁止把本文件或其他开发上下文注入学生端 Agent。
 
-当前基线只有本文件和 docs/TECHNICAL_DESIGN.md；应用目录、依赖、命令和测试均待创建。随着工程落地，及时更新本节与命令表，不让文档长期宣称空仓库。
+M0真实命令行探针与本地M1清晰代数题网页最小纵切已通过，M0整体安全验收仍在进行。最新实现、实际测试数量与剩余验收项以 docs/PI_COMPATIBILITY.md 为准；不得据单题通过宣布M0全部安全完成。本地Web/API/数据库/私有存储已实现并验收，真实记录见docs/M1_LIVE_ACCEPTANCE.md；真实追问尚未追加付费验证，实际验收与运行方式见docs/M1_ACCEPTANCE.md，演示执行不得称为真实模型接通。实施范围见 docs/IMPLEMENTATION_PLAN.md，配置见 docs/LOCAL_SETUP.md，费用策略见 docs/SPEND_LEDGER.md。
 
 工作开始时：
 
@@ -21,18 +27,21 @@
 SolveFlow 是“拍照/上传 → 裁切 → 多模态解题 → 独立校验 → 答案/步骤 → 同题追问”的学生端产品。
 
 - 使用 Pi SDK/Extension 特化，不 Fork 魔改上游，不把 Pi CLI 子进程当服务接口，不重写 Agent loop。
-- 首版不做 RAG、题库、知识画像、整卷批改、自动模型路由或任意代码执行。
-- 主栈：Next.js/React/TypeScript/Tailwind/shadcn/KaTeX；Hono/Node；Pi/pi-ai；PostgreSQL/Drizzle；S3/MinIO；受限 SymPy 服务。
+- 首版不做 RAG、题库、知识画像、整卷批改、自动模型路由或任意代码执行。用户已授权同图明确指定最多4题，按题分组解答，见docs/adr/0006-question-groups.md。
+- 主栈：React Native/Expo/React Native Web/TypeScript/KaTeX；Hono/Node；Pi/pi-ai；PostgreSQL/Drizzle；S3/MinIO；受限 SymPy 服务。用户已授权App与Web统一RN，见docs/adr/0012-react-native-universal-client.md；旧Next实现已按用户要求移除，前端仅维护RN通用客户端。
 - 工程使用 pnpm workspace，不混用 npm/yarn lockfile。不同时引入 Fastify、Redis、第二套 ORM 或第二个 Agent 框架。
 - 只有 packages/agent/src/pi/ 能直接导入 Pi 包。API、前端和共享契约使用项目类型，不泄漏 SDK 内部事件/JSONL。
+- 学生端用途与内容边界见docs/adr/0007-solving-content-policy.md；Solver/Verifier固定共用CONTENT_POLICY，违规候选不得作为未验证答案发布。
 - Pi 管模型/工具循环；业务编排只负责预算、持久化、状态机、Verifier 与最多一次修正。
 - Pi、数据库和私有配置只能在服务端，不能进入浏览器 bundle。
+- 型号、供应商、endpoint、角色凭据和型号容量/报价由服务端环境配置；不硬编码实际型号/供应商，不自动fallback。旧DMX变量仅作迁移兼容，见docs/adr/0002-configurable-model-providers.md。
 
 ### 计划中的目录职责
 
 | 路径 | 职责 |
 | --- | --- |
-| apps/web/ | Next.js 页面、拍照/裁切、答案、PWA |
+| apps/mobile/ | RN/Expo统一Android、iOS与Web，局部DOM公式/图文渲染 |
+| packages/client/ | 三端共享API、SSE、提交恢复、题目对话逻辑 |
 | apps/api/ | Hono 路由、鉴权、任务提交、SSE、worker 入口 |
 | packages/contracts/ | Zod schema、HTTP/SSE 与结果协议 |
 | packages/agent/src/pi/ | Solver/Verifier 的 Pi 适配与兼容性 |
@@ -106,7 +115,7 @@ SolveFlow 是“拍照/上传 → 裁切 → 多模态解题 → 独立校验 �
 - 断线不取消；显式取消持久化后传播。迟到结果不能覆盖 cancelled/其他终态。
 - 同题仅一个活动 run；幂等键持久化，重复请求不能重复付费执行。
 - 结果、终态和 final/done 事件原子落盘；worker 崩溃标 WORKER_LOST，不自动重放外部调用。
-- run 总预算120秒、Solver最多8轮、工具总调用最多16次（文件工具8次，其余业务/MCP/脚本/写入合计8次，所有搜索入口合计2次）、修正最多1次、Verifier最多2次；细限额见方案第8节。Skill加载、MCP、重试和格式修复均计入预算。
+- run 总预算120秒、Solver最多16轮、工具总调用最多16次（文件工具8次，其余业务/MCP/脚本/写入合计8次，所有搜索入口合计2次）、修正最多1次、Verifier最多2次；细限额见方案第8节。Skill加载、MCP、重试和格式修复均计入预算。
 
 ## 7. 工作方式与变更顺序
 
@@ -119,9 +128,11 @@ SolveFlow 是“拍照/上传 → 裁切 → 多模态解题 → 独立校验 �
 7. 新框架、额外工具、公开网络执行、范围扩张或破坏性迁移先说明取舍并获得确认，记录 docs/adr/。
 8. 缺失凭据时继续 fake/离线合约测试，并明确真实路径未验证，不造假也不把密钥写进文档。
 
-## 8. 命令约定（初始化后实现，当前不可声称可运行）
+## 8. 命令约定（M0 与本地 M1）
 
-先检查 package.json；下表是待实现的统一脚本接口，不是现成命令。M0 创建真实脚本后更新状态。不要用占位的 exit 0 假装检查已通过。
+当前实际可运行：pnpm install --frozen-lockfile、pnpm lint、pnpm typecheck、pnpm test、pnpm build、pnpm config:check，以及pnpm local:setup/infra:up/db:migrate/dev/dev:demo/test:integration/test:e2e。test先构建服务端包，build另含Expo三端JS/Hermes与本地DOM资源导出，不是APK/IPA编译。mobile:prebuild生成原生工程；mobile:android/ios需要对应SDK。mobile:doctor检查工具与API配置，mobile:apk生成ARM64内部测试APK（不是商店签名）；--compile-only产物不含API、不可解题，见docs/NATIVE_PACKAGING.md。集成测试使用随机隔离DB/桶，E2E需先启动dev:demo或start:demo，当前入口为tests/mobile-e2e。test:math/eval尚不存在，不得用占位命令假装通过。
+
+新增pnpm m1:preflight（不付费；无限模式不读账本，有限模式额度不足非零退出）与pnpm test:m1:live --live（显式付费；先启动真实服务）。用户已授权累计费用默认无限：SOLVEFLOW_LIVE_BUDGET_RMB缺省或unlimited时不做费用预占，正数才启用有限模式，见docs/adr/0005-optional-spending-limit.md。历史账本保留，不自动清空；模型/工具次数、取消与超时约束不受影响。
 
 | 命令 | 预期职责 |
 | --- | --- |

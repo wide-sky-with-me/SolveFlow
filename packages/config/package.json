@@ -1,0 +1,19 @@
+{
+  "name": "@solveflow/config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "zod": "4.5.4",
+    "@solveflow/contracts": "workspace:*"
+  }
+}

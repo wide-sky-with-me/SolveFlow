@@ -1,0 +1,22 @@
+{
+  "cli": { "version": "24.4.2", "appVersionSource": "local" },
+  "build": {
+    "preview": {
+      "distribution": "internal",
+      "environment": "preview",
+      "node": "24.19.0",
+      "pnpm": "11.25.0",
+      "android": { "buildType": "apk" },
+      "ios": { "buildConfiguration": "Release" }
+    },
+    "ios-simulator": { "extends": "preview", "ios": { "simulator": true } },
+    "production": {
+      "distribution": "store",
+      "environment": "production",
+      "node": "24.19.0",
+      "pnpm": "11.25.0",
+      "android": { "buildType": "app-bundle" },
+      "ios": { "buildConfiguration": "Release" }
+    }
+  }
+}

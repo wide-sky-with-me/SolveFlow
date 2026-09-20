@@ -1,0 +1,23 @@
+# EAS reads this from the app directory; patterns cover nested monorepo paths too.
+**/node_modules/
+**/.runtime/
+**/.expo/
+**/dist/
+**/.generated/
+**/coverage/
+**/test-results/
+**/playwright-report/
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+!**/.env.example
+**/credentials.json
+**/*.jks
+**/*.keystore
+**/*.p12
+**/*.mobileprovision
+**/android/
+**/ios/
+**/.git/
+**/.codex/
+**/.agents/

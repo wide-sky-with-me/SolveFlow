@@ -1,0 +1,21 @@
+{
+  "name": "@solveflow/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@solveflow/contracts": "workspace:*",
+    "@solveflow/config": "workspace:*",
+    "@solveflow/db": "workspace:*",
+    "@solveflow/agent": "workspace:*",
+    "hono": "4.13.7",
+    "@hono/node-server": "2.1.1",
+    "sharp": "0.35.4",
+    "@aws-sdk/client-s3": "3.1128.0",
+    "zod": "4.5.4",
+    "@solveflow/client": "workspace:*"
+  }
+}

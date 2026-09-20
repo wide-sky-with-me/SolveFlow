@@ -1,0 +1,27 @@
+.history-document .history-entry { position:relative; overflow:hidden; border-bottom:1px solid var(--sf-line); }
+.history-document .history-entry:last-child { border-bottom:0; }
+.history-document .history-foreground { position:relative; padding:16px 0; background:var(--sf-surface); transition:transform 180ms ease-out; touch-action:pan-y; }
+.history-document .history-preview { max-height:96px; overflow:hidden; pointer-events:none; font-size:15px; line-height:1.7; }
+.history-document .history-preview>.answer-markdown { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden; }
+.history-document .history-preview p { margin:0 0 4px; }
+.history-document .history-preview h1,.history-document .history-preview h2,.history-document .history-preview h3,.history-document .history-preview h4 { font-size:15px; margin:0; }
+.history-document .history-preview .math-block { padding:0; }
+.history-document .history-preview .formula-hint { display:none; }
+.history-document .history-meta { color:var(--sf-muted); font-size:12px; margin-top:10px; padding-right:44px; }
+.history-document .favorite-star { color:#d79216; }
+.history-document button.history-open { position:absolute; inset:0; width:100%; height:100%; border:0; border-radius:8px; background:transparent; }
+.history-document button.history-more { position:absolute; right:0; bottom:2px; width:44px; height:44px; z-index:1; border:0; background:transparent; color:var(--sf-muted); padding:0; }
+.history-document .history-actions { position:absolute; inset:0 0 0 auto; display:flex; width:144px; }
+.history-document .history-actions button { width:72px; border:0; border-radius:0; padding:8px; color:#fff; font-size:13px; }
+.history-document .favorite-action { background:#cd921f; }
+.history-document .remove-action { background:#d65858; }
+@media(prefers-reduced-motion:reduce) { .history-document .history-foreground { transition:none; } }
+
+.history-document button.history-open:active { background:#2867dd08; }
+.history-document .history-actions button:not(:disabled):active { filter:brightness(.92); }
+@media(hover:hover) { .history-document button.history-open:hover { background:#2867dd05; } .history-document .history-actions button:not(:disabled):hover { filter:brightness(.96); } }
+
+.history-document .favorite-action:not(:disabled):active { background:#bb841b; }
+.history-document .remove-action:not(:disabled):active { background:#bc4949; }
+
+@media(hover:hover) { .history-document .favorite-action:not(:disabled):hover { background:#bb841b; } .history-document .remove-action:not(:disabled):hover { background:#bc4949; } }

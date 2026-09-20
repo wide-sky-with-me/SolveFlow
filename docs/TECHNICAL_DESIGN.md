@@ -1,19 +1,37 @@
 # SolveFlow 技术方案
 
-> 状态：v0.2 待实施设计基线；修订为分级内置工具、原生 Skill 按需加载与受控 MCP 接入。当前只交付文档，不表示应用、依赖、接口或测试已经存在。
+> 2026-09-18 更新：设备思考设置改为两级（服务默认/关闭/开启，开启后选强度，参数协议单独选择）；知识点与详细步骤一样按需生成（focus.kind=knowledge-list），详细步骤/校验/知识点三类按需请求可并发（上限 3）。见 [ADR 0016](adr/0016-thinking-control-and-on-demand-concurrency.md)。
+
+> 2026-09-17 最新用户授权：本地 App/Web 首轮输出简洁答案与加粗核心结果，详细步骤按需生成；校验默认关闭，生成后点击“校验”按钮才执行。下文强制自动校验只适用于保留的旧服务端路径。见 [ADR 0015](adr/0015-on-demand-answer-details.md)。
+
+> 2026-09-17 阅读增量：本地主题默认跟随系统并实时同步，答案/步骤复用同一图形，追问/澄清复用安全公式渲染，Skill 扩展到学科大类。题目、模型与预算契约不变，见[主题与方法验收](READING_THEME_SKILLS_ACCEPTANCE.md)。
+
+> 2026-09-17：Android 本地解题新增有时限的前台服务与原生阶段计时，正常息屏/切后台不再主动取消。Pi 循环、独立校验及 120 秒总预算不变；进程被杀不重放任务。诊断仅保存脱敏元数据，JSON 结构错误共享现有一次格式修复额度。见 [ADR 0014](adr/0014-android-background-solving.md) 与[实际验收](BACKGROUND_SOLVE_ACCEPTANCE.md)。
+
+> 2026-09-15最新用户授权：手机直连模型、完整迁移本地应用，见[ADR 0013](adr/0013-local-device-agent.md)。默认RN App/Web使用本地Pi核心、SQLite/IndexedDB及设备模型设置；下文服务端专属架构和API密钥仅服务端规则只适用于保留的旧服务路径。新路径密钥由用户在设备设置中输入，安卓安全存储、Web仅内存；不打包服务器.env。Pi导入仍仅允许packages/agent/src/pi/，不重写Agent循环。iOS原生构建暂停。
+
+> 2026-09-15客户端架构变更：用户授权Android、iOS与Web统一React Native/Expo。默认Web入口已迁移至apps/mobile，接口增加隔离的原生Bearer身份及只读提交恢复查询；公式/图文采用本地Expo DOM组件。见[ADR 0012](adr/0012-react-native-universal-client.md)。旧Next实现和专用依赖已清理；PWA安装/离线仍为待实施项。当前命令和验收以[RN迁移记录](REACT_NATIVE_ACCEPTANCE.md)为准。
+
+> 状态：v0.3 本地M1数据库/私有上传/API/移动Web最小纵切已验收，清晰代数题真实网页Solver/Verifier PASS（见docs/M1_LIVE_ACCEPTANCE.md），公网验收未完成；M0整体安全验收仍在进行。实际实施进度见 AGENTS.md、docs/IMPLEMENTATION_PLAN.md 和 docs/PI_COMPATIBILITY.md；下文目录/接口仍为目标设计，不表示全部存在。
 > 定位：基于 Pi SDK 的拍照做题 Agent；不 Fork 魔改 Pi、不自建 Agent loop、首版不上 RAG。
 > 开发执行规范见根目录 AGENTS.md；它不是学生端运行时提示词。
+> 最新模型决定：供应商、endpoint、模型引用、容量/报价/兼容参数由服务端环境配置，Solver与Verifier可分别设置，不硬编码厂商或型号；独立校验、无自动回退。见docs/MODEL_SELECTION.md与ADR 0002。
 
 ## 1. 产品目标与范围
 
 核心链路：拍照/相册上传 → 裁切单题 → 补充说明 → 多模态解题 → 独立校验 → 答案卡片 → 同题追问。
 
-目标是准确理解题目，提供可检查的答案与教学步骤，而不是把 Coding Agent 聊天窗口交给学生。首版重点验收初高中数学；物理、化学、英语保留策略扩展位，不承诺初期达到同等准确率。
+目标是准确理解题目，提供可检查的答案与教学步骤，而不是把 Coding Agent 聊天窗口交给学生。首版重点验收初高中数学；物理、化学、生物已补充受审课程方法Skill，英语仍为策略扩展位，不承诺初期达到同等准确率，见[课程Skill验收](COURSE_SKILLS_ACCEPTANCE.md)。
+
+本地可用性增量：已加入上传前矩形裁切、原图放大、题干更正、新旧答案连续展示和按题/步追问；公共契约与持久化兼容方案见 [ADR 0008](adr/0008-learning-continuity.md)。
+
+追问展示按题组织：每题框内保留原解答、后续问答/澄清、进度/失败及输入框，再次追问沿既有来源回到原题；服务端同样按题筛选历史，见 [ADR 0009](adr/0009-question-conversations.md)。
 
 ### MVP 必须具备
 
-- 移动优先 Next.js Web/PWA；相机和文件选择均可用，拒绝相机权限后仍可上传。
-- 每次一张图片、一道题；多题要求裁切/指定，不默默任选一道。
+- React Native/Expo统一Android、iOS和Web；相机和相册选择均可用，拒绝相机权限后仍可上传。
+- 每次一张图片；单题或用户明确指定最多4题，不默默任选。多题按questions分组，题内展示教学步骤、图示与结论；未指定范围或条件不清时澄清。见ADR 0006。
+- 2026-09-17：当前照片按题横向分页，顶部题号快捷跳转；用户约定左滑上一题、右滑下一题，追问和阅读状态留在各题中。补充记录独立查看；规整坐标刻度和标签避让由客户端统一处理，见[分页与绘图验收](QUESTION_PAGER_FIGURE_ACCEPTANCE.md)。
 - 图片直接进入支持 image input 和 tool calling 的模型，独立 OCR 不是必经链路。
 - 题干理解、缺失条件澄清、答案、关键步骤、知识点、引用和不确定性。
 - Pi SDK 驱动工具调用；保留 Skill 所需的受限 read，按需启用辅助工具，提供 web_search、calculate、python_math 三类核心业务工具及获准的 MCP 工具。
@@ -26,24 +44,24 @@ python_math 在隔离验收前不得注册，开发早期可先启用另外两�
 
 ### 首版不做
 
-题库/RAG、知识画像、整卷批改、手写轨迹、教师后台、支付、原生 App、自动模型路由、多 Agent 群聊、开放插件市场、任意 Python 执行、离线大模型。PWA 可安装不等于离线解题。
+题库/RAG、知识画像、整卷批改、手写轨迹、教师后台、支付、自动模型路由、多 Agent 群聊、开放插件市场、任意 Python 执行、离线大模型。PWA 可安装不等于离线解题。
 
 ## 2. 技术选型与架构
 
 | 层 | 选型 | 说明 |
 | --- | --- | --- |
-| 前端 | Next.js App Router + React + TypeScript | UI 不承载 Pi 运行时 |
-| 样式 | Tailwind CSS + shadcn/ui | 移动优先、可访问性 |
-| 图片 | 文件 input + 可选 MediaDevices + react-easy-crop | 裁切、旋转、重拍与权限降级 |
-| 公式/内容 | 受控 Markdown + KaTeX | 禁原始 HTML，trust=false |
-| PWA | Manifest + 最小 Service Worker | 只缓存公共静态壳；不强依赖 next-pwa |
+| 前端 | React Native + Expo + React Native Web + TypeScript | 三端共享UI，不承载Pi运行时 |
+| 样式 | RN StyleSheet + 局部答案CSS | 移动优先、可访问性 |
+| 图片 | 原生Expo Camera/ImagePicker/ImageManipulator；Web受控相机/Canvas适配 | 裁切、旋转、重拍与权限降级 |
+| 公式/内容 | 本地Expo DOM组件 + 受控Markdown/KaTeX/SVG | 原生局部WebView、Web直接渲染；禁原始HTML，trust=false |
+| PWA（待实施） | Manifest + 最小 Service Worker | 只缓存公共静态壳，不缓存私有内容 |
 | API/Worker | Node.js LTS + Hono | 常驻进程，API 与 worker 分入口 |
 | Agent | @earendil-works/pi-coding-agent | SDK、分级工具、原生 Skill、session、streaming |
 | MCP | 服务端 MCP client + Pi Extension 桥接 | 按 server/tool 授权，不假设 Pi 内置 MCP |
 | 模型 | @earendil-works/pi-ai | 首版一个可配置主模型，独立 Verifier 配置 |
 | 契约 | Zod + JSON Schema 适配 | 运行时校验，Pi 工具 schema 在适配层转换/核对 |
 | 数据库 | PostgreSQL + Drizzle | 真相源、迁移、租约任务、持久事件 |
-| 图片存储 | S3/R2，开发 MinIO | 私有 bucket、短时签名 URL |
+| 图片存储 | S3/R2，开发 MinIO | 私有 bucket、同源鉴权预览 |
 | 搜索 | SearchProvider 接口，首实现 Tavily | 后续可替换 Brave/Serper |
 | 数学 | 受限 AST 计算器 + Python/SymPy 隔离 worker | NumPy 按需增加 |
 | 测试 | Vitest + Playwright + pytest | 合约、集成、E2E、安全与数学回归 |
@@ -52,7 +70,8 @@ python_math 在隔离验收前不得注册，开发早期可先启用另外两�
 不同时引入 Hono 和 Fastify。首版使用 PostgreSQL 任务表与事件表，不为“Pi Session + Redis”额外引入 Redis；扩容时可增加 Redis 通知/缓存，但不能替代业务持久层。
 
 ~~~text
-Browser → Next.js PWA → 同源 /api/v1 → Hono API
+RN Web → 固定同源代理 /api/v1 → Hono API
+RN Android/iOS → HTTPS Bearer /api/v1 ↗
                                       ├─ 身份/所有权/上传/限流
                                       ├─ PostgreSQL：sessions/runs/events/results
                                       ├─ S3：私有题图
@@ -84,18 +103,19 @@ API 与 worker 来自同一应用包，以不同入口运行。使用常驻 Node
 - 默认 Skill 按需加载依赖 read，没有时可能用 bash；因此首版保留受限 read，而非强制改为服务端预加载。
 - 官方 README 明确说明核心不内置 MCP，可通过扩展增加支持；MCP client 连接/启动服务不等于模型必须拥有 bash。
 
-当前文档图片结构示例（只是 API 片段，不是完整启动代码）：
+M0 已核实发布版 pi-ai 0.85.1 的 ImageContent 使用下列平铺结构；它与先前 main 文档示例不同（类型证据见 PI_COMPATIBILITY.md，运行探针仍待验证）：
 
 ~~~ts
 await session.prompt("请解决这道题", {
   images: [{
     type: "image",
-    source: { type: "base64", mediaType: "image/jpeg", data: base64Image },
+    data: base64Image,
+    mimeType: "image/jpeg",
   }],
 });
 ~~~
 
-用户原示例的平铺 data/mimeType 结构不应未经核实复制。M0 必须选择已发布且兼容的精确包版本、提交 lockfile，并在 docs/PI_COMPATIBILITY.md 记录包版本、上游 tag/commit、Node engines、许可、工具配置、图片类型与探针结果。该文件待 M0 创建。禁止 latest、版本范围漂移及 as any 掩盖不兼容。
+图片结构以锁定发布版类型为准，禁止凭记忆判定平铺或 source 格式。M0 已固定0.85.1并生成lockfile，docs/PI_COMPATIBILITY.md 已创建，继续记录工具配置与运行探针结果。禁止 latest、版本范围漂移及 as any 掩盖不兼容。
 
 ### 3.2 适配层
 
@@ -130,7 +150,7 @@ RunContext 携带服务端确认的 owner/session/run、取消信号、预算与
 
 ### 3.4 原生 Skill 按需加载
 
-首版保留 Pi 的渐进式加载：启动时注入获准 Skill 的 name/description，模型按题型调用受限 read 加载 SKILL.md，再读取必要的相对路径参考资料。用户学科选择是提示，不限制只能用一份策略；允许同题组合多个获准 Skill。不再以服务端预加载单一学科替代默认流程。
+首版保留 Pi 的渐进式加载：启动时注入获准 Skill 的 name/description，模型按题型调用受限 read 加载 SKILL.md，再读取必要的相对路径参考资料。科目由模型根据原题自动识别，旧会话学科仅作可纠正提示，不限制只能用一份策略；允许同题组合多个获准 Skill。不再以服务端预加载单一学科替代默认流程。
 
 初期 Skill 名称为 general、math、physics、chemistry、english。Skill 是方法论，不是题库。使用标准 frontmatter，资源注册记录版本、内容哈希、读取根和所需工具/MCP 映射。若某 Skill 必须依赖未授权/不可用工具，不向模型宣称完整可用；可提供明确标注的纯文本降级策略，不静默加载后才无限失败。
 
@@ -170,7 +190,7 @@ completed、needs_clarification、failed、cancelled 为终态。只有首次验
 ### 4.2 Solver 规范
 
 1. 阅读原图和补充说明，保留题干、选项、单位、图形标注与目标。
-2. 不凭视觉比例推断长度，不补全看不清的符号；多题或条件缺失要求澄清。
+2. 不凭视觉比例推断长度，不补全看不清的符号；多题范围未指定、超过4题或必要条件缺失时要求澄清。
 3. 最新事实、时政或不确定事实才搜索；普通代数不默认搜索。
 4. 数值/符号结论优先用数学工具检查，保留定义域和单位。
 5. 输出结构化候选、面向学生的关键教学步骤、知识点与证据引用。
@@ -195,6 +215,8 @@ type Verification = {
 FAIL：携带 issue 最多修正一次并再验证。UNKNOWN：标未充分验证，不无限重试。超时/拒绝/schema 错误都不是 PASS。已有有效候选时验证不可用可降级 unverified；候选也无效则 failed。UI 写“模型校验通过”，不写“保证正确”。
 
 ### 4.4 结果结构
+
+当前v1增加可选questions数组（2–4项）：`{ number, answer, stepIds, figureIds }`。steps/figures仍全局存储、ID唯一，questions必须将每个步骤/图恰好分配一次；Verifier引用原ID。新多题输出必须填写questions，旧记录兼容读取；不修改历史答案或已存校验状态。UI只在题号、答案、步骤和图示归属均明确时为旧记录生成分题视图，歧义时保留原文。该扩展无数据库列变更，服务端先升级、Web同步构建；旧客户端不认识questions，发布时需刷新。
 
 packages/contracts 定义 Zod schema 并导出 TS 类型。以下为语义结构，实现必须补充长度与跨字段约束：
 
@@ -234,12 +256,14 @@ query ≤ 500 字符、domains ≤ 5、结果 ≤ 5。freshness 是偏好，供�
 
 ### 5.2 calculate
 
-输入：{ expression, angleUnit?: "rad" | "deg" }，缺省 rad。
-输出：{ value: string, approximate: boolean, precision: number, warnings: string[] }。
+输入：{ schemaVersion: 1, expression, angleUnit?: "rad" | "deg" }，缺省 rad。
+输出：{ schemaVersion: 1, value: string, approximate: boolean, precision: number, warnings: string[] }。
 
 支持数字、括号、加减乘除、** 乘方与固定 sin/cos/tan/sqrt/abs/log/exp 等函数；其他操作不默认接受。采用受限 AST 解释器，即使复用解析库，也不能开放全功能 evaluator。
 
 限制长度、AST 深度、指数、精度、时间；拒绝赋值、属性访问、函数定义、import、文件/网络、eval、new Function。非有限结果返回明确错误。区分近似数值与精确符号结果，不用浮点近似充当数学证明。
+
+当前实现还提供固定常数pi/e；log为自然对数，无变量或物理单位换算。512字符、256 token、128节点、32层、1秒；乘方指数绝对值≤100、非零结果幅度1e-100至1e100、近似结果15位有效数字。安全整数链路可以标精确，乘方/超越函数保守标近似；不将下溢零、除零或tan渐近点伪装为有效数值。详见contracts/calculation与兼容记录。
 
 ### 5.3 python_math
 
@@ -303,7 +327,7 @@ HTTP 错误：{ error: { code, message, retryable, traceId } }。400 参数错�
 - 初值：单图 ≤ 10 MiB、解码 ≤ 20MP；规范化 JPEG/PNG/WebP，长边 ≤ 2048px、输出 ≤ 4 MiB。细字看不清时要求局部重拍，不继续过度压缩。
 - 去 EXIF/GPS，拒绝 SVG/动画/伪造格式；HEIC 首版提示转 JPEG，不承诺自动转换。
 - 正式入库前校验；不接受任意远程图片 URL。服务端根据受权 objectKey 读取并构造 Pi image content。
-- 私有 bucket，预览签名 URL 默认 5 分钟；不在日志、模型文本、analytics 中记录 base64 或签名 URL。
+- 私有 bucket，预览使用同源owner鉴权接口，内部S3签名读取；浏览器不拿签名URL。该本地M1细化见docs/adr/0001-local-m1.md。不在日志、模型文本、analytics中记录base64或签名URL。
 
 ### 7.2 最小数据实体
 
@@ -344,7 +368,7 @@ Worker 使用 PostgreSQL 租约和心跳；进程崩溃、租约过期后将遗�
 | 项目 | 初值 |
 | --- | --- |
 | run 总墙钟时间 | 120 秒，含验证/修正/格式修复 |
-| Solver 模型轮数 | 8 次，含工具后续调用与修正 |
+| Solver 模型轮数 | 16 次，含工具后续调用、格式修复与修正；与 Verifier 最多 2 次合计 18 次模型派发，见 [ADR 0011](adr/0011-solver-round-budget.md) |
 | 工具总调用数 | 16 次；read/ls/find/grep 共最多8次，业务/MCP/脚本/写入共最多8次；所有搜索入口合计最多2次 |
 | 搜索 / calculate / python_math | 每次 10 秒 / 1 秒 / 5 秒 |
 | Skill 文件工具 / MCP | 每次2秒 / 默认10秒；均受120秒总预算限制 |
@@ -359,6 +383,8 @@ Worker 使用 PostgreSQL 租约和心跳；进程崩溃、租约过期后将遗�
 
 安全底线：
 
+2026-09-14用途限制：Agent仅用于允许范围内的学习解题；允许中立政治/历史/安全教育课程题，拒绝政治动员、立场宣传与危险请求，不按学科关键词误拒。Solver/Verifier固定共用CONTENT_POLICY，clarification可带refusalReason；Verifier的POLICY_VIOLATION不进入未验证降级，服务端丢弃候选并返回固定安全提示。见[ADR 0007](adr/0007-solving-content-policy.md)。
+
 - 凭据仅服务端环境/secret manager；不放 NEXT_PUBLIC_*，不让学生提交 key。
 - 工具分级开放而非全部禁用：read 受限启用，辅助工具按依赖授权，脚本/写入隔离且默认关闭，MCP 按 server/tool 批准；升级/恢复/不同 cwd/HOME 均验证权限边界。
 - 用户文本、图片文字、搜索结果和工具输出不能改变系统策略、权限或执行代码。
@@ -370,13 +396,23 @@ Worker 使用 PostgreSQL 租约和心跳；进程崩溃、租约过期后将遗�
 
 ## 9. 前端交互
 
+2026-09-16按钮与题干编辑细化：重新解答位于题目卡片标题旁，主操作/辅助操作/危险操作统一蓝色/浅蓝/浅红按钮与按压反馈。题干更正保留TeX源码编辑，使用相同安全KaTeX/Markdown组件实时预览，提供公式/分数/根号/上下标插入，见[按钮与公式编辑验收](BUTTONS_TEX_ACCEPTANCE.md)。
+
+2026-09-16等待状态细化：首次解题、重新解答与同题追问共用蓝白题纸扫描等待卡片，依据实际run状态显示识题/解答/核对，不展示推算百分比。修正仍处于核对阶段，完成/失败/取消移除动画；后台或系统减少动态效果时停用循环。保留取消，连接异常时展示刷新入口。见[等待动效验收](SOLVE_PROGRESS_ACCEPTANCE.md)。
+
+2026-09-16用户确认的导航结构：底栏三个入口——题目（当前解答/历史题目分栏）、居中突出拍照、我的（模型设置/使用说明/本地记录入口）。去除顶部品牌栏；相机取消回到原页，切页保留题目与未发送追问。新图标与本地开屏动画见[导航和开屏验收](APP_NAVIGATION_ACCEPTANCE.md)，数据及Agent架构不变。
+
+2026-09-16阅读细化：题目、答案、详细步骤、知识点使用独立卡片，步骤默认折叠，同题追问保留在该题下。开屏等待本地配置与题目恢复、当前答案图文布局或文字降级就绪后再淡出，见[卡片与启动验收](READING_CARDS_STARTUP_ACCEPTANCE.md)。
+
+2026-09-16增加每题“重新解答”：追加新的整题解答并重新独立校验，保留旧版本；多题按原题范围隔离并沿用题干更正。上下文增加regenerate标识，个人页解释文案集中到使用说明，见[重新解答验收](REGENERATE_ACCEPTANCE.md)。
+
 1. 首页：主操作“拍一道题”、次操作“从相册选择”，标明识别范围和隐私。
-2. 题图确认：裁切/旋转/重拍，说明与可选学科，“开始解题”。
+2. 题图确认：裁切/旋转/重拍，补充说明、自动识别科目，“开始解题”。
 3. 会话页：原图/题干、阶段进度、最终答案卡片、教学步骤、知识点、引用、验证状态、追问框。
 
 展示“读题/计算/搜索/校验”，不展示内部 thinking。澄清、取消、断网、限流、超时、未验证、相机拒绝均有独立可测试状态。运行中禁止同题重复提交；可保留文本草稿，不默认持久化敏感图像。支持键盘/屏幕阅读器、≥44px 触控目标、窄屏公式横向滚动和足够对比度。
 
-## 10. 建议目录（待创建）
+## 10. 目录职责（部分已实现，详见M1验收记录）
 
 ~~~text
 SolveFlow/
@@ -386,10 +422,11 @@ SolveFlow/
 │   ├── PI_COMPATIBILITY.md          # M0 创建
 │   └── adr/
 ├── apps/
-│   ├── web/                       # Next.js UI/Manifest/SW
+│   ├── mobile/                    # Expo/RN统一客户端，含局部DOM答案
 │   └── api/                       # Hono 路由与 worker 入口
 ├── packages/
 │   ├── contracts/                 # Zod 和公共协议
+│   ├── client/                    # API/SSE/提交恢复与三端共享逻辑
 │   ├── agent/
 │   │   ├── src/pi/                # 唯一 Pi 导入边界
 │   │   ├── src/orchestration/     # 状态机/预算/验证
@@ -457,6 +494,8 @@ contracts → db/upload → Pi 适配 → calculate → Worker/Verifier → API/
 
 M0：已发布 Pi/MCP SDK及桥接实现精确版本/许可证/Node engines、受限 read 适配方式。真实验证前：主模型和视觉 Verifier 可用 ID、服务端凭据、MCP server/tool 清单及权限。上线前：部署地区、数据保留、未成年人隐私、日费用上限。默认技术选型已给出，变更需说明理由，不把所有实现选择重新交给用户。
 
+M0命令行实现与运行说明见 docs/M0_PROBE.md；当前公开报价、30元预算和保守预占依据见 docs/DMX_PRICING.md。命令行探针与M1应用入口独立；新增持久化/SSE/API身份与移动Web见docs/M1_ACCEPTANCE.md。
+
 ## 14. 官方依据
 
 以下 main 链接为本次核实来源，实施以锁定版本对应文档/类型为准：
@@ -468,3 +507,26 @@ M0：已发布 Pi/MCP SDK及桥接实现精确版本/许可证/Node engines、�
 5. [Skills：read/bash 加载机制](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md)
 
 未将第三方 pi-web 内部协议纳入项目契约，也未将 issue 或未核实模型名当作必须依赖。
+
+
+### 2026-09-10 图文答案扩展
+
+依据用户授权实现自动科目与图文渲染，见[ADR 0003](adr/0003-automatic-subject-rich-answers.md)。实际候选新增可选figures，独立Verifier必须核验图示才允许PASS；原图引用仅指向本题授权资源。新预算窗口的显式续额语义见[ADR 0004](adr/0004-explicit-budget-renewal.md)，不因更换型号或额度不足自动续额。
+
+2026-09-14：已补齐Solver最终JSON语法失败时的全run最多一次格式修复，复用Pi原会话与图片，不重写Agent loop；同样计入轮数/取消/总时限/费用许可。结构或证据校验失败仍失败关闭。安全诊断与本次实际验收边界见[上传失败诊断](UPLOAD_FAILURE_2026-09-14.md)。
+
+2026-09-14用户授权调整：累计费用限制默认关闭，缺省/unlimited对应内部null；正数才启用有限预算。旧30元上限、强制供应商硬额度确认和反复续额流程不再是默认要求。历史账本保留；模型/工具轮数及取消、超时保护继续执行。见[ADR 0005](adr/0005-optional-spending-limit.md)。
+
+
+### 2026-09-14 题干与知识内容增量
+
+按用户授权新增每题完整题干、授权原图局部裁片、可展开知识点及同题知识点追问；坐标图增加轴标签、不同单位轴比例、折线和填色区域，加入经济课程 Skill。协议为可选字段兼容扩展，不新增工具权限或数据库表；Agent复用已有Sharp处理坐标辅助图与实际裁片，见[ADR 0010](adr/0010-question-learning-content.md)。原题图与解答图均要求独立 diagram 核验，数值检查使用既有受限 calculate。
+
+
+### 2026-09-15 学生端界面精简
+
+按用户要求参考拍照搜题产品，统一白底与蓝色操作、单列阅读；移除重复说明和装饰，解题后整张原图可折叠，保留每题完整题干、局部图、分步解析、知识点和题内追问。模型、校验及存储协议不变，具体调整与验收见[界面精简记录](INTERFACE_STYLE_ACCEPTANCE.md)。
+
+### 2026-09-15 H5 相机
+
+拍摄入口补齐 `getUserMedia` 预览→拍摄→确认→裁切，默认后置优先、不请求麦克风，关闭/离开/迟到授权均释放流，保留原生相机与相册备用入口。手机实时预览要求HTTPS安全上下文；不改变上传/解题契约。详见[相机验收](CAMERA_ACCEPTANCE.md)。

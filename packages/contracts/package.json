@@ -1,0 +1,38 @@
+{
+  "name": "@solveflow/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "exports": {
+    "./figure": {
+      "types": "./dist/figure.d.ts",
+      "default": "./dist/figure.js"
+    },
+    "./agent": {
+      "types": "./dist/agent.d.ts",
+      "default": "./dist/agent.js"
+    },
+    "./calculation": {
+      "types": "./dist/calculation.d.ts",
+      "default": "./dist/calculation.js"
+    },
+    "./http": {
+      "types": "./dist/http.d.ts",
+      "default": "./dist/http.js"
+    },
+    "./model": {
+      "types": "./dist/model.d.ts",
+      "default": "./dist/model.js"
+    },
+    "./local": {
+      "types": "./dist/local.d.ts",
+      "default": "./dist/local.js"
+    }
+  },
+  "dependencies": {
+    "zod": "4.5.4"
+  }
+}

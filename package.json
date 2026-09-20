@@ -1,0 +1,48 @@
+{
+  "name": "solveflow",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": "24.19.0"
+  },
+  "scripts": {
+    "lint": "node scripts/check-boundaries.mjs",
+    "typecheck": "pnpm build:server && tsc --noEmit && pnpm --filter @solveflow/mobile typecheck",
+    "build": "pnpm build:server && pnpm --filter @solveflow/mobile build && node scripts/check-build.mjs",
+    "test": "pnpm build:server && vitest run",
+    "config:check": "pnpm --filter @solveflow/contracts build && pnpm --filter @solveflow/config build && node --env-file-if-exists=.env scripts/check-config.mjs",
+    "probe:offline": "pnpm build:server && node scripts/probe.mjs",
+    "probe:live": "pnpm build:server && node --env-file-if-exists=.env scripts/probe.mjs --live",
+    "probe:ledger:init": "pnpm build:server && node scripts/probe.mjs --init-ledger",
+    "build:server": "node scripts/prepare-mobile-agent.mjs && pnpm --filter \"!@solveflow/mobile\" -r build",
+    "test:integration": "pnpm build:server && vitest run --config vitest.integration.config.ts",
+    "test:e2e": "playwright test",
+    "local:setup": "node scripts/setup-local.mjs",
+    "infra:up": "docker compose --env-file .env -f infra/compose.yaml up -d --wait",
+    "db:migrate": "pnpm build:server && node --env-file=.env scripts/db-migrate.mjs",
+    "dev": "pnpm build:server && pnpm --filter @solveflow/mobile dev",
+    "dev:demo": "pnpm build:server && node scripts/dev.mjs --demo",
+    "start": "node scripts/web-server.mjs",
+    "start:demo": "node scripts/dev.mjs --production --demo",
+    "config:migrate": "pnpm --filter @solveflow/contracts build && pnpm --filter @solveflow/config build && node scripts/migrate-model-config.mjs",
+    "m1:preflight": "pnpm build:server && node scripts/m1-preflight.mjs",
+    "test:m1:live": "pnpm build:server && node scripts/m1-live-acceptance.mjs",
+    "mobile:dev": "pnpm --filter @solveflow/mobile dev",
+    "mobile:prebuild": "pnpm --filter @solveflow/mobile prebuild",
+    "mobile:android": "pnpm --filter @solveflow/mobile android",
+    "mobile:ios": "pnpm --filter @solveflow/mobile ios",
+    "mobile:doctor": "node scripts/native-build.mjs check",
+    "mobile:apk": "node scripts/native-build.mjs apk",
+    "server:dev": "pnpm build:server && node scripts/dev.mjs",
+    "server:start": "node scripts/dev.mjs --production"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "24.13.3",
+    "esbuild": "0.28.1",
+    "typescript": "5.9.3",
+    "vitest": "5.0.0"
+  }
+}

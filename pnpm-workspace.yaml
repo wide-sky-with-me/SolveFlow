@@ -1,0 +1,14 @@
+packages:
+  - packages/*
+  - apps/*
+
+minimumReleaseAge: 1440
+storeDir: .runtime/pnpm-store
+cacheDir: .runtime/pnpm-cache
+# Published artifacts suffice for the current offline probes.
+# Transitive lifecycle scripts stay disabled pending explicit review.
+allowBuilds:
+  "@google/genai": false
+  esbuild: false
+  protobufjs: false
+  sharp: false
