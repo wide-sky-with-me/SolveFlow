@@ -2,9 +2,55 @@
 
 > 最新：用户已授权设备直连模型与本地存储，见[本地应用验收](LOCAL_APP_ACCEPTANCE.md)。当前安卓命令 `pnpm mobile:apk` 生成 `solveflow-arm64-local.apk`，启动后在设置页填写模型；不再需要 EXPO_PUBLIC_API_URL 或 SolveFlow 后端域名。下文较早的 API 缺失/编译检查包记录属于迁移前状态。iOS原生构建已暂停。
 
-`pnpm build` 是三端代码和资源导出。真正的安装包还需要原生编译、签名和可用的服务地址。生成APK/IPA与真机解题验收分别记录。
+`pnpm build` 是三端代码和资源导出。真正的安装包还需要原生编译和签名；模型服务在设备设置页配置。生成APK与真机解题验收分别记录。
+
+## 2026-09-21 默认考试与 Responses（0.1.38）
+
+0.1.38（versionCode 39）已构建，ARM64 APK 为 **20,448,832 字节（20.45 MB）**，SHA256 `e5fc9a16aaaefdafd2d9a939ef19cd46f313429da929cec7126359636ec40eb9`。版本化产物 `.runtime/artifacts/solveflow-arm64-local-0.1.38.apk`，通用路径与相应 R8 mapping 同步归档。较 0.1.37 增加 28,172 字节；签名与既有包一致，Hermes、3 份本地 DOM 和私密配置扫描通过。本轮未安装手机。
+
+首轮构建等待失效的 Kotlin 守护进程回环连接；线程诊断后停止本次 Gradle 进程。环境变量重试未对编译任务生效，再次停止后在生成的 `apps/mobile/android/gradle.properties` 临时设置 `kotlin.compiler.execution.strategy=in-process`，运行 `SOLVEFLOW_GRADLE_NO_DAEMON=1 pnpm mobile:apk` 成功。该临时配置已移除，没有升级依赖或更改产品代码。构建策略依据 [Kotlin 官方说明](https://kotlinlang.org/docs/compiler-execution-strategy.html)；如同机再次发生该连接问题，可用这一显式项目属性诊断。
+
+考试设置、协议回归与 48 次真实对比见[本轮验收](EXAM_PRELOAD_ACCEPTANCE.md)。
+
+## Android 体积优化（0.1.31）
+
+`apps/mobile/plugins/with-android-release-size.cjs` 在每次 Expo prebuild 中启用 R8、资源裁剪和锁定 AGP 8.12 的联合资源分析，使用 `proguard-android-optimize.txt`。不增加依赖，不修改解题协议或工具权限。
+
+`pnpm mobile:apk` 继续只构建 ARM64，并通过 `-Pexpo.useLegacyPackaging=true` 压缩原生库，适用于直接分发 APK；安装时会展开这些库，下载体积下降不等于安装占用同比下降。EAS/AAB 保留 Expo 默认原生库打包方式。Hermes 主 bundle 不额外压缩，保留直接映射加载方式；相机、SQLite、SecureStore、WebView、公式字体和 Skill 继续随包保留。
+
+R8 的 `mapping.txt` 在本地构建成功后按版本和 APK SHA256 前12位归档到 `.runtime/artifacts/`，用于该版本原生崩溃栈还原。不要把别的构建映射用于当前包。
+
+同时修复增量构建的旧 DOM 脚本残留：生成解题资源后清理该 Gradle bundle 任务的完整 assets 输出目录，包括前次中断后遗留的目录；不能只删除 `index.android.bundle`。实际 APK 回归新增“包内 entry 脚本必须全部被当前 HTML 引用”的断言，已在含两份旧脚本的中间包上复现失败。
+
+依据：[Android R8 配置](https://developer.android.com/topic/performance/app-optimization/enable-app-optimization)、[Expo 构建属性及压缩取舍](https://docs.expo.dev/versions/latest/sdk/build-properties/)。参数同时核对了当前锁定 Expo/RN 生成的 Gradle 模板。
+
+### 2026-09-20 实际验证
+
+最终 **0.1.31（versionCode 32）** 为 **20,382,136 字节（20.38 MB）**，相较已有 0.1.30 的 43,804,381 字节减少 **23,422,245 字节 / 53.47%**。以下为 ZIP 内实际压缩后大小，MB 按十进制；分类合计不含 ZIP 目录、对齐和签名开销。
+
+| 内容 | 0.1.30 | 0.1.31 |
+| --- | ---: | ---: |
+| ARM64 原生库 | 22.44 MB | 8.42 MB |
+| DEX | 11.28 MB（4份） | 3.09 MB（1份） |
+| Android 资源及元数据 | 4.16 MB | 3.16 MB |
+| JS、DOM、字体等 assets | 5.61 MB | 5.61 MB |
+
+19 个原生库全部保留并压缩，解压后仍为 22,444,304 字节；Hermes 主 bundle 保持未压缩。连续两次完成修复后的增量打包，APK 字节数一致；新增旧脚本断言由中间包失败转为最终包通过。
+
+- 最终 APK：`.runtime/artifacts/solveflow-arm64-local-0.1.31.apk`；SHA256：`46f98597b850c14cb76c192cb618dbaf9e638a6b19d998ced4670e4d65484626`。
+- `pnpm lint`、`pnpm typecheck`、`pnpm exec vitest run tests/unit/native-build-config.test.ts tests/unit/dom-bootstrap.test.ts`（5项）通过。
+- 实际编译：`GRADLE_OPTS=-Dorg.gradle.project.kotlin.compiler.execution.strategy=in-process pnpm mobile:apk` 通过。首次普通构建卡在旧 Kotlin daemon 的 socket 连接，终止本轮构建后使用临时进程内编译重试；未更改全局 Kotlin 配置。最终日志：`/tmp/solveflow-apk-size-build-repeat.log`。
+- 构建自动检查签名有效且与旧包一致、版本正确、5个本地私密值未泄漏、Hermes/SQLite/3份 DOM 文档齐全；R8 映射已按版本和包哈希归档。明细：`.runtime/artifacts/android-local-build-report.json`、`android-size-comparison.json`。
+- `node scripts/test-android-document.mjs` 对最终 APK 的实际资源检查通过：无旧 entry 脚本、启动桥接、公式、原图/图表、知识点、历史操作、窄屏、离线资源与注入防护。
+- 未验证：真机安装/启动/相机/后台解题（本轮 ADB 查询无响应，已结束该查询）、真实模型调用、服务端集成和浏览器全套 E2E。本次没有修改模型或提示词。包内 Chromium 检查不代表 Android 原生运行已验收。
 
 ## 当前本地应用 APK
+
+2026-09-20分页修复构建：**0.1.36（versionCode37）**，20,415,304字节，SHA256：`dda39ad425d8b76e9615fd2ca71a30fd94d4b9f9b3a797fb68e6025da65183a7`。在0.1.35基础上修复分页后停留列表底部；新增浏览器断言先复现失败，再通过10项相关交互复测，mobile typecheck/lint及最终APK资源检查通过。首次安装被系统取消；用户确认重试后，非流式覆盖安装返回Success，读回versionName0.1.36 / versionCode37。99条历史保留，第二页全部20个会话ID匹配原导出，翻页回到顶部、切页保留页码通过真机检查。详见[历史管理验收](LOCAL_HISTORY_MANAGEMENT.md)。
+
+2026-09-20历史与原图更新：**0.1.37（versionCode38）**，20,420,660字节，SHA256：`29a234dd512ec1cd41226b3d1ac5f08591c6052d00c9537797e33f3e930213b6`。新增历史连续序号、当地秒级保存时间、完整原图1～4倍双指缩放和拖动。普通同签名覆盖安装Success，手机读回0.1.37/code38，99条历史保留；实际APK资源验证、686项离线测试、10项浏览器检查、真机时间核对和双指边界/复位通过，详见[本次验收](HISTORY_IMAGE_VIEWER_ACCEPTANCE.md)。
+
+2026-09-20：**0.1.35（versionCode36）** 普通本地APK已构建并覆盖安装成功，**20,415,708字节（20.42 MB）**，较0.1.30的43,804,381字节缩小**53.39%**。SHA256：`47739b43fa229b52878cdf3c274ad33c526c0f13d69a7819e16a04716355ad9f`。包含本地完整导出、历史清空/手势/摘要性能优化；签名与旧版本一致，5项私密配置扫描和实际APK资源测试通过。680项离线测试、lint/typecheck、10项相关浏览器测试通过；真机验证见[历史管理](LOCAL_HISTORY_MANAGEMENT.md)，导出99条完整性验证见[本地导出](LOCAL_HISTORY_EXPORT.md)。没有改动模型/提示词或进行付费重答，不将本版本声称为1550分能力验证。
 
 2026-09-18：**0.1.26（versionCode 27）** 已构建，43,789,805字节。按最新要求移除选择题文本正则兼容，直接使用模型的options/selectedOptions/解释字段；校验标签归属，多题与追问保存对应标签。645项全量离线及后续34项相关测试、10项桌面/移动场景、3道SAT/ACT真实HTTP题、实际APK结构化选项与图文安全检查通过。已覆盖安装到iQOO Neo9并读回版本，详见[选择题验收](SAT_CHOICE_ACCEPTANCE.md)。
 
@@ -39,13 +85,13 @@
 
 ## 构建前配置
 
-仅在 `apps/mobile/.env` 或构建环境设置 `EXPO_PUBLIC_API_URL=https://你的API域名`。这里只填公开HTTPS源站，不带 `/api/v1`、登录参数或密钥；不要复制根目录服务端`.env`。Web继续同源访问，不受影响。构建检查会拒绝缺失配置、localhost和模板占位域名。
+当前本地应用不需要 `EXPO_PUBLIC_API_URL`。不要复制根目录服务端 `.env` 到客户端；模型地址与密钥由用户在设备设置页填写。
 
 ```sh
 pnpm mobile:doctor
 ```
 
-它检查地址、JDK、锁定RN所需Android SDK和本地Xcode。非零退出表示仍缺前置项；地址格式通过不保证域名已部署或手机可达。
+它检查 JDK、锁定 RN 所需 Android SDK 和本地 Xcode。非零退出表示仍缺编译工具；iOS 原生构建当前暂停。
 
 ## Android 本地内部测试 APK
 
@@ -55,15 +101,15 @@ pnpm mobile:doctor
 pnpm mobile:apk
 ```
 
-该命令验证服务地址、构建共享包与公式字体、生成原生工程，然后执行Gradle `assembleRelease`。当前产物为ARM64内部测试APK，使用Expo模板的测试签名；JS/Hermes和本地DOM资源随包嵌入，不依赖Metro。成功后写到 `.runtime/artifacts/solveflow-arm64-preview.apk`，同时生成SHA256文件。这个签名不用于Google Play正式发布。
+该命令检查工具链、构建共享包与公式字体、按需生成原生工程，然后执行 Gradle `assembleRelease`。当前产物为 ARM64 内部测试 APK，使用 Expo 模板的测试签名；JS/Hermes 和本地 DOM 资源随包嵌入，不依赖 Metro。成功后写到 `.runtime/artifacts/solveflow-arm64-local.apk`，同时生成 SHA256、版本归档、签名/私密配置/资源检查报告和 R8 映射文件。这个签名不用于 Google Play 正式发布。
 
-仅验证编译、没有API时可显式运行：
+旧参数仍兼容，但当前同样生成可在设置页配置模型的本地应用：
 
 ```sh
 pnpm mobile:apk --compile-only
 ```
 
-产物名为 `solveflow-arm64-compile-check.apk`，未配置服务、只显示配置提示，不能称为可解题安装包。该模式不会修改 `.env` 或代填域名。打包使用2个Gradle worker，每条子命令最多30分钟，并传播中断信号。
+命令不修改 `.env` 或代填模型地址。Gradle worker 数根据 CPU 数限制在 2–8 个，每条子命令最多30分钟，并传播中断信号。下方 `compile-check.apk` / `preview.apk` 和服务地址要求仅为旧服务端路径的历史记录。
 
 本机Android命令行工具22.0来自Google官方页面的 `commandlinetools-linux-15859902_latest.zip`，SHA256：`4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583`。实际编译记录见下节；SDK下载、license接受与Gradle构建日志保存在忽略目录 `.runtime/android-downloads/`。
 
@@ -85,7 +131,7 @@ pnpm mobile:apk --compile-only
 cd apps/mobile
 pnpm dlx eas-cli@24.4.2 login
 pnpm dlx eas-cli@24.4.2 init
-# 在EAS项目的preview/production环境中设置公开EXPO_PUBLIC_API_URL
+# 当前本地模型应用不需要 EXPO_PUBLIC_API_URL；iOS 构建仍暂停
 pnpm dlx eas-cli@24.4.2 build --platform ios --profile preview
 # 或模拟器归档 / Android云构建
 pnpm dlx eas-cli@24.4.2 build --platform ios --profile ios-simulator
@@ -123,3 +169,57 @@ Android实际编译已完成：首次直接Gradle `assembleRelease` 成功（6�
 - [EAS monorepo配置](https://docs.expo.dev/build-reference/build-with-monorepos/)
 - [EAS生命周期hook](https://docs.expo.dev/build-reference/npm-hooks/)
 - [EAS上传排除](https://docs.expo.dev/build-reference/easignore/)
+
+2026-09-21：0.1.39（versionCode 40）加入批量解题，ARM64内部测试包20,492,068字节。原生后台任务与计时器改为按runId隔离；已完成编译及APK资源检查，手机升级/连续速拍/息屏待实机验收。详见[BATCH_SOLVING_ACCEPTANCE.md](BATCH_SOLVING_ACCEPTANCE.md)。
+
+2026-09-21：0.1.40（versionCode 41）精简拍摄与历史布局，批量入口移至相机，新增可命名批次、扁平分类切换及按需搜索。ARM64内部测试包20,519,000字节，SHA-256 `02cbfb870211f9b59caf9d998d772b14a35a0dcb2c41fc5533273736b19a796a`；同证书覆盖安装兼容性与打包资源检查通过，详见[批量验收](BATCH_SOLVING_ACCEPTANCE.md)。
+
+
+### 0.1.41 历史手势与返回修复（2026-09-21）
+
+ARM64内部测试包`.runtime/artifacts/solveflow-arm64-local-0.1.41.apk`，versionCode42，20,522,068字节；SHA-256 `9e521491f1b13d921493fbef399b33c679bc0402d85bcd7f877c2d9a43b4991c`。签名与前版一致，私密配置扫描、Hermes及3份本地DOM资源验证通过；`test-android-document.mjs`检查通过。iQOO Neo9覆盖安装成功并读回0.1.41/42，记录保留。构建临时使用进程内Kotlin编译，完成后已移除该本地配置。真机手势与返回检查见[历史管理](LOCAL_HISTORY_MANAGEMENT.md)。
+
+
+### 0.1.42 固定题目字体与公式对齐（2026-09-21）
+
+ARM64测试包`.runtime/artifacts/solveflow-arm64-local-0.1.42.apk`，versionCode43，23,858,088字节；SHA-256 `fa2b5ad0b74ad1bb12dbe8e44a76f94b26006969b2ce1f5dab1a031526472cc7`。正文复用KaTeX配套字体，中文新增OFL授权Noto Serif SC资源，随包保存一份，不访问在线字体；相较0.1.41增加3,336,020字节。签名、私密配置扫描、3份DOM及101份字体哈希/许可检查通过，实际APK本地渲染中的中文自带字体和数字基线断言通过。手机首次安装被系统取消；用户重新确认后覆盖安装返回Success，读回0.1.42/43，同题字体与基线目视核验通过。详情见[字体验收](READING_TYPOGRAPHY_ACCEPTANCE.md)。
+
+
+### 0.1.43 跟随系统字体（2026-09-21）
+
+ARM64测试包`.runtime/artifacts/solveflow-arm64-local-0.1.43.apk`，versionCode44，20,522,084字节；SHA-256 `801a67ac3c0c3ce42a0f9283f12dde144cb0d65bdde678012125ce723ffc3aaf`。按最新要求正文跟随手机字体，移除上一版固定中文资源，减少3,336,004字节；保留KaTeX数学字形、1em字号和基线对齐。14项相关浏览器回归、lint/类型检查/三端导出、实际APK资源及签名/私密配置检查通过，详见[字体验收](READING_TYPOGRAPHY_ACCEPTANCE.md)。
+
+0.1.43已覆盖安装到iQOO Neo9并读回44，原题中英文字体跟随设备个性字体，99条单题及批次3张题图保留。无付费解题请求。
+
+### 0.1.44 代码审阅修复（2026-09-22）
+
+ARM64 内部测试包 `.runtime/artifacts/solveflow-arm64-local-0.1.44.apk`，versionCode 45，20,530,520 字节（约 20.53 MB）；SHA-256 `c8db8860c990671feb63865e41837fd50dea4d95e4bf177b699b6446c84ea15c`。修复取消与保存竞态、时钟回拨导致的解答错序、初始化重试、删除后的导航引用、历史搜索分页及离开批次后的迟到相册回传，详见[代码审阅记录](CODE_REVIEW_2026-09-22.md)。
+
+`SOLVEFLOW_GRADLE_NO_DAEMON=1 pnpm mobile:apk` 成功。本次仅在生成的原生工程临时启用 Kotlin 进程内编译，结束后已移除该临时设置。签名验证通过，与最新归档 0.1.43 的证书相同；现在证书变化会直接阻止归档，归档版本按数字排序。私密配置扫描、Hermes/SQLite 原生库及 3 份本地 DOM 资源检查通过。
+
+`node scripts/test-android-document.mjs .runtime/artifacts/solveflow-arm64-local-0.1.44.apk` 通过：直接解包验证离线页面启动、桥接、历史、图像、公式、窄屏和注入防护，正文与行内数学基线差为 0 px（Chromium 测量）。构建阶段未连接手机；随后同日已非流式覆盖安装到 iQOO Neo9，读回 0.1.44 / 45。历史、真实多指缩放、相册及桌面后台对照见[真机回归](DEVICE_REVIEW_0_1_44.md)。手机“智能控制后台耗电”会冻结活动进程；仅对 SolveFlow 允许后台耗电后，后台解题、独立校验及服务释放通过。实际连续拍摄、息屏和稳定三并发仍未覆盖。
+
+
+### 0.1.45 批量相机布局修复及锁焦复测（2026-09-23）
+
+ARM64 测试包 `.runtime/artifacts/solveflow-arm64-local-0.1.45.apk`，versionCode 46，20,531,900 字节；SHA-256 `78dfd327afdc5cd5be3ecbd822fe09f9dab73a553804a3bfcd656f4659a6594f`。修复快门忙碌文案导致预览高度跳变，安卓批量模式一次对焦后保持、点击预览重新对焦；相机依赖保持 57.0.5，使用受版本控制的 pnpm 补丁补齐 Android 锁焦行为。签名、私密配置、打包资源及实际 APK 文档渲染检查通过，iQOO Neo9 覆盖安装成功。真机发现 Expo 预编译 AAR 没有包含锁焦补丁，0.1.45 的锁焦未通过；后续 0.1.46 指定源码编译。行为、回归与真机证据见[相机稳定性记录](CAMERA_STABILITY_0_1_46.md)。
+
+
+### 0.1.46 相机锁焦补丁源码打包（2026-09-23）
+
+ARM64 内部测试包 `.runtime/artifacts/solveflow-arm64-local-0.1.46.apk`，versionCode 47，17,091,870 字节（17.09 MB）；SHA-256 `d09ca633aa1af27d78b76a53016530eab60c3c20e2c01061b30b11f63b90a14c`。明确从源码编译 `expo-camera`，补齐绑定后的中心锁焦及关闭扫码时的可选依赖规则；未升级相机库或启用扫码。构建日志确认相机 Kotlin 编译，同签名、私密配置和 APK 资源检查通过。比 0.1.45 减少 3.44 MB。
+
+最初按用户要求仅打包；用户恢复测试后，同日已覆盖安装并读回 0.1.46 / 47。批量静置锁焦、点击重新对焦、单题/批量切换、重开相机及连续两次快门通过本机检查，两张题图均完成解题与独立校验；用户确认静置已稳定。焦距元数据仍有变化，不能据此宣称镜头绝对静止或覆盖所有设备。详情见[相机稳定性记录](CAMERA_STABILITY_0_1_46.md)。
+
+
+### 0.1.47 批量拍摄与校验说明（2026-09-23）
+
+ARM64 测试包 `.runtime/artifacts/solveflow-arm64-local-0.1.47.apk`，versionCode 48，17,097,754 字节（17.10 MB）；SHA-256 `fb5e4a3858b6e2cdcbe3a3183efd032f4266dbd7228920bbf70a55ae07b13e8e`。批量照片直接传递原生像素，去掉中间 JPEG 往返和 JS 字节编码；完成拍摄进入本次批次；校验说明区分超时、无效输出和具体疑点。
+
+86 项相关单元/合约测试、34 项浏览器回归、lint、根与 mobile 类型检查、服务包/Web/Android 构建通过；签名连续性、私密配置和包内资源检查通过。`test-android-document.mjs` 已直接检查实际 APK 中的离线文档与新校验说明。用户明确选择先打包，本轮没有安装手机或新增真实模型调用；实际拍摄速度、清晰度和原生连拍待手机验收，见 [0.1.47 记录](BATCH_CAPTURE_0_1_47.md)。
+
+### 0.1.48 真机采集与历史读取优化（2026-09-23）
+
+ARM64 测试包 `.runtime/artifacts/solveflow-arm64-local-0.1.48.apk`，versionCode49，17,103,222字节；SHA-256 `bc16e6a87ab397d02434d17932cd70dcb74c2c2cbe9c15e5a88d1c7772d67797`。批量采集选择实际支持且不低于2048×1536的4:3尺寸，历史摘要/收藏改为有界SQLite批量读取，保留旧适配器兼容与原图规范化。
+
+93项相关单元/合约测试、16项相机/批次浏览器回归、lint、类型检查、构建和实际APK离线文档检查通过。已覆盖安装到iQOO Neo9并读回版本49；三次保存耗时1737/1628/1634ms，三张结果已在后台保存，其中一张校验通过、两张明确显示校验超时。结束后服务释放，原记录保留。观测条件与限制见 [0.1.48 真机记录](DEVICE_CAPTURE_0_1_48.md)。

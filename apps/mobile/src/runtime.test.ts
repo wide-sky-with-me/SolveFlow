@@ -1,0 +1,21 @@
+import { beforeEach, expect, it, vi } from 'vitest';
+const storage = vi.hoisted(() => ({ open: vi.fn(), expired: vi.fn() }));
+vi.mock('expo/fetch', () => ({ fetch: vi.fn() }));
+vi.mock('expo-crypto', () => ({ randomUUID: vi.fn() }));
+vi.mock('@solveflow/agent/mobile', () => ({ solveOnDevice: vi.fn() }));
+vi.mock('./local/documents', () => ({ openDocuments: storage.open }));
+vi.mock('./local/secrets', () => ({ readKey: vi.fn(), writeKey: vi.fn() }));
+vi.mock('./local/lock', () => ({ lockLocalApp: vi.fn() }));
+vi.mock('./local/background', () => ({ background: {}, onBackgroundExpired: storage.expired }));
+beforeEach(() => { vi.resetModules(); vi.clearAllMocks(); });
+it('retries runtime initialization after storage failure and shares one successful engine', async () => {
+  const documents = { get: vi.fn().mockResolvedValue(null), keys: vi.fn().mockResolvedValue([]), put: vi.fn(), remove: vi.fn() };
+  storage.open.mockRejectedValueOnce(new Error('storage unavailable')).mockResolvedValueOnce(documents);
+  const { createRuntime } = await import('./runtime');
+  const failed = createRuntime(); expect(createRuntime()).toBe(failed);
+  await expect(failed).rejects.toThrow('storage unavailable');
+  const retry = createRuntime(); expect(createRuntime()).toBe(retry);
+  const runtime = await retry;
+  expect(await createRuntime()).toBe(runtime); expect(storage.open).toHaveBeenCalledTimes(2);
+  expect(storage.expired).toHaveBeenCalledOnce();
+});

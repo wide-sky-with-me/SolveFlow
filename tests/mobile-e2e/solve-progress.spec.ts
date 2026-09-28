@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { chooseSyntheticPhoto, configureLocalModel, modelSse } from './local-fixture.js';
 const candidate = { schemaVersion: 1, kind: 'answer', problem: { text: '解方程 x+1=3', subject: 'math', uncertainties: [] }, answer: 'x=2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] };
-for (const reduced of [false, true]) test(`waiting animation stops when the manual-mode answer arrives and cancels follow-up (reduced: ${reduced})`, async ({ page }, info) => {
+for (const { reduced, rollback } of [{ reduced: false, rollback: false }, { reduced: true, rollback: false }, { reduced: true, rollback: true }]) test(`waiting animation stops when the manual-mode answer arrives and cancels follow-up (reduced: ${reduced})${rollback ? ' after clock rollback' : ''}`, async ({ page }, info) => {
+  if (rollback) await page.clock.install({ time: Date.now() });
   await page.emulateMedia({ reducedMotion: reduced ? 'reduce' : 'no-preference' });
   let release = () => {}; const gate = new Promise<void>(resolve => { release = resolve; });
   let cancelRelease = () => {}; const cancelledGate = new Promise<void>(resolve => { cancelRelease = resolve; }); let calls = 0;
@@ -16,8 +17,13 @@ for (const reduced of [false, true]) test(`waiting animation stops when the manu
     if (reduced) await expect(page.getByTestId('solve-scan')).toHaveCount(0);
     else { const scan = page.getByTestId('solve-scan'); await expect(scan).toBeVisible(); const before = await scan.evaluate(node => getComputedStyle(node).transform); await expect.poll(() => scan.evaluate(node => getComputedStyle(node).transform)).not.toBe(before); await card.screenshot({ path: info.outputPath('waiting.png') }); }
     release(); await expect(card).toHaveCount(0); await expect(page.getByRole('button', { name: '校验', exact: true })).toBeEnabled(); expect(calls).toBe(1);
+    if (rollback) {
+      const shifted = await page.evaluate(() => Date.now()) - 60_000;
+      await page.clock.setSystemTime(shifted);
+      await expect.poll(() => page.evaluate(() => Date.now())).toBeGreaterThan(shifted);
+    }
     await page.getByLabel('继续问这道题', { exact: true }).fill('解释这个结论'); await page.getByRole('button', { name: '发送同题追问', exact: true }).click();
-    await expect.poll(() => calls).toBe(2); await card.getByRole('button', { name: '取消本次解题' }).click(); cancelRelease();
+    await expect.poll(() => calls).toBe(2); await expect(card).toBeVisible(); await card.getByRole('button', { name: '取消本次解题' }).click(); cancelRelease();
     await expect(page.getByRole('heading', { name: '本次解题已取消' })).toBeVisible();
     await page.getByRole('button', { name: '历史解答', exact: true }).click(); await page.getByRole('radio', { name: '第1次解答', exact: true }).click();
     await expect(page.getByText('x=2', { exact: true })).toBeVisible(); expect(calls).toBe(2);

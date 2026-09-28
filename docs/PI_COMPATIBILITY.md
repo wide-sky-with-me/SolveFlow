@@ -1,5 +1,9 @@
 # Pi / MCP 兼容性记录
 
+## 2026-09-21 默认考试类型与 Responses
+
+0.1.38 复用已锁定 Pi 0.85.1 的 `pi-ai/api/openai-responses`，不升级依赖；入口仍只在 `packages/agent/src/pi/`，Agent 循环、工具权限和预算不变。默认思考不发 `none`，开启使用原生 `reasoning.effort`；无状态工具续接只在内存保留加密 reasoning。明确考试类型预加载两份完整受审资源，其他 Skill 保留按需加载。协议、取消、错误映射、格式修复及无工具 Verifier 回归与真实对照结果见[本轮验收](EXAM_PRELOAD_ACCEPTANCE.md)。
+
 ## 2026-09-18 启动遮罩卡死修复（0.1.29 → 0.1.30）
 
 0.1.28 在真机上会停在“正在读取本地题目”遮罩后无法进入。原因：`knowledge-list` 是新增的按需请求类型，但“哪些 run 属于按需请求”这一判定仍有两处硬编码为 `['explanation','verification']`——`apps/mobile/src/app.tsx` 的启动就绪判定与 `packages/client/src/question-conversations.ts` 的续接目标。知识点 run 完成后被当成最新答案版本，界面却只渲染原答案面板，于是启动就绪永远等不到一个不会出现的面板。
@@ -243,3 +247,6 @@ brief 不再输出知识点（knowledgePoints 与 knowledgeDetails 都为空）�
 2026-09-18：0.1.25保持Pi 0.85.1与本地循环不变；新增可选选项结构、首内容事件时间/正文大小诊断，集中Skill读取和无关计算抑制。642项全量离线测试及后续34项针对性测试通过，选择题/按需步骤/手动校验12项浏览器场景通过；最终提示下自编SAT读图/转折题真实HTTP通过，详见[SAT选择题验收](SAT_CHOICE_ACCEPTANCE.md)。
 
 2026-09-18后续：0.1.26按用户最新要求删除选择题正则兼容，模型直接返回options/selectedOptions/解释。645项全量离线及后续34项、10项浏览器场景、3道SAT/ACT真实HTTP与实际APK结构化选项测试通过；提示词曾超过8192字节现已精简到8001，未放宽安全边界。新读图样例仍有77秒长尾，未宣称速度问题解决，详见[SAT验收](SAT_CHOICE_ACCEPTANCE.md)。
+
+
+> 2026-09-21 用户授权批量解题及付费测试：连续速拍、本地3并发独立核验、拍摄序号与原题号分离、单独/批量历史分类，详见 [ADR 0018](adr/0018-batch-solving.md)。单题手动校验默认保持；重启不自动重放。

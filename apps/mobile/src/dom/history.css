@@ -25,3 +25,7 @@
 .history-document .remove-action:not(:disabled):active { background:#bc4949; }
 
 @media(hover:hover) { .history-document .favorite-action:not(:disabled):hover { background:#bb841b; } .history-document .remove-action:not(:disabled):hover { background:#bc4949; } }
+
+/* The list owns vertical scrolling; no native parent competes for diagonal swipes. */
+.history-document.history-viewport { height:100%; min-height:0; overflow-y:auto; overscroll-behavior-y:contain; gap:0; }
+.history-viewport .history-entry { flex-shrink:0; }

@@ -32,7 +32,7 @@ async function photoBlob(photo: Photo): Promise<Blob> {
   return (await fetch(photo.uri)).blob();
 }
 export async function transformPhoto(photo: Photo, crop?: Crop, rotate = false, maxDimension = 2048): Promise<Photo> {
-  if (!Number.isInteger(maxDimension) || maxDimension < 1 || maxDimension > maxDimension) throw new Error('图片尺寸无效。');
+  if (!Number.isInteger(maxDimension) || maxDimension < 1 || maxDimension > 2048) throw new Error('图片尺寸无效。');
   const source = await photoBlob(photo); const bitmap = await createImageBitmap(source);
   try {
     const box = cropPixels(crop ?? { left: 0, top: 0, right: 100, bottom: 100 }, bitmap.width, bitmap.height);
@@ -48,5 +48,5 @@ export async function transformPhoto(photo: Photo, crop?: Crop, rotate = false, 
 export async function photoBody(photo: Photo) { const blob = photo.blob ?? await (await fetch(photo.uri)).blob(); const form = new FormData(); form.append('file', blob, 'problem.jpg'); return form; }
 export function releasePhoto(photo: Photo | null) { if (photo?.owned && photo.uri.startsWith('blob:')) URL.revokeObjectURL(photo.uri); }
 export async function initialSession() { return new URLSearchParams(window.location.search).get('session') ?? await store.get('local-last-session'); }
-export async function rememberSession(id: string | null) { window.history.replaceState(null, '', id ? `/?session=${id}` : '/'); if (id) await store.set('local-last-session', id); else await store.remove('local-last-session'); }
+export async function rememberSession(id: string | null) { window.history.replaceState(window.history.state, '', id ? `/?session=${id}` : '/'); if (id) await store.set('local-last-session', id); else await store.remove('local-last-session'); }
 export async function photoData(photo: Photo): Promise<string> { const blob = photo.blob ?? await (await fetch(photo.uri)).blob(); if (blob.size > 4 * 1024 * 1024) throw new Error('图片超过4MB，请进一步裁切。'); return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('题图读取失败。')); reader.onerror = () => reject(new Error('题图读取失败。')); reader.readAsDataURL(blob); }); }

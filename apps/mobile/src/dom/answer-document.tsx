@@ -3,7 +3,7 @@ import { OnDemandSteps } from './on-demand-steps';
 import { useDocumentHeight } from './use-document-height';
 import { useQuestionSwipe } from './use-question-swipe';
 import { useEffect, useMemo } from 'react';
-import { decodeAnswerDocument } from '@solveflow/client';
+import { decodeAnswerDocument, verificationFeedback } from '@solveflow/client';
 import { subjectLabel, type RunContext } from '@solveflow/contracts/http';
 import { AnswerContent } from './answer-content';
 import { ProblemStatement } from './problem-statement';
@@ -32,7 +32,7 @@ export default function AnswerDocument({ theme = 'light', payload, onFocus, onCo
   useDocumentTheme(theme);
   const swipeRoot = useQuestionSwipe(onPageSwipe);
   useDocumentHeight(swipeRoot, onHeight);
-  const { explanation, knowledge, outcome: result, image, width, height, runId, number, disabled, showRegenerate, showHistory, verificationPending, verificationFailed } = useMemo(() => decodeAnswerDocument(payload), [payload]);
+  const { explanation, knowledge, outcome: result, image, width, height, runId, number, disabled, showRegenerate, showHistory, verificationPending, verificationFailed, verificationErrorCode } = useMemo(() => decodeAnswerDocument(payload), [payload]);
   useEffect(() => {
     // React committed the answer. Hidden Android WebViews can defer font/layout
     // completion indefinitely; fonts refine measurements, not readiness.
@@ -41,10 +41,11 @@ export default function AnswerDocument({ theme = 'light', payload, onFocus, onCo
   if (result.status !== 'completed' && result.status !== 'needs_clarification') return null;
   const detailResult = explanation?.outcome?.status === 'completed' ? explanation.outcome : null;
   const candidate = result.candidate; const original = image ?? undefined;
+  const feedback = verificationFeedback(result, verificationErrorCode);
   return <article ref={swipeRoot} className="answer-document">
     <ProblemStatement onHistory={showHistory && onHistory ? () => void onHistory() : undefined} problem={candidate.problem} image={original} imageSize={{ width, height }} onViewOriginal={() => void onViewOriginal()} onCorrect={() => void onCorrect()} onRegenerate={showRegenerate ? () => void onRegenerate() : undefined} disabled={disabled} />
     {result.status === 'completed' ? <>
-      {result.status === 'completed' && !result.verified && result.verificationStatus !== 'not_requested' && <div className="unverified-note"><p>当前结果未通过完整校验，请结合题目检查后再使用。</p>{result.verification?.issues.map((issue, i) => <MathText key={i} text={issue.message} />)}</div>}
+      {feedback && <section className="unverified-note" aria-label="校验说明"><strong>{feedback.title}</strong><p>{feedback.reason}</p>{feedback.issues.map((issue, i) => <div key={i}><strong>{issue.label}</strong><MathText text={issue.message} /></div>)}<p>{feedback.next}</p></section>}
       <AnswerContent onVerify={onVerify ? () => void onVerify() : undefined} verificationLabel={verificationPending ? '校验中' : verificationFailed ? '重试校验' : result.verified ? '校验通过' : result.verification ? result.verification.verdict === 'fail' ? '发现问题' : '无法确认' : '校验'} verificationDisabled={disabled || !!verificationPending || result.verified || !!result.verification} hideSteps={!result.candidate.steps.length && !!onRequestSteps} candidate={result.candidate} subject={subjectLabel(candidate.problem.subject)} originalImageUrl={original} disabled={disabled}
         onAskStep={(step, label) => void onFocus({ kind: 'step', sourceRunId: runId, stepId: step.id }, label)}
         onAskQuestion={value => void onFocus({ kind: 'question', sourceRunId: runId, number: value }, `第${value}题`)} />

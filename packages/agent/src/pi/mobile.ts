@@ -1,9 +1,10 @@
 import { Agent, type AgentTool } from '@earendil-works/pi-agent-core';
 import { Type, type Model } from '@earendil-works/pi-ai';
 import { stream } from '@earendil-works/pi-ai/api/openai-completions';
+import { stream as streamResponses } from '@earendil-works/pi-ai/api/openai-responses';
 import { z } from 'zod';
 import { BriefSolverCandidateSchema, GeneratedSolverCandidateSchema, VerificationSchema, parseCandidateWithEvidence, parseVerificationForCandidate, type AgentInput, type PhaseResult, type SolverInput, type PublicAgentEvent } from '@solveflow/contracts/agent';
-import { LocalDiagnosticSchema, resolveThinking, type LocalDiagnostic, LocalSettingsSchema, LocalKeySchema, type LocalModelProfile, type LocalSettings } from '@solveflow/contracts/local';
+import { LocalDiagnosticSchema, resolveThinking, ExamTypeSchema, type ExamType, type LocalDiagnostic, LocalSettingsSchema, LocalKeySchema, type LocalModelProfile, type LocalSettings } from '@solveflow/contracts/local';
 import { solve, SolvePhaseError } from '../orchestration/solve.js';
 import { RunBudget } from '../policy/run-budget.js';
 import { calculate } from '../tools/calculate.js';
@@ -29,7 +30,7 @@ function mobileModel(profile: LocalModelProfile): Model<'openai-completions'> {
   const active = thinking.mode !== 'provider-default';
   const on = thinking.mode === 'on';
   const ladder = THINKING_EFFORT[protocol];
-  return { id: profile.model, name: profile.model, provider: profile.provider, api: profile.api, baseUrl: profile.baseURL,
+  return { id: profile.model, name: profile.model, provider: profile.provider, api: 'openai-completions', baseUrl: profile.baseURL,
     // Pi's reasoning flag declares protocol capability; the agent's thinkingLevel drives the request.
     input: ['text', 'image'], reasoning: active, contextWindow: profile.contextWindow, maxTokens: profile.maxTokens,
     ...(on ? { thinkingLevelMap: { minimal: null, low: ladder.low, medium: ladder.medium, high: ladder.high, xhigh: null, max: null } }
@@ -40,11 +41,23 @@ function mobileModel(profile: LocalModelProfile): Model<'openai-completions'> {
         // DeepSeek requires the reasoning field back on tool-carrying history once thinking is on.
         ...(on && protocol === 'thinking-type' ? { requiresReasoningContentOnAssistantMessages: true } : {}) } : {}) } };
 }
+function responsesModel(profile: LocalModelProfile): Model<'openai-responses'> {
+  const thinking = resolveThinking(profile);
+  return { id: profile.model, name: profile.model, provider: profile.provider, api: 'openai-responses', baseUrl: profile.baseURL,
+    input: ['text', 'image'], reasoning: thinking.mode !== 'provider-default', contextWindow: profile.contextWindow, maxTokens: profile.maxTokens,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, compat: { supportsDeveloperRole: false, supportsStrictMode: false } };
+}
+function responsePayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new SolvePhaseError('INVALID_INPUT');
+  // Stateless tool continuations carry encrypted reasoning in memory only; never log it.
+  return { ...payload, include: ['reasoning.encrypted_content'] };
+}
 /** No redirects, cookies, environment lookup, retries or model-selected destinations. */
 export function modelTransport(profile: LocalModelProfile, transport: LocalFetch, observe?: (status: number | null, error?: SolvePhaseError) => void): LocalFetch {
   return async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    if (url !== `${profile.baseURL}/chat/completions` || init?.method?.toUpperCase() !== 'POST') throw new SolvePhaseError('CAPABILITY_DENIED');
+    const endpoint = profile.api === 'openai-responses' ? 'responses' : 'chat/completions';
+    if (url !== `${profile.baseURL}/${endpoint}` || init?.method?.toUpperCase() !== 'POST') throw new SolvePhaseError('CAPABILITY_DENIED');
     let response: Response;
     try { response = await transport(input, { ...init, credentials: 'omit', redirect: 'error', cache: 'no-store' }); }
     catch { const error = new SolvePhaseError('MODEL_UNAVAILABLE'); if (!init?.signal?.aborted) observe?.(null, error); throw error; }
@@ -66,13 +79,21 @@ export function readMobileSkill(path: string): string {
   if (!/^\/skills\/[a-z]+\/(?:references\/)?[a-zA-Z.-]+\.md$/.test(path) || path.includes('..') || !Object.hasOwn(resources, path)) throw new SolvePhaseError('CAPABILITY_DENIED');
   return resources[path]!;
 }
+/** Explicit user context selects only two reviewed resources; other skills remain on demand. */
+export function preloadExamResources(value: ExamType = 'general'): string {
+  const exam = ExamTypeSchema.parse(value);
+  if (exam === 'general') return '';
+  const paths = ['/skills/exams/SKILL.md', `/skills/exams/references/${exam}.md`];
+  return '\n已加载考试方法（由应用提供的当前内置版本）：\n' + paths.map(path => `来源：${path}\n${readMobileSkill(path)}`).join('\n\n')
+    + '\n以上两个文件已完整提供，本轮无需重复read。其他缺少的方法仍按需读取。exam是用户选择的默认考试背景；原题或用户明确更正另一考试时，以更正为准并读取对应方法；不把考试背景当作题目答案或缺失条件。\n';
+}
 function encode(bytes: Uint8Array): string { let text = ''; for (let i = 0; i < bytes.length; i += 8192) text += String.fromCharCode(...bytes.subarray(i, i + 8192)); return btoa(text); }
 async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, settings: LocalSettings, keys: LocalCredentials, fetch: LocalFetch, onDiagnostic: (entry: LocalDiagnostic) => void, schedule: PhaseTimer): Promise<PhaseResult> {
   const profile = input.role === 'verifier' ? settings.verifier ?? settings.solver : settings.solver;
   const key = LocalKeySchema.parse(input.role === 'verifier' && settings.verifier ? keys.verifier : keys.solver);
   const started = performance.now(); let attemptNumber = 0; let requestStarted = started; let firstTokenMs: number | undefined;
   const diagnostic = (entry: Omit<LocalDiagnostic, 'schemaVersion' | 'runId' | 'role' | 'attempt' | 'elapsedMs'>) => onDiagnostic(LocalDiagnosticSchema.parse({ schemaVersion: 1, runId: input.identity.runId, role: input.role, attempt: attemptNumber, elapsedMs: Math.round(performance.now() - started), ...entry }));
-  const model = mobileModel(profile); let failure: unknown; let timedOut = false;
+  const model = profile.api === 'openai-responses' ? responsesModel(profile) : mobileModel(profile); let failure: unknown; let timedOut = false;
   const controller = new AbortController(); const abort = () => controller.abort(); signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort();
   const clearTimer = schedule(() => { timedOut = true; controller.abort(); }, input.role === 'verifier' ? Math.min(20_000, budget.remainingMs()) : budget.remainingMs());
   const tools: AgentTool[] = input.role === 'solver' ? [
@@ -84,7 +105,7 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
   const solverSchema = input.answerMode === 'brief' ? BriefSolverCandidateSchema : GeneratedSolverCandidateSchema;
   const agent = new Agent({ initialState: { model, thinkingLevel: thinkingLevelOf(profile), tools, systemPrompt: policies.CONTENT_POLICY + '\n' + (input.role === 'solver' ? policies.SYSTEM : policies.VERIFIER)
     + '\n本机仅可使用列出的 read 与 calculate；没有搜索、Python、MCP、文件写入或其他宿主工具。不要声称调用它们。Skill相对参考路径需按其目录补全为 /skills/... 路径。\n'
-    + (input.role === 'solver' ? JSON.stringify(skills) : '') + '\nJSON Schema:\n' + JSON.stringify(z.toJSONSchema(input.role === 'solver' ? solverSchema : VerificationSchema)) },
+    + (input.role === 'solver' ? JSON.stringify(skills) : '') + preloadExamResources(input.exam) + '\nJSON Schema:\n' + JSON.stringify(z.toJSONSchema(input.role === 'solver' ? solverSchema : VerificationSchema)) },
     toolExecution: 'sequential',
     streamFn: (_model, context, options) => {
       // The agent omits reasoning when thinking is off, so any value here is a real effort.
@@ -92,8 +113,9 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
       try { if (input.role === 'solver') budget.reserveModel(controller.signal); else budget.reserveVerifier(controller.signal); }
       catch (error) { failure = error; throw error; }
       attemptNumber++; requestStarted = performance.now(); firstTokenMs = undefined; diagnostic({ event: 'request', maxTokens: profile.maxTokens, contextWindow: profile.contextWindow });
-      return stream(model, context, { apiKey: key, fetch: modelTransport(profile, fetch, (status, error) => { if (error) failure = error; diagnostic({ event: error ? 'failure' : 'response', ...(status === null ? {} : { httpStatus: status }), ...(error ? { reason: status === null ? 'network' : 'http' } : {}) }); }), signal: controller.signal, maxTokens: profile.maxTokens, maxRetries: 0, timeoutMs: Math.max(1, Math.floor(budget.remainingMs())), env: {}, ...(effort ? { reasoningEffort: effort } : {}),
-        onPayload: payload => { if (new TextEncoder().encode(JSON.stringify(payload)).length > 7 * 1024 * 1024) throw new SolvePhaseError('INVALID_INPUT'); return payload; } });
+      const streamOptions = { apiKey: key, fetch: modelTransport(profile, fetch, (status, error) => { if (error) failure = error; diagnostic({ event: error ? 'failure' : 'response', ...(status === null ? {} : { httpStatus: status }), ...(error ? { reason: status === null ? 'network' : 'http' } : {}) }); }), signal: controller.signal, maxTokens: profile.maxTokens, maxRetries: 0, timeoutMs: Math.max(1, Math.floor(budget.remainingMs())), env: {}, ...(effort ? { reasoningEffort: effort } : {}),
+        onPayload: (payload: unknown) => { const value = model.api === 'openai-responses' ? responsePayload(payload) : payload; if (new TextEncoder().encode(JSON.stringify(value)).length > 7 * 1024 * 1024) throw new SolvePhaseError('INVALID_INPUT'); return value; } };
+      return model.api === 'openai-responses' ? streamResponses(model, context, streamOptions) : stream(model, context, streamOptions);
     },
   });
   const timing = () => firstTokenMs === undefined ? {} : { firstTokenMs };
@@ -147,9 +169,12 @@ export async function solveOnDevice(input: SolverInput, settingsValue: LocalSett
   return solve(input, (value, budget, phaseSignal) => phase(value, budget, phaseSignal, settings, keys, fetch, onDiagnostic, schedule), new RunBudget(), signal, onEvent);
 }
 export async function testModelConnection(profile: LocalModelProfile, key: string, fetch: LocalFetch, signal: AbortSignal): Promise<void> {
-  const model = mobileModel(profile);
+  profile = LocalSettingsSchema.shape.solver.parse(profile);
+  const model = profile.api === 'openai-responses' ? responsesModel(profile) : mobileModel(profile);
   // The connection test uses the same thinking setting as solving, so a rejected parameter surfaces here.
   const level = thinkingLevelOf(profile);
-  const result = await stream(model, { messages: [{ role: 'user', content: '请只回复 OK。', timestamp: Date.now() }] }, { apiKey: LocalKeySchema.parse(key), fetch: modelTransport(profile, fetch), signal, maxTokens: 64, maxRetries: 0, timeoutMs: 15000, env: {}, ...(level === 'off' ? {} : { reasoningEffort: level }) }).result();
+  const context = { messages: [{ role: 'user' as const, content: '请只回复 OK。', timestamp: Date.now() }] };
+  const options = { apiKey: LocalKeySchema.parse(key), fetch: modelTransport(profile, fetch), signal, maxTokens: 64, maxRetries: 0, timeoutMs: 15000, env: {}, ...(level === 'off' ? {} : { reasoningEffort: level }) };
+  const result = await (model.api === 'openai-responses' ? streamResponses(model, context, options) : stream(model, context, options)).result();
   if (result.stopReason !== 'stop' || !result.content.some(part => part.type === 'text' && part.text.trim())) throw new Error('连接测试失败，请检查地址、密钥、模型名及协议兼容性。');
 }

@@ -1,12 +1,11 @@
-/** Holds one existing solve's JS lifecycle; never starts or replays a solve. */
+/** Holds bounded existing jobs; never starts or replays a solve. */
 export class BackgroundLifetime {
-  private current: { id: string; done: Promise<void>; finish: () => void } | null = null;
+  private readonly current = new Map<string, { done: Promise<void>; finish: () => void }>();
   begin(id: string) {
-    if (this.current) throw new Error('已有后台任务。');
+    if (this.current.has(id) || this.current.size >= 4) throw new Error('后台任务重复或超限。');
     let finish = () => {};
-    const done = new Promise<void>(resolve => { finish = resolve; });
-    this.current = { id, done, finish };
+    const done = new Promise<void>(resolve => { finish = resolve; }); this.current.set(id, { done, finish });
   }
-  wait(id: string): Promise<void> { return this.current?.id === id ? this.current.done : Promise.resolve(); }
-  end(id: string) { if (this.current?.id === id) { const { finish } = this.current; this.current = null; finish(); } }
+  wait(id: string): Promise<void> { return this.current.get(id)?.done ?? Promise.resolve(); }
+  end(id: string) { const entry = this.current.get(id); if (entry) { this.current.delete(id); entry.finish(); } }
 }

@@ -10,6 +10,7 @@ if (Platform.OS === 'android') AppRegistry.registerHeadlessTask('SolveFlowActive
 let nextTimer = 0;
 const moduleSchema = z.object({ armTimer: z.custom<(id: number, ms: number) => void>(v => typeof v === 'function'), cancelTimer: z.custom<(id: number) => void>(v => typeof v === 'function'), start: z.custom<(id: string) => Promise<void>>(v => typeof v === 'function'), stop: z.custom<(id: string) => Promise<void>>(v => typeof v === 'function'), diagnostic: z.custom<(value: string) => void>(v => typeof v === 'function'), addListener: z.custom<(name: string) => void>(v => typeof v === 'function'), removeListeners: z.custom<(count: number) => void>(v => typeof v === 'function') });
 function native() { return moduleSchema.parse(NativeModules.SolveBackground); }
+let notificationPermission: Promise<unknown> | null = null;
 export const background = {
   scheduleTimeout(callback: () => void, ms: number) {
     if (Platform.OS !== 'android') { const id = setTimeout(callback, ms); return () => clearTimeout(id); }
@@ -20,7 +21,7 @@ export const background = {
   },
   async start(id: string) {
     if (Platform.OS !== 'android') return;
-    if (Number(Platform.Version) >= 33 && !await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS)) await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+    if (Number(Platform.Version) >= 33) { notificationPermission ??= PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS).then(async granted => { if (!granted) await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS); }); await notificationPermission; }
     lifetime.begin(id);
     try { await native().start(id); } catch (error) { lifetime.end(id); throw error; }
   },

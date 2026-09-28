@@ -29,7 +29,7 @@ export function CameraPreview({ ref, facing, onReady, onError }: CameraPreviewPr
     const context = canvas.getContext('2d'); if (!context) throw new Error('CAMERA_CAPTURE_FAILED');
     context.drawImage(element, 0, 0, canvas.width, canvas.height);
     const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('CAMERA_CAPTURE_FAILED')), 'image/jpeg', .95));
-    return { uri: URL.createObjectURL(blob), width: canvas.width, height: canvas.height, owned: true };
+    return { uri: URL.createObjectURL(blob), width: canvas.width, height: canvas.height, blob, owned: true };
   } }), []);
   return <video ref={video} autoPlay muted playsInline aria-label="相机预览" onCanPlay={() => callbacks.current.onReady()} onError={() => callbacks.current.onError()} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', background: '#172338' }} />;
 }

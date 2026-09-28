@@ -9,7 +9,8 @@
 .answer-document .math-block,.answer-document .answer-table-scroll { width:100%; max-width:100%; min-width:0; overflow-x:auto; padding:4px 2px; overscroll-behavior-x:contain; -webkit-overflow-scrolling:touch; }
 .answer-document .math-block .katex-display { margin:.4em 0; text-align:left; width:max-content; min-width:100%; }
 .answer-document .math-block .katex-display>.katex { text-align:left; }
-.answer-document .math-inline { display:inline-block; max-width:100%; overflow-x:auto; vertical-align:middle; }
+.answer-document .math-inline { display:inline-flex; max-width:100%; overflow-x:auto; vertical-align:baseline; }
+.answer-document .math-inline>.katex { flex:none; }
 .answer-document .answer-code { white-space:pre-wrap; overflow-wrap:anywhere; }
 .answer-document .math-fallback { white-space:pre-wrap; color:var(--sf-warning); }
 .answer-document .answer-image { display:block; max-width:100%; height:auto; }
@@ -116,3 +117,8 @@
 .answer-document .choice-text p:first-child { margin-top:0; }
 .answer-document .choice-text p:last-child { margin-bottom:0; }
 .answer-document .answer-explanation { min-width:0; }
+
+
+/* Prose and controls inherit the device font. Mathematical glyphs retain
+   KaTeX's metric-compatible fonts; replacing those breaks TeX layout. */
+.answer-document .katex { font-size:1em; }

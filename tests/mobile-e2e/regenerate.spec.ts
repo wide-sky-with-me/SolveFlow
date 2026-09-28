@@ -4,6 +4,7 @@ import { SessionViewSchema } from '../../packages/contracts/src/http.js';
 import { seedLocalSession, configureLocalModel, modelSse, modelPass, lastModelInput } from './local-fixture.js';
 const id = (n: number) => `30000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 for (const mode of ['single', 'multi'] as const) test(`${mode} regeneration preserves old work, scopes the question, blocks duplicates and retries failure`, async ({ page }) => {
+  await page.clock.install({ time: Date.now() });
   const now = new Date().toISOString(); const image = await page.screenshot({ type: 'jpeg' });
   const problem = { text: '乙题完整条件', subject: 'math', uncertainties: [] };
   const candidate = { schemaVersion: 1, kind: 'answer', problem, answer: '旧的不完整解答', steps: [{ id: 'a', title: '甲步骤', explanation: '甲题私有条件' }, { id: 'b', title: '乙步骤', explanation: '乙题条件' }], questions: mode === 'multi' ? [{ number: 1, answer: '甲题原答案', stepIds: ['a'], figureIds: [], problem: { ...problem, text: '甲题私有条件' } }, { number: 2, answer: '旧的不完整解答', stepIds: ['b'], figureIds: [], problem }] : undefined, knowledgePoints: [], citationIds: [], clarificationQuestions: [] };
@@ -45,7 +46,12 @@ for (const mode of ['single', 'multi'] as const) test(`${mode} regeneration pres
     }
     await page.reload(); await configureLocalModel(page); if (mode === 'multi') await page.getByRole('tab', { name: '跳转第2题', exact: true }).click();
     await expect(thread.getByText('重新计算后的完整答案', { exact: true })).toBeVisible();
+    // Keep wall time advancing: RN Web animations use Date.now(), including after reload.
+    const shifted = await page.evaluate(() => Date.now()) - 60_000;
+    await page.clock.setSystemTime(shifted);
+    await expect.poll(() => page.evaluate(() => Date.now())).toBeGreaterThan(shifted);
     await action.click();
+    await expect.poll(() => posted.length, { message: '重新解答按钮应发起第二次模型请求' }).toBe(2);
     await expect(thread.getByRole('heading', { name: '这次没能完成解题' })).toBeVisible();
     await thread.getByRole('button', { name: '诊断详情', exact: true }).click();
     await expect(page.getByText(/HTTP 503/)).toBeVisible();

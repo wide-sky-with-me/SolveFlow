@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { latestVersionedApk, verifySigningContinuity } from './native-build-config.mjs';
 
 /** Post-build verification: signature continuity, version metadata, private-value scan,
  * and the resources the on-device document actually needs. Writes a report and archives
@@ -45,9 +46,8 @@ if (!version || !versionCode) throw new Error('无法从 app.config.ts 读取版
 await stat(apk);
 
 const digest = certificate(apk);
-const entries = (await readdir(artifacts)).filter(name => /^solveflow-arm64-local-[\d.]+\.apk$/.test(name)).sort();
-const previous = entries.at(-1);
-const sameCertificateAsPrevious = previous ? certificate(resolve(artifacts, previous)) === digest : false;
+const previous = latestVersionedApk(await readdir(artifacts));
+const sameCertificateAsPrevious = verifySigningContinuity(digest, previous ? certificate(resolve(artifacts, previous)) : null);
 
 const badging = execFileSync(tool('aapt'), ['dump', 'badging', apk], { encoding: 'utf8' });
 if (!badging.includes(`versionCode='${versionCode}'`) || !badging.includes(`versionName='${version}'`)) throw new Error(`APK 版本与 app.config.ts 不一致（期望 ${version}/${versionCode}）。`);

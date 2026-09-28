@@ -5,6 +5,7 @@ export interface CameraHandle { takePictureAsync(): Promise<Photo> }
 export interface CameraPreviewProps {
   ref?: Ref<CameraHandle>;
   facing: 'back' | 'front';
+  lockFocus?: boolean;
   onReady: () => void;
   onError: () => void;
 }

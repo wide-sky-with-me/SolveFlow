@@ -23,24 +23,29 @@ export async function recoverPhoto(): Promise<Photo | null> {
   return result.canceled || !result.assets[0] ? null : fromAsset(result.assets[0]);
 }
 export async function transformPhoto(photo: Photo, crop?: Crop, rotate = false, maxDimension = 2048): Promise<Photo> {
-  if (!Number.isInteger(maxDimension) || maxDimension < 1 || maxDimension > maxDimension) throw new Error('图片尺寸无效。');
+  if (!Number.isInteger(maxDimension) || maxDimension < 1 || maxDimension > 2048) throw new Error('图片尺寸无效。');
   cropPixels(crop ?? { left: 0, top: 0, right: 100, bottom: 100 }, photo.width, photo.height);
-  const context = ImageManipulator.manipulate(photo.uri);
+  const context = ImageManipulator.manipulate(photo.nativeImage ?? photo.uri);
   try {
     if (crop) context.crop(cropPixels(crop, photo.width, photo.height));
     if (rotate) context.rotate(90);
-    const interim = await context.renderAsync();
+    // Camera references already contain oriented pixels and accurate dimensions.
+    // URI inputs still read decoded dimensions (including EXIF orientation).
+    const interim = photo.nativeImage ? null : await context.renderAsync();
     try {
-      if (Math.max(interim.width, interim.height) > maxDimension) context.resize(interim.width >= interim.height ? { width: maxDimension } : { height: maxDimension });
-    } finally { interim.release(); }
+      const box = cropPixels(crop ?? { left: 0, top: 0, right: 100, bottom: 100 }, photo.width, photo.height);
+      const width = interim?.width ?? (rotate ? box.height : box.width);
+      const height = interim?.height ?? (rotate ? box.width : box.height);
+      if (Math.max(width, height) > maxDimension) context.resize(width >= height ? { width: maxDimension } : { height: maxDimension });
+    } finally { interim?.release(); }
     const image = await context.renderAsync();
     try { const result = await image.saveAsync({ format: SaveFormat.JPEG, compress: .92 }); return { uri: result.uri, width: result.width, height: result.height, owned: true }; }
     finally { image.release(); }
   } finally { context.release(); }
 }
 export async function photoBody(photo: Photo) { const file = new File(photo.uri); if (file.size > 10 * 1024 * 1024) throw new Error('图片超过10MB，请先裁切。'); const form = new FormData(); form.append('file', file, 'problem.jpg'); return form; }
-export function releasePhoto(photo: Photo | null) { if (!photo?.owned || !photo.uri.startsWith(Paths.cache.uri)) return; const file = new File(photo.uri); if (file.exists) file.delete(); }
+export function releasePhoto(photo: Photo | null) { if (!photo?.owned) return; photo.nativeImage?.release(); if (!photo.uri.startsWith(Paths.cache.uri)) return; const file = new File(photo.uri); if (file.exists) file.delete(); }
 export async function samplePhoto(blob: Blob): Promise<Photo> { const file = new File(Paths.cache, `solveflow-sample-${Date.now()}.png`); file.write(new Uint8Array(await blob.arrayBuffer())); const size = await Image.getSize(file.uri); return { uri: file.uri, width: size.width, height: size.height, owned: true }; }
 export function initialSession() { return store.get('local-last-session'); }
 export function rememberSession(id: string | null) { return id ? store.set('local-last-session', id) : store.remove('local-last-session'); }
-export async function photoData(photo: Photo): Promise<string> { const bytes = await new File(photo.uri).bytes(); if (bytes.length > 4 * 1024 * 1024) throw new Error('图片超过4MB，请进一步裁切。'); let text = ''; for (let i = 0; i < bytes.length; i += 8192) text += String.fromCharCode(...bytes.subarray(i, i + 8192)); return `data:image/jpeg;base64,${btoa(text)}`; }
+export async function photoData(photo: Photo): Promise<string> { const file = new File(photo.uri); if (file.size > 4 * 1024 * 1024) throw new Error('图片超过4MB，请进一步裁切。'); return `data:image/jpeg;base64,${await file.base64()}`; }

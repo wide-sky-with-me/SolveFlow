@@ -1,0 +1,76 @@
+diff --git a/android/barcode-disabled.pro b/android/barcode-disabled.pro
+new file mode 100644
+index 0000000000000000000000000000000000000000..8d1b4ac8f48d50a5faabacd3fea42cd6f6be2e01
+--- /dev/null
++++ b/android/barcode-disabled.pro
+@@ -0,0 +1,30 @@
++# Barcode dependencies are compileOnly when explicitly disabled.
++# CameraUtils.isMLKitBarcodeScannerAvailable() and the scanner entrypoints
++# guard these optional classes; keep all other missing-class diagnostics enabled.
++-dontwarn com.google.android.gms.tasks.OnCanceledListener
++-dontwarn com.google.android.gms.tasks.OnCompleteListener
++-dontwarn com.google.android.gms.tasks.OnFailureListener
++-dontwarn com.google.android.gms.tasks.OnSuccessListener
++-dontwarn com.google.android.gms.tasks.Task
++-dontwarn com.google.mlkit.vision.barcode.BarcodeScanner
++-dontwarn com.google.mlkit.vision.barcode.BarcodeScannerOptions$Builder
++-dontwarn com.google.mlkit.vision.barcode.BarcodeScannerOptions
++-dontwarn com.google.mlkit.vision.barcode.BarcodeScanning
++-dontwarn com.google.mlkit.vision.barcode.common.Barcode$Address
++-dontwarn com.google.mlkit.vision.barcode.common.Barcode$CalendarDateTime
++-dontwarn com.google.mlkit.vision.barcode.common.Barcode$CalendarEvent
++-dontwarn com.google.mlkit.vision.barcode.common.Barcode$ContactInfo
++-dontwarn com.google.mlkit.vision.barcode.common.Barcode$DriverLicense
++-dontwarn com.google.mlkit.vision.barcode.common.Barcode$Email
++-dontwarn com.google.mlkit.vision.barcode.common.Barcode$GeoPoint
++-dontwarn com.google.mlkit.vision.barcode.common.Barcode$PersonName
++-dontwarn com.google.mlkit.vision.barcode.common.Barcode$Phone
++-dontwarn com.google.mlkit.vision.barcode.common.Barcode$Sms
++-dontwarn com.google.mlkit.vision.barcode.common.Barcode$UrlBookmark
++-dontwarn com.google.mlkit.vision.barcode.common.Barcode$WiFi
++-dontwarn com.google.mlkit.vision.barcode.common.Barcode
++-dontwarn com.google.mlkit.vision.codescanner.GmsBarcodeScanner
++-dontwarn com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions$Builder
++-dontwarn com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
++-dontwarn com.google.mlkit.vision.codescanner.GmsBarcodeScanning
++-dontwarn com.google.mlkit.vision.common.InputImage
+diff --git a/android/build.gradle b/android/build.gradle
+index 944fbf8ecf22f5567857b471c1f68a4793d66976..5f096f99d6c88cd0f878ad91a1bdd8011ca8b7dd 100644
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -14,6 +14,9 @@ android {
+   defaultConfig {
+     versionCode 32
+     versionName "57.0.5"
++    if (!isBarcodeScannerEnabled) {
++      consumerProguardFiles "barcode-disabled.pro"
++    }
+   }
+ }
+ 
+diff --git a/android/src/main/java/expo/modules/camera/ExpoCameraView.kt b/android/src/main/java/expo/modules/camera/ExpoCameraView.kt
+index 999a22c6a679042e144acb6caa764c9929103966..e3c51e1400dc047861fbab7439fad392503e70c4 100644
+--- a/android/src/main/java/expo/modules/camera/ExpoCameraView.kt
++++ b/android/src/main/java/expo/modules/camera/ExpoCameraView.kt
+@@ -537,6 +537,9 @@ class ExpoCameraView(
+     }
+     // Set the previous zoom level after recreating the camera
+     setCameraZoom(zoom)
++    if (autoFocus == FocusMode.ON) {
++      startFocusMetering()
++    }
+     this.cameraProvider = cameraProvider
+   }
+ 
+@@ -637,9 +640,10 @@ class ExpoCameraView(
+         previewView.height.toFloat()
+       )
+       val action = FocusMeteringAction.Builder(
+-        meteringPointFactory.createPoint(1f, 1f),
++        meteringPointFactory.createPoint(previewView.width / 2f, previewView.height / 2f),
+         FocusMeteringAction.FLAG_AF
+       )
++        .disableAutoCancel()
+         .build()
+       it.cameraControl.startFocusAndMetering(action)
+     }

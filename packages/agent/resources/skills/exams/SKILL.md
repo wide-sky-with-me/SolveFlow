@@ -5,9 +5,9 @@ description: SAT、ACT与AP课程考试专项作答；依据明确考试来源�
 
 # SAT / ACT / AP 专项方法
 
-只在原题、标题或用户补充明确考试时采用其专属规则；普通英文课程题不能自动认定为某种考试。看得到的原题指令、版本和科目优先；缺少影响答案的材料、选项或限定条件才澄清，不追问无关年份。保持problem.subject为数学、英语等学科，不写SAT/ACT/AP。
+只在原题、标题、用户补充或用户选择的exam明确考试时采用其专属规则；普通英文课程题不能自动认定为某种考试。看得到的原题指令、版本和科目优先；缺少影响答案的材料、选项或限定条件才澄清，不追问无关年份。保持problem.subject为数学、英语等学科，不写SAT/ACT/AP。
 
-来源已明确时，作答前必须读取本目录一个对应参考：SAT → references/sat.md；ACT → references/act.md；AP → references/ap.md。参考方法足够时直接求解；仅遇到尚未覆盖的方法才按需组合math、physics、chemistry、biology、economics或general，不能因学科名自动多读一套。已知本题考试时，本正文和对应参考在同一轮read请求中读取，不逐轮探索已知路径。相对路径按当前SKILL的目录解析，使用实际read支持的完整路径。
+来源已明确时，作答前必须取得本目录一个对应参考（本轮由应用完整提供的正文与参考可直接使用，无需重复read）：SAT → references/sat.md；ACT → references/act.md；AP → references/ap.md。参考方法足够时直接求解；仅遇到尚未覆盖的方法才按需组合math、physics、chemistry、biology、economics或general，不能因学科名自动多读一套。已知本题考试时，本正文和对应参考在同一轮read请求中读取，不逐轮探索已知路径。相对路径按当前SKILL的目录解析，使用实际read支持的完整路径。
 
 ## 共用核对
 

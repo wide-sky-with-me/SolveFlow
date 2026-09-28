@@ -68,15 +68,23 @@ try {
       else console.log('原生工程未变化，跳过 prebuild（app.config.ts / plugins / assets 均早于 android/app/build.gradle）。');
       await tuneGradleMemory();
       // Gradle can keep the Metro bundle task up to date while the generated agent bundle changed;
-      // drop the stale artifact so the packaged prompts always match the reviewed sources.
-      const bundleArtifact = resolve(app, 'android/app/build/generated/assets/react/release/index.android.bundle');
-      try {
-        const generated = Math.max((await stat(resolve(app, '.generated/agent.mjs'))).mtimeMs, (await stat(resolve(app, '.generated/katex.css'))).mtimeMs);
-        if (generated > (await stat(bundleArtifact)).mtimeMs) { await rm(bundleArtifact, { force: true }); console.log('生成的解题资源比打包产物新，已删除旧 bundle 以强制重新打包。'); }
-      } catch { /* A missing bundle is rebuilt by Gradle. */ }
+      // Drop the entire task-owned assets directory: removing only the Hermes file
+      // leaves obsolete hashed DOM entry scripts in the next APK.
+      const bundleDirectory = resolve(app, 'android/app/build/generated/assets/react/release');
+      const bundleArtifact = resolve(bundleDirectory, 'index.android.bundle');
+      const generated = Math.max((await stat(resolve(app, '.generated/agent.mjs'))).mtimeMs, (await stat(resolve(app, '.generated/katex.css'))).mtimeMs);
+      let bundledAt = 0;
+      try { bundledAt = (await stat(bundleArtifact)).mtimeMs; }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (generated > bundledAt) {
+        await rm(bundleDirectory, { recursive: true, force: true });
+        console.log('已清理旧 bundle 和 DOM 资源以强制重新打包，避免重试构建遗留过期脚本。');
+      }
       // The Gradle daemon and parallel workers are reused across local builds; set
       // SOLVEFLOW_GRADLE_NO_DAEMON=1 for a one-shot CI-style run.
-      const gradle = ['assembleRelease', '--console=plain', `--max-workers=${Math.max(2, Math.min(8, cpus().length - 2))}`, '-PreactNativeArchitectures=arm64-v8a'];
+      // Direct APK distribution benefits from compressed .so files. Keep Expo's
+      // default mmap-friendly packaging for store AABs and Hermes startup.
+      const gradle = ['assembleRelease', '--console=plain', `--max-workers=${Math.max(2, Math.min(8, cpus().length - 2))}`, '-PreactNativeArchitectures=arm64-v8a', '-Pexpo.useLegacyPackaging=true'];
       if (process.env.SOLVEFLOW_GRADLE_NO_DAEMON === '1') gradle.push('--no-daemon');
       await run(resolve(app, 'android/gradlew'), gradle, resolve(app, 'android'));
       const source = resolve(app, 'android/app/build/outputs/apk/release/app-release.apk'); await stat(source);
@@ -85,6 +93,9 @@ try {
       const checksum = createHash('sha256').update(await readFile(target)).digest('hex');
       await writeFile(`${target}.sha256`, `${checksum}  ${name}\n`);
       await run(process.execPath, ['scripts/check-apk.mjs', target]);
+      // R8 stack traces need the mapping from the exact build, kept outside Git.
+      const report = JSON.parse(await readFile(resolve(directory, 'android-local-build-report.json'), 'utf8'));
+      await copyFile(resolve(app, 'android/app/build/outputs/mapping/release/mapping.txt'), resolve(directory, `solveflow-arm64-local-${report.version}-${checksum.slice(0, 12)}-mapping.txt`));
       console.log(`APK已生成：${target}\nARM64内部测试签名，不是商店发布签名；首次打开请在设置中填写模型服务，含JS、Skill和公式资源，不依赖Metro或SolveFlow后端。`);
     }
   }

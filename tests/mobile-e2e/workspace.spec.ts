@@ -22,9 +22,15 @@ test('RN Web local photo → Pi → follow-up → reload → delete', async ({ p
   await expect(page.getByLabel('知识点', { exact: true })).toBeVisible();
   await expect(page.locator('.problem-heading').getByRole('button', { name: '查看原图' })).toBeVisible();
   await page.getByRole('button', { name: '查看原图' }).click(); await expect(page.getByRole('img', { name: '原始题图大图' })).toBeVisible();
-  await page.getByRole('button', { name: '放大查看', exact: true }).click();
-  expect(await page.getByRole('img', { name: '原始题图大图' }).evaluate(node => node.getBoundingClientRect().width)).toBeGreaterThanOrEqual(900);
-  await page.getByRole('button', { name: '适应屏幕' }).click(); await page.getByRole('button', { name: '关闭大图' }).click();
+  await page.getByTestId('image-zoom-viewport').click({ trial: true });
+  const picture = page.getByRole('img', { name: '原始题图大图' });
+  const fittedWidth = await picture.evaluate(node => node.getBoundingClientRect().width);
+  await page.getByRole('button', { name: '放大', exact: true }).click();
+  await expect(page.getByTestId('image-zoom-scale')).toHaveText('150%');
+  await expect.poll(() => picture.evaluate(node => node.getBoundingClientRect().width)).toBeCloseTo(fittedWidth * 1.5, 0);
+  await page.getByRole('button', { name: '适应屏幕' }).click();
+  await expect(page.getByTestId('image-zoom-scale')).toHaveText('100%');
+  await page.getByRole('button', { name: '关闭大图' }).click();
   await page.getByLabel('继续问这道题').fill('为什么要减去3？'); await page.getByRole('button', { name: '发送同题追问' }).click();
   await expect(page.getByRole('heading', { name: '追问解答' })).toBeVisible({ timeout: 20000 });
   await page.reload(); await expect(page.getByRole('heading', { name: '追问解答' })).toBeVisible();

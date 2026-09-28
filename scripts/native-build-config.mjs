@@ -16,3 +16,17 @@ export function androidRequirements(root, catalog) {
   const files = [`platforms/android-${version('compileSdk')}/android.jar`, `build-tools/${version('buildTools')}/aapt`, `ndk/${version('ndkVersion')}/source.properties`, 'cmake/3.22.1/bin/cmake', 'platform-tools/adb'];
   return { packages, missing: files.filter(file => !existsSync(resolve(root, file))) };
 }
+
+export function latestVersionedApk(names) {
+  const versions = names.flatMap(name => {
+    const match = /^solveflow-arm64-local-(\d+)\.(\d+)\.(\d+)\.apk$/.exec(name);
+    return match ? [{ name, parts: match.slice(1).map(Number) }] : [];
+  });
+  versions.sort((a, b) => a.parts[0] - b.parts[0] || a.parts[1] - b.parts[1] || a.parts[2] - b.parts[2]);
+  return versions.at(-1)?.name ?? null;
+}
+export function verifySigningContinuity(current, previous) {
+  if (previous === null) return false;
+  if (current !== previous) throw new Error('APK 签名与最新归档版本不一致，无法保留数据覆盖安装；已停止归档。');
+  return true;
+}

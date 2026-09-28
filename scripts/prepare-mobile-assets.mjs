@@ -16,6 +16,6 @@ for (const match of [...css.matchAll(/src:([^}]+?)(?=;?})/g)]) {
 if (/url\(["']?fonts\//.test(css)) throw new Error('UNBUNDLED_KATEX_FONT');
 await mkdir(resolve(app, '.generated'), { recursive: true });
 await writeFile(resolve(app, '.generated/katex.css'), css);
-console.log('Prepared local KaTeX styles and fonts.');
+console.log('Prepared local KaTeX fonts; prose follows the device font.');
 
 await import('./bundle-mobile-agent.mjs');

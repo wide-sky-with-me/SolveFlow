@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { LocalRecordSchema, LocalDiagnosticSchema, type LocalDiagnostic, type LocalRecord } from '@solveflow/contracts/local';
+import { MAX_LOCAL_RECORDS, BATCH_CONCURRENCY, LocalBatchSchema, type LocalBatch, LocalRecordSchema, LocalDiagnosticSchema, type LocalDiagnostic, type LocalRecord, type ExamType } from '@solveflow/contracts/local';
 import { isAuxiliaryContext, RunContextSchema, projectQuestionRun, questionThreadHistory, terminal, type RunContext, type RunView } from '@solveflow/contracts/http';
 import { SolveOutcomeSchema, makeSafeAgentError, type SolverInput, type PublicAgentEvent, type SolveOutcome } from '@solveflow/contracts/agent';
 import { LocalRepository } from './local-repository.js';
@@ -10,24 +10,31 @@ type ActiveRun = { run: RunView; controller: AbortController; done: Promise<void
 const MAX_AUXILIARY = 3;
 export class LocalEngine {
   private current: ActiveRun | null = null;
+  private readonly batchRuns = new Map<string, ActiveRun>();
   private readonly auxiliary = new Map<string, ActiveRun>();
   /** Preparation and result writes are serialized; executions overlap afterwards. */
   private queue: Promise<unknown> = Promise.resolve();
+  private deleting = false;
   private listeners = new Set<(run: RunView) => void>();
   private errors = new Set<(message: string) => void>();
   constructor(readonly repository: LocalRepository, private readonly uuid: () => string, private readonly background?: { start: (runId: string) => Promise<void>; stop: (runId: string) => Promise<void>; diagnostic?: (entry: LocalDiagnostic) => void }) {}
-  get active() { return this.current?.run ?? null; }
+  get active() { return this.current?.run ?? this.batchRuns.values().next().value?.run ?? null; }
   /** Every in-flight run, conversation first, so the UI can merge them into the stored session. */
-  get actives(): RunView[] { return [...(this.current ? [this.current.run] : []), ...[...this.auxiliary.values()].map(item => item.run)]; }
+  get actives(): RunView[] { return [...(this.current ? [this.current.run] : []), ...[...this.batchRuns.values(), ...this.auxiliary.values()].map(item => item.run)]; }
   subscribe(listener: (run: RunView) => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   onError(listener: (message: string) => void) { this.errors.add(listener); return () => { this.errors.delete(listener); }; }
-  async create(image: string, width: number, height: number): Promise<LocalRecord> {
-    if ((await this.repository.list()).length >= 100) throw new Error('已保存100道题，请删除不需要的题目后继续。');
+  async create(image: string, width: number, height: number, exam: ExamType = 'general', batch?: LocalBatch): Promise<LocalRecord> {
+    if (this.deleting) throw new Error('正在删除历史，请稍候。');
+    return this.lock(async () => {
+    const history = await this.repository.listHistory();
+    if (history.length >= MAX_LOCAL_RECORDS) throw new Error(`已保存${MAX_LOCAL_RECORDS}张题图，请删除不需要的记录后继续。`);
+    if (batch) { LocalBatchSchema.parse(batch); const siblings = history.filter(row => row.batch?.id === batch.id); if (siblings.some(row => row.batch?.position === batch.position)) throw new Error('批量序号已存在。'); if (batch.exam !== exam) throw new Error('批量考试类型不一致。'); }
     const id = this.uuid(); const createdAt = new Date().toISOString();
     const raw = image.split(',')[1] ?? ''; const bytes = Math.floor(raw.length * 3 / 4) - (raw.endsWith('==') ? 2 : raw.endsWith('=') ? 1 : 0);
-    const record = LocalRecordSchema.parse({ schemaVersion: 1, image, session: { schemaVersion: 1, id, subject: 'general', createdAt, runs: [],
+    const record = LocalRecordSchema.parse({ schemaVersion: 1, image, exam, ...(batch ? { batch } : {}), session: { schemaVersion: 1, id, subject: 'general', createdAt, runs: [],
       upload: { schemaVersion: 1, id, mimeType: 'image/jpeg', width, height, bytes, expiresAt: '9999-12-31T00:00:00.000Z', previewUrl: `/api/v1/uploads/${id}/image` } } });
     await this.repository.save(record); return record;
+    });
   }
   private lock<T>(task: () => Promise<T>): Promise<T> {
     const previous = this.queue; let release!: () => void;
@@ -35,11 +42,17 @@ export class LocalEngine {
     return previous.catch(() => {}).then(task).finally(() => release());
   }
   async start(id: string, message: string, context: RunContext | undefined, execute: DeviceSolve): Promise<RunView> {
+    if (this.deleting) throw new Error('正在删除历史，请稍候。');
     const auxiliary = isAuxiliaryContext(context?.kind);
     if (auxiliary) { if (this.auxiliary.size >= MAX_AUXILIARY) throw new Error('同时进行的按需请求过多，请稍候。'); }
-    else if (this.current) throw new Error('请等待当前解题完成，或先取消它。');
+
     return this.lock(async () => {
-      const record = await this.repository.read(id); z.string().max(2000).parse(message); if (context) RunContextSchema.parse(context);
+      const record = await this.repository.read(id);
+      const batch = !!record.batch && !auxiliary;
+      if (auxiliary && (this.auxiliary.size >= MAX_AUXILIARY || this.batchRuns.size)) throw new Error('请等待批量任务或按需请求完成。');
+      if (batch && (this.current || this.auxiliary.size || this.batchRuns.size >= BATCH_CONCURRENCY)) throw new Error('解题并发已满。');
+      if (!auxiliary && !batch && (this.current || this.batchRuns.size)) throw new Error('请等待当前解题完成，或先取消它。');
+      z.string().max(2000).parse(message); if (context) RunContextSchema.parse(context);
       if (record.session.runs.length >= 10) throw new Error('本题已完成10轮对话，请新建题目继续。');
       const pending = record.session.runs.filter(run => !terminal(run.status));
       if (auxiliary) {
@@ -55,13 +68,14 @@ export class LocalEngine {
       if (context?.kind === 'verification' && record.session.runs.some(run => run.context?.kind === 'verification' && run.context.sourceRunId === context.sourceRunId && run.context.number === context.number && (run.outcome?.status === 'completed' || run.outcome?.status === 'needs_clarification'))) throw new Error('VERIFICATION_ALREADY_SAVED');
       const learning = resolveLearningContext(record.session.runs, context ?? null);
       const history = conversationHistory(context ? questionThreadHistory(record.session.runs, context) : record.session.runs, learning.focus ? 4096 : 12288);
+      // Decode before persisting or reserving a slot: corrupt saved photos must not strand queued work.
+      const binary = atob(record.image.slice(record.image.indexOf(',') + 1)); const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
       const run: RunView = { schemaVersion: 1, id: this.uuid(), sessionId: id, status: 'queued', message, createdAt: new Date().toISOString(), seq: 0, outcome: null, ...(context ? { context } : {}) };
       record.session.runs.push(run); await this.repository.save(record);
       const controller = new AbortController();
       const active: ActiveRun = { run, controller, done: Promise.resolve(), cancellation: 'user' };
-      if (auxiliary) this.auxiliary.set(run.id, active); else this.current = active;
-      const binary = atob(record.image.slice(record.image.indexOf(',') + 1)); const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
-      const input: SolverInput = { schemaVersion: 1, role: 'solver', identity: { ownerId: 'local-device', sessionId: id, runId: run.id }, message, image: { bytes, mimeType: 'image/jpeg' }, evidence: [], ...learning, history, verificationMode: 'manual', ...(target?.status === 'completed' ? { verificationTarget: target.candidate } : {}), answerMode: context && ['explanation', 'step', 'knowledge', 'knowledge-list'].includes(context.kind) ? 'detailed' : 'brief' };
+      if (auxiliary) this.auxiliary.set(run.id, active); else if (batch) this.batchRuns.set(run.id, active); else this.current = active;
+      const input: SolverInput = { schemaVersion: 1, role: 'solver', exam: record.exam ?? 'general', identity: { ownerId: 'local-device', sessionId: id, runId: run.id }, message, image: { bytes, mimeType: 'image/jpeg' }, evidence: [], ...learning, history, verificationMode: batch ? 'automatic' : 'manual', ...(target?.status === 'completed' ? { verificationTarget: target.candidate } : {}), answerMode: context && ['explanation', 'step', 'knowledge', 'knowledge-list'].includes(context.kind) ? 'detailed' : 'brief' };
       const publish = () => { for (const listener of this.listeners) listener({ ...active.run }); };
       publish();
       const entries: LocalDiagnostic[] = []; let writes = Promise.resolve();
@@ -86,28 +100,66 @@ export class LocalEngine {
         if (controller.signal.aborted) outcome = { schemaVersion: 1, status: active.cancellation === 'deadline' ? 'failed' : 'cancelled', verified: false, error: makeSafeAgentError(active.cancellation === 'deadline' ? 'RUN_TIMEOUT' : 'CANCELLED', run.id) };
         lifecycle(controller.signal.aborted ? active.cancellation === 'deadline' ? 'deadline' : 'cancelled' : outcome.status === 'failed' ? 'failed' : 'completed');
         await writes;
-        active.run = { ...active.run, status: outcome.status, outcome, seq: active.run.seq + 1 };
         try {
           // Re-read under the lock: concurrent runs may have appended their own records meanwhile.
           await this.lock(async () => {
             const latest = await this.repository.read(id);
-            const replaced = latest.session.runs.map(value => value.id === run.id ? active.run : value);
-            latest.session.runs = replaced.some(value => value.id === run.id) ? replaced : [...replaced, active.run];
-            if (outcome.status === 'completed' || outcome.status === 'needs_clarification') latest.session.subject = outcome.candidate.problem.subject;
-            await this.repository.save(latest);
+            const subject = latest.session.subject;
+            const applyCancellation = () => {
+              if (!controller.signal.aborted) return false;
+              const status = active.cancellation === 'deadline' ? 'failed' : 'cancelled';
+              const code = active.cancellation === 'deadline' ? 'RUN_TIMEOUT' : 'CANCELLED';
+              if (outcome.status === status && 'error' in outcome && outcome.error.code === code) return false;
+              lifecycle(active.cancellation === 'deadline' ? 'deadline' : 'cancelled');
+              outcome = { schemaVersion: 1, status, verified: false, error: makeSafeAgentError(code, run.id) };
+              return true;
+            };
+            const persist = async () => {
+              const finalRun = { ...active.run, status: outcome.status, outcome, seq: active.run.seq + 1 };
+              const replaced = latest.session.runs.map(value => value.id === run.id ? finalRun : value);
+              latest.session.runs = replaced.some(value => value.id === run.id) ? replaced : [...replaced, finalRun];
+              latest.session.subject = outcome.status === 'completed' || outcome.status === 'needs_clarification' ? outcome.candidate.problem.subject : subject;
+              await this.repository.save(latest);
+              return finalRun;
+            };
+            applyCancellation();
+            let saved = await persist();
+            // A storage transaction cannot be aborted here. Correct a cancellation received during
+            // that write before publishing; the first cancellation reason is fixed, so this is bounded.
+            if (applyCancellation()) saved = await persist();
+            active.run = saved;
           });
+          await writes;
           publish();
         } catch { for (const listener of this.errors) listener('解题结果未能保存到本地，请检查存储空间。'); }
-      })().finally(async () => { try { await this.background?.stop(run.id); } catch { for (const listener of this.errors) listener('后台服务未能正常结束，请重新打开应用。'); } finally { if (auxiliary) this.auxiliary.delete(run.id); else if (this.current === active) this.current = null; } });
+      })().finally(async () => { try { await this.background?.stop(run.id); } catch { for (const listener of this.errors) listener('后台服务未能正常结束，请重新打开应用。'); } finally { if (auxiliary) this.auxiliary.delete(run.id); else if (batch) this.batchRuns.delete(run.id); else if (this.current === active) this.current = null; } });
       return active.run;
     });
   }
+  async waitForRun(id: string) { const run = [...(this.current ? [this.current] : []), ...this.batchRuns.values(), ...this.auxiliary.values()].find(item => item.run.id === id); await run?.done; }
+  private abort(run: ActiveRun, reason: 'user' | 'deadline') {
+    if (terminal(run.run.status) || run.controller.signal.aborted) return;
+    run.cancellation = reason; run.controller.abort();
+  }
+  async cancelRun(id: string, reason: 'user' | 'deadline' = 'user') { const run = [...(this.current ? [this.current] : []), ...this.batchRuns.values(), ...this.auxiliary.values()].find(item => item.run.id === id); if (run) { this.abort(run, reason); await run.done; } }
   async cancel(reason: 'user' | 'deadline' = 'user') {
-    const targets = [...(this.current ? [this.current] : []), ...this.auxiliary.values()];
-    for (const item of targets) item.cancellation = reason;
-    for (const item of targets) item.controller.abort();
+    const targets = [...(this.current ? [this.current] : []), ...this.batchRuns.values(), ...this.auxiliary.values()];
+    for (const item of targets) this.abort(item, reason);
     await Promise.all(targets.map(item => item.done));
   }
-  async remove(id: string) { if (this.current?.run.sessionId === id || [...this.auxiliary.values()].some(item => item.run.sessionId === id)) await this.cancel(); await this.repository.remove(id); }
-  async waitForIdle() { await Promise.all([...(this.current ? [this.current] : []), ...this.auxiliary.values()].map(item => item.done)); }
+  async remove(id: string) { return this.deleteRecords(z.uuid().parse(id)); }
+  async removeAll() { return this.deleteRecords(); }
+  private async deleteRecords(id?: string) {
+    if (this.deleting) throw new Error('正在删除历史，请稍候。');
+    this.deleting = true;
+    try {
+      // Finish accepted preparation first; result persistence needs this lock during cancellation.
+      await this.lock(async () => {});
+      const targets = [...(this.current ? [this.current] : []), ...this.batchRuns.values(), ...this.auxiliary.values()].filter(item => !id || item.run.sessionId === id);
+      for (const item of targets) this.abort(item, 'user');
+      await Promise.all(targets.map(item => item.done));
+      await this.lock(() => id ? this.repository.remove(id) : this.repository.removeAll());
+    } finally { this.deleting = false; }
+  }
+  async waitForIdle() { await Promise.all([...(this.current ? [this.current] : []), ...this.batchRuns.values(), ...this.auxiliary.values()].map(item => item.done)); }
 }

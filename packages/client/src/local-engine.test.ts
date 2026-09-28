@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { LocalEngine } from './local-engine.js';
 import { LocalRepository, type LocalDocuments } from './local-repository.js';
 import { makeSafeAgentError, type SolveOutcome } from '@solveflow/contracts/agent';
@@ -135,4 +135,103 @@ it('runs on-demand steps and knowledge beside each other while the conversation 
   expect(saved.session.runs[0]).toEqual(source);
   expect(saved.session.runs[2]?.outcome).toMatchObject({ status: 'completed', candidate: { knowledgePoints: ['等式性质'] } });
   expect(engine.actives).toEqual([]);
+});
+it('persists the exam with each photo and carries it through a reopened question and history export', async () => {
+  const { repository, engine, values } = setup();
+  const sat = await engine.create('data:image/jpeg;base64,AQID', 30, 20, 'sat');
+  const ap = await engine.create('data:image/jpeg;base64,AQID', 30, 20, 'ap');
+  const old = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  const { exam: _exam, ...legacy } = old; values.set(`record.${old.session.id}`, JSON.stringify(legacy));
+  const reopened = new LocalEngine(repository, randomUUID);
+  for (const [id, expected] of [[sat.session.id, 'sat'], [ap.session.id, 'ap'], [old.session.id, 'general']] as const) {
+    await reopened.start(id, '', undefined, async input => { expect(input.exam).toBe(expected); return failure(input.identity.runId); }); await reopened.waitForIdle();
+  }
+  expect((await repository.read(sat.session.id)).exam).toBe('sat');
+  const exported = []; for await (const line of repository.exportHistory(new AbortController().signal)) exported.push(line);
+  expect(exported).toContainEqual(expect.objectContaining({ kind: 'question', record: expect.objectContaining({ exam: 'sat' }) }));
+});
+
+it.each([
+  ['diagnostics', 'user'], ['record-read', 'user'], ['diagnostics', 'deadline'], ['record-read', 'deadline'],
+] as const)('%s persistence preserves a concurrent %s cancellation', async (window, reason) => {
+  const { engine, repository } = setup(); const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  let entered = false; let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  if (window === 'diagnostics') {
+    const save = repository.saveDiagnostics.bind(repository);
+    repository.saveDiagnostics = async (id, entries) => {
+      if (entries.some(entry => entry.reason === 'failed')) { entered = true; await gate; }
+      await save(id, entries);
+    };
+  } else {
+    const read = repository.read.bind(repository); let reads = 0;
+    repository.read = async id => { const record = await read(id); if (++reads === 2) { entered = true; await gate; } return record; };
+  }
+  const run = await engine.start(record.session.id, '', undefined, async input => failure(input.identity.runId));
+  await expect.poll(() => entered).toBe(true);
+  const cancelling = engine.cancelRun(run.id, reason); release(); await cancelling;
+  expect((await repository.read(record.session.id)).session.runs[0]).toMatchObject({ status: reason === 'deadline' ? 'failed' : 'cancelled', outcome: { error: { code: reason === 'deadline' ? 'RUN_TIMEOUT' : 'CANCELLED' } } });
+  expect(await repository.diagnostics(run.id)).toContainEqual(expect.objectContaining({ reason: reason === 'deadline' ? 'deadline' : 'cancelled' }));
+  expect(engine.actives).toEqual([]);
+});
+
+it('rejects malformed saved image data before queuing a run or occupying the conversation slot', async () => {
+  const { engine, repository } = setup();
+  const damaged = await engine.create('data:image/jpeg;base64,AQID=', 30, 20);
+  let calls = 0;
+  await expect(engine.start(damaged.session.id, '', undefined, async input => { calls++; return failure(input.identity.runId); })).rejects.toThrow();
+  expect(calls).toBe(0); expect(engine.actives).toEqual([]);
+  expect((await repository.read(damaged.session.id)).session.runs).toEqual([]);
+  const valid = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  await engine.start(valid.session.id, '', undefined, async input => failure(input.identity.runId)); await engine.waitForIdle();
+});
+
+it.each(['user', 'deadline'] as const)('corrects an in-flight terminal write once and preserves the first %s cancellation', async reason => {
+  const { engine, repository } = setup(); const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  const save = repository.save.bind(repository); const releases: Array<() => void> = []; let terminalWrites = 0;
+  repository.save = async value => {
+    if (value.session.runs.at(-1)?.outcome) { terminalWrites++; await new Promise<void>(resolve => releases.push(resolve)); }
+    await save(value);
+  };
+  const statuses: string[] = []; engine.subscribe(run => statuses.push(run.status));
+  const answer: SolveOutcome = { schemaVersion: 1, status: 'completed', verified: false, verificationStatus: 'not_requested', verification: null, warning: null, candidate: { schemaVersion: 1, kind: 'answer', problem: { text: 'x+1=3', subject: 'math', uncertainties: [] }, answer: 'x=2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] } };
+  const run = await engine.start(record.session.id, '', undefined, async () => answer);
+  await expect.poll(() => terminalWrites).toBe(1);
+  expect(engine.actives[0]?.status).toBe('queued'); // Batch stop must still recognize it as cancellable.
+  const cancelling = engine.cancelRun(run.id, reason); releases[0]!();
+  await expect.poll(() => terminalWrites).toBe(2);
+  const duplicate = engine.cancel(reason === 'user' ? 'deadline' : 'user'); releases[1]!();
+  await Promise.all([cancelling, duplicate]);
+  const saved = await repository.read(record.session.id);
+  expect(saved.session.runs[0]).toMatchObject({ status: reason === 'deadline' ? 'failed' : 'cancelled', outcome: { error: { code: reason === 'deadline' ? 'RUN_TIMEOUT' : 'CANCELLED' } } });
+  expect(saved.session.subject).toBe('general'); expect(terminalWrites).toBe(2);
+  expect(statuses).not.toContain('completed'); expect(engine.actives).toEqual([]);
+});
+
+it('preserves submission order and independent outcomes when the device clock moves backwards before a follow-up', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    vi.setSystemTime(new Date('2026-09-22T01:00:10.000Z'));
+    const { engine, repository } = setup(); const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+    const answer: SolveOutcome = { schemaVersion: 1, status: 'completed', verified: false, verificationStatus: 'not_requested', verification: null, warning: null, candidate: { schemaVersion: 1, kind: 'answer', problem: { text: 'x+1=3', subject: 'math', uncertainties: [] }, answer: 'x=2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] } };
+    const first = await engine.start(record.session.id, '', undefined, async () => answer); await engine.waitForIdle();
+    vi.setSystemTime(new Date('2026-09-22T01:00:08.000Z'));
+    const events: Array<{ id: string; status: string; outcome: SolveOutcome | null }> = [];
+    engine.subscribe(run => events.push({ id: run.id, status: run.status, outcome: run.outcome }));
+    const followUp = await engine.start(record.session.id, '解释这个结论', { kind: 'reply', sourceRunId: first.id }, async (input, signal, emit) => {
+      emit({ schemaVersion: 1, type: 'run.status', runId: input.identity.runId, status: 'solving' });
+      await new Promise<void>(resolve => { if (signal.aborted) resolve(); else signal.addEventListener('abort', () => resolve(), { once: true }); });
+      return answer;
+    });
+    expect(followUp.createdAt < first.createdAt).toBe(true);
+    const pending = (await repository.read(record.session.id)).session.runs;
+    expect(pending.map(run => run.id)).toEqual([first.id, followUp.id]);
+    expect(pending[0]?.outcome).toEqual(answer); expect(pending[1]?.outcome).toBeNull();
+    expect(engine.actives).toMatchObject([{ id: followUp.id, status: 'solving', outcome: null }]);
+    expect(events).toEqual([{ id: followUp.id, status: 'queued', outcome: null }, { id: followUp.id, status: 'solving', outcome: null }]);
+    await engine.cancelRun(followUp.id);
+    const saved = (await repository.read(record.session.id)).session.runs;
+    expect(saved.map(run => run.id)).toEqual([first.id, followUp.id]);
+    expect(saved[0]?.outcome).toEqual(answer); expect(saved[1]?.outcome?.status).toBe('cancelled');
+  } finally { vi.useRealTimers(); }
 });

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ExamTypeSchema } from './exam.js';
 import { ProblemStatementSchema, KnowledgeDetailsSchema } from "./learning-content.js";
 export { ProblemStatementSchema, KnowledgeDetailsSchema, originalIllustrationBounds, type ProblemStatement, type KnowledgeDetail } from "./learning-content.js";
 import { FiguresSchema } from "./figure.js";
@@ -114,6 +115,7 @@ export const BriefSolverCandidateSchema = z.discriminatedUnion("kind", [AnswerCa
 }), ClarificationCandidateSchema]);
 
 const inputFields = {
+  exam: ExamTypeSchema.optional(),
   verificationMode: z.enum(["automatic", "manual"]).optional(),
   answerMode: z.enum(["brief", "detailed"]).optional(),
   schemaVersion: z.literal(1), identity: RunIdentitySchema, message: z.string().trim().max(4000),

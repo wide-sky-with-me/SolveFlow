@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Animated, Keyboard, PanResponder, Platform, StyleSheet } from 'react-native';
-import type { QuestionConversation } from '@solveflow/client';
 import { AnimatedView, Pressable, ScrollView, Text, View } from '../theme/primitives';
 import { useReducedMotion } from './use-reduced-motion';
 import { questionSwipe } from './question-swipe';
@@ -13,9 +12,9 @@ function PagerArrow({ previous = false }: { previous?: boolean }) {
   return <View accessible={false} style={{ width: 9, height: 9, borderTopWidth: 1.8, borderRightWidth: 1.8, borderColor: themeColors[scheme].accent, transform: [{ rotate: previous ? '-135deg' : '45deg' }], marginLeft: previous ? 4 : -4 }} />;
 }
 
-export function QuestionPager({ threads, selected, onSelect, render }: {
-  threads: QuestionConversation[]; selected: string; onSelect: (key: string) => void;
-  render: (thread: QuestionConversation, onSwipe: (direction: number) => Promise<void>) => ReactNode;
+export function QuestionPager<T extends { key: string; number?: number }>({ threads, selected, onSelect, render, retainPages = true, scrollPages = true }: {
+  retainPages?: boolean; scrollPages?: boolean; threads: T[]; selected: string; onSelect: (key: string) => void;
+  render: (thread: T, onSwipe: (direction: number) => Promise<void>) => ReactNode;
 }) {
   const [visited, setVisited] = useState<ReadonlySet<string>>(new Set([selected]));
   const progress = useRef(new Animated.Value(1)).current; const reduced = useReducedMotion();
@@ -56,8 +55,8 @@ export function QuestionPager({ threads, selected, onSelect, render }: {
       <Text accessibilityLiveRegion="polite" style={styles.count}>{index < 0 ? '记录' : `${index + 1}/${pages.length}`}</Text>
       <Pressable accessibilityRole="button" accessibilityLabel="下一道题" disabled={index < 0 || index >= pages.length - 1} accessibilityState={{ disabled: index < 0 || index >= pages.length - 1 }} onPress={() => choose(index + 1)} style={[styles.arrow, (index < 0 || index >= pages.length - 1) && styles.disabled]}><PagerArrow /></Pressable>
     </View>}
-    {threads.map(thread => (visited.has(thread.key) || selected === thread.key) && <AnimatedView key={thread.key} testID={`question-page-${thread.number ?? 'record'}`} accessibilityElementsHidden={thread.key !== selected} importantForAccessibility={thread.key === selected ? 'auto' : 'no-hide-descendants'} style={{ flex: 1, display: thread.key === selected ? 'flex' : 'none', opacity: progress, transform: [{ translateX: progress.interpolate({ inputRange: [0, 1], outputRange: [direction.current * 26, 0] }) }] }}>
-      <QuestionPageActivity value={thread.key === selected}><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>{render(thread, thread.key === selected ? swipe : async () => {})}<Text style={styles.disclaimer}>AI 解答仅供参考，请结合题目核对。</Text></ScrollView></QuestionPageActivity>
+    {threads.map(thread => (retainPages && visited.has(thread.key) || selected === thread.key) && <AnimatedView key={thread.key} testID={`question-page-${thread.number ?? 'record'}`} accessibilityElementsHidden={thread.key !== selected} importantForAccessibility={thread.key === selected ? 'auto' : 'no-hide-descendants'} style={{ flex: 1, display: thread.key === selected ? 'flex' : 'none', opacity: progress, transform: [{ translateX: progress.interpolate({ inputRange: [0, 1], outputRange: [direction.current * 26, 0] }) }] }}>
+      <QuestionPageActivity value={thread.key === selected}>{scrollPages ? <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>{render(thread, thread.key === selected ? swipe : async () => {})}<Text style={styles.disclaimer}>AI 解答仅供参考，请结合题目核对。</Text></ScrollView> : render(thread, thread.key === selected ? swipe : async () => {})}</QuestionPageActivity>
     </AnimatedView>)}
   </View>;
 }

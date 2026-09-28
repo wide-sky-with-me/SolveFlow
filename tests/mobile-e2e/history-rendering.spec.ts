@@ -94,6 +94,8 @@ test('history keeps a readable question and photo when the document readiness de
   await seedLocalSession(page, session, image);
   await page.getByRole('tab', { name: '历史题目', exact: true }).click();
   const fallback = page.getByTestId('history-fallback');
+  await expect(fallback.getByText('序号 1 · 物理 · 当前题目', { exact: true })).toBeVisible();
+  await expect(fallback.getByText(/^保存于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)).toBeVisible();
   await expect(fallback.getByText('小球从静止开始自由下落，求三秒后的速度。', { exact: true })).toBeVisible();
   await expect(fallback.getByRole('img', { name: '原题缩略图' })).toBeVisible();
   expect(await fallback.innerText()).not.toContain(id);

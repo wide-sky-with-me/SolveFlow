@@ -1,5 +1,7 @@
 # 本地配置：M0模型与M1应用
 
+> 2026-09-21（0.1.38）：首次空题页的“配置模型与考试类型”与“我的 → 设置”使用同一配置页。默认考试可选 SAT、ACT、AP、未指定，仅作用于新题；接口协议可显式选择 Chat Completions 或 Responses。Base URL 不包含 `/chat/completions` 或 `/responses` 尾段。支持范围与真实对照见[考试设置验收](EXAM_PRELOAD_ACCEPTANCE.md)。
+
 > 最新：用户已授权设备直连模型与本地存储，见[本地应用验收](LOCAL_APP_ACCEPTANCE.md)。当前安卓命令 `pnpm mobile:apk` 生成 `solveflow-arm64-local.apk`，启动后在设置页填写模型；不再需要 EXPO_PUBLIC_API_URL 或 SolveFlow 后端域名。下文较早的 API 缺失/编译检查包记录属于迁移前状态。iOS原生构建已暂停。
 
 ## 当前启动入口：React Native / Expo（2026-09-15）

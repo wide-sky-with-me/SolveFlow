@@ -16,13 +16,12 @@ import java.lang.ref.WeakReference
 class SolveBackgroundModule(private val react: ReactApplicationContext) : ReactContextBaseJavaModule(react) {
   companion object {
     private var context = WeakReference<ReactApplicationContext>(null)
-    private var pending: Promise? = null
-    private var pendingId: String? = null
+    private val pending = mutableMapOf<String, Promise>()
     private val timerHandler = Handler(Looper.getMainLooper())
-    private var timerId = -1
-    fun clearTimer() { timerHandler.removeCallbacksAndMessages(null); timerId = -1 }
+    private val timers = mutableMapOf<Int, Runnable>()
+    fun clearTimer() { timerHandler.removeCallbacksAndMessages(null); timers.clear() }
     fun started(id: String) {
-      if (pendingId != id) return
+      if (!pending.containsKey(id)) return
       try {
         val react = context.get() ?: error("REACT_CONTEXT_MISSING")
         check(react.hasActiveReactInstance())
@@ -30,10 +29,10 @@ class SolveBackgroundModule(private val react: ReactApplicationContext) : ReactC
         HeadlessJsTaskContext.getInstance(react).startTask(HeadlessJsTaskConfig(
           "SolveFlowActive", Arguments.createMap().apply { putString("runId", id) }, 125_000L, true
         ))
-        pending?.resolve(null); pending = null; pendingId = null
+        pending.remove(id)?.resolve(null)
       } catch (_: Exception) { failed(id) }
     }
-    fun failed(id: String) { if (pendingId == id) { pending?.reject("BACKGROUND_START_FAILED", "无法启动后台解题服务，请保持应用在前台后重试。"); pending = null; pendingId = null } }
+    fun failed(id: String) { pending.remove(id)?.reject("BACKGROUND_START_FAILED", "无法启动后台解题服务，请保持应用在前台后重试。") }
     fun expired(id: String) {
       val value = Arguments.createMap().apply { putString("runId", id) }
       context.get()?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)?.emit("solveBackgroundExpired", value)
@@ -44,8 +43,8 @@ class SolveBackgroundModule(private val react: ReactApplicationContext) : ReactC
   @ReactMethod fun start(id: String, promise: Promise) {
     if (!Regex("^[a-f0-9-]{36}$").matches(id)) { promise.reject("INVALID_RUN", "任务标识无效"); return }
     Handler(Looper.getMainLooper()).post {
-      if (pending != null || SolveBackgroundService.activeId != null && SolveBackgroundService.activeId != id) { promise.reject("BUSY", "已有解题任务"); return@post }
-      pending = promise; pendingId = id
+      if (pending.containsKey(id) || pending.size >= 4) { promise.reject("BUSY", "已有解题任务"); return@post }
+      pending[id] = promise
       try {
         ContextCompat.startForegroundService(react, Intent(react, SolveBackgroundService::class.java).putExtra("runId", id))
         Handler(Looper.getMainLooper()).postDelayed({ failed(id) }, 5000)
@@ -54,22 +53,27 @@ class SolveBackgroundModule(private val react: ReactApplicationContext) : ReactC
   }
   @ReactMethod fun stop(id: String, promise: Promise) {
     Handler(Looper.getMainLooper()).post {
-      if (SolveBackgroundService.activeId == id) react.stopService(Intent(react, SolveBackgroundService::class.java))
+      SolveBackgroundService.instance?.finish(id)
       promise.resolve(null)
     }
   }
   @ReactMethod fun armTimer(id: Int, ms: Double) {
     timerHandler.post {
-      clearTimer(); timerId = id
-      timerHandler.postDelayed({
-        if (timerId == id) {
-          val value = Arguments.createMap().apply { putInt("timerId", id) }
-          context.get()?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)?.emit("solvePhaseTimeout", value)
-        }
-      }, ms.toLong().coerceIn(1, 120000))
+      timers.remove(id)?.let { timerHandler.removeCallbacks(it) }
+      if (timers.size >= 8) {
+        val value = Arguments.createMap().apply { putInt("timerId", id) }
+        context.get()?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)?.emit("solvePhaseTimeout", value)
+        return@post
+      }
+      val timer = Runnable {
+        timers.remove(id)
+        val value = Arguments.createMap().apply { putInt("timerId", id) }
+        context.get()?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)?.emit("solvePhaseTimeout", value)
+      }
+      timers[id] = timer; timerHandler.postDelayed(timer, ms.toLong().coerceIn(1, 120000))
     }
   }
-  @ReactMethod fun cancelTimer(id: Int) { timerHandler.post { if (timerId == id) clearTimer() } }
+  @ReactMethod fun cancelTimer(id: Int) { timerHandler.post { timers.remove(id)?.let { timerHandler.removeCallbacks(it) } } }
   @ReactMethod fun diagnostic(value: String) { if (value.length <= 8192) Log.i("SolveFlowDiagnostic", value) }
   @ReactMethod fun addListener(name: String) {}
   @ReactMethod fun removeListeners(count: Int) {}
