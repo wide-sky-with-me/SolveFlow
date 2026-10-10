@@ -1,2 +1,11 @@
 import { defineConfig } from "vitest/config";
-export default defineConfig({ test: { exclude: ["**/node_modules/**", "**/dist/**", "**/*.integration.test.ts", "tests/mobile-e2e/**"] } });
+import { offlineTestPatterns } from './tests/test-suites.js';
+
+const exclude = ['**/node_modules/**', '**/dist/**', '.runtime/**', '**/*.integration.test.ts', 'tests/mobile-e2e/**'];
+export default defineConfig({ test: {
+  exclude,
+  projects: [
+    { extends: true, test: { name: 'unit', exclude: [...exclude, ...offlineTestPatterns] } },
+    { extends: true, test: { name: 'offline', include: offlineTestPatterns, exclude } },
+  ],
+} });

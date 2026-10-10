@@ -27,7 +27,8 @@ test('history renders formula previews without cutting math source and opens the
   await expect(page.getByRole('heading', { name: '历史题目', exact: true })).toHaveCount(0);
   const row = page.locator(`.history-entry[data-session-id="${id}"]`);
   const bounds = await row.boundingBox(); if (!bounds) throw new Error('MISSING_ROW');
-  const x = bounds.x + bounds.width - 20; const y = bounds.y + 30;
+  // Start on the card body, clear of the top-right action button.
+  const x = bounds.x + bounds.width - 64; const y = bounds.y + 60;
   if (info.project.name === 'mobile') {
     const cdp = await page.context().newCDPSession(page);
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });

@@ -11,6 +11,7 @@ export function verificationFeedback(outcome: SolveOutcome, requestError?: Agent
     title: code === 'MODEL_TIMEOUT' || code === 'RUN_TIMEOUT' ? '校验超时' : code === 'MODEL_OUTPUT_INVALID' ? '校验结果无法读取' : code === 'CANCELLED' ? '校验已取消' : '校验未完成',
     reason: code === 'MODEL_TIMEOUT' || code === 'RUN_TIMEOUT' ? '校验未在时限内完成，尚未得到本次校验结论。'
       : code === 'MODEL_OUTPUT_INVALID' ? '模型返回的校验内容不符合结果格式，无法据此判断答案对错。'
+      : code === 'MODEL_UNAVAILABLE' ? '校验服务暂不可用，已保留解答；答案尚未验证。'
       : `${makeSafeAgentError(code, 'verification').message} 尚未得到本次校验结论。`,
     issues: [], next: '可点击“校验”重试；也可查看原图核对，或在下方继续追问。',
   };

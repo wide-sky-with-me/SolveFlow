@@ -23,3 +23,9 @@
 - https://satsuite.collegeboard.org/sat/whats-on-the-test/math/student-produced
 - https://satsuite.collegeboard.org/media/pdf/assessment-framework-for-digital-sat-suite.pdf （附录D作答说明）
 - https://satsuite.collegeboard.org/higher-ed-professionals/sat-validity/content-domains
+
+## 句界与证据核对
+
+标点题先识别全部谓语和各分句的主从关系，独立分句不能仅用逗号拼接。however/though等连接成分可能归属前一分句，不机械套“分号＋转折副词＋逗号”；结合实际转折方向确定位置。冒号后的整组对比也可以解释前句，不能只看空格紧邻的连词。区分独立直接问句与嵌入式间接问句，后面出现“查明/想知道”不自动把前句变成宾语从句。
+
+代词义选项时保留否定和限制词，核查代入后是否与后半句矛盾。证据题比较每项能否区分竞争解释；共同特征不一定能支持其中一个来源。排除额外假设，以题内支持程度作答。

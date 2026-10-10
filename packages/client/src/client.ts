@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { ApiErrorSchema, BootstrapSchema, NativeBootstrapSchema, NATIVE_CLIENT_HEADER, ResourceIdSchema, type RunEvent } from "@solveflow/contracts/http";
 import { RunEventDecoder } from "./sse.js";
+import { ClientError } from './errors.js';
+export { ClientError, clientError } from './errors.js';
 export interface ClientStore { get(key: string): Promise<string | null>; set(key: string, value: string): Promise<void>; remove(key: string): Promise<void> }
 export type Transport = (url: string, init?: RequestInit) => Promise<Response>;
-export class ClientError extends Error { constructor(message: string, readonly code: string) { super(message); } }
 export function apiOrigin(value: string, development = false): string {
   const url = new URL(value);
   const local = /^(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)$/.test(url.hostname);
@@ -78,4 +79,3 @@ export function base64(bytes: Uint8Array) {
 }
 export const jsonRequest = (value: unknown): RequestInit => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) });
 export type SolveClient = ReturnType<typeof createClient>;
-export const clientError = (error: unknown) => error instanceof ClientError ? error.message : error instanceof Error && !["AbortError", "TimeoutError", "TypeError", "ZodError"].includes(error.name) ? error.message : "连接中断或请求超时，请重试。";

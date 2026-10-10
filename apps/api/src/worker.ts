@@ -6,7 +6,7 @@ import { runApplicationAgent, solve, calculate, RunBudget, createProbeImage } fr
 import { getModelConnections, getLiveCallGate, type SolveFlowConfig } from "@solveflow/config";
 import type { ImageStore } from "./storage.js";
 import { normalizeImage } from "./images.js";
-import { questionThreadHistory } from "@solveflow/contracts/http";
+import { projectQuestionRun, questionThreadHistory } from "@solveflow/contracts/http";
 import { conversationHistory, resolveLearningContext } from "./history.js";
 export type Executor = (input: SolverInput, signal: AbortSignal, onEvent: (event: PublicAgentEvent) => Promise<void>, timeoutMs: number) => Promise<SolveOutcome>;
 
@@ -54,8 +54,12 @@ export async function processNext(repository: Repository, storage: ImageStore, e
     const previous = session.runs.slice(0, session.runs.findIndex(run => run.id === job.id));
     const context = resolveLearningContext(previous, job.context);
     const history = conversationHistory(job.context ? questionThreadHistory(previous, job.context) : previous, context.focus ? 4 * 1024 : 12 * 1024);
+    const source = job.context?.kind === "verification" ? previous.find(run => run.id === job.context?.sourceRunId) : undefined;
+    const target = source ? projectQuestionRun(source, job.context?.kind === "verification" ? job.context.number : undefined).outcome : undefined;
+    if (job.context?.kind === "verification" && target?.status !== "completed") throw new Error("INVALID_SAVED_CONTEXT");
     const input = SolverInputSchema.parse({ schemaVersion: 1, role: "solver", identity: { ownerId: job.ownerId, sessionId: job.sessionId, runId: job.id },
-      message: job.message || "请解答图片中的一道题，读取可用Skill并给出可检查的教学步骤。", subject: session.subject, history, ...context, image: { bytes, mimeType: upload.mimeType }, evidence: [] });
+      message: job.message || "请解答图片中的一道题，读取可用Skill并给出可检查的教学步骤。", subject: session.subject, history, ...context, image: { bytes, mimeType: upload.mimeType }, evidence: [],
+      ...(target?.status === "completed" ? { verificationTarget: target.candidate } : {}) });
     const remaining = 120_000 - (Date.now() - job.createdAt.getTime());
     if (remaining <= 0) throw new Error("RUN_TIMEOUT");
     const outcome = SolveOutcomeSchema.parse(await execute(input, signal, async event => {

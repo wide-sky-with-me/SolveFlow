@@ -5,7 +5,11 @@
   "main": "index.ts",
   "expo": {
     "autolinking": {
-      "android": { "buildFromSource": ["expo-camera"] }
+      "android": {
+        "buildFromSource": [
+          "expo-camera"
+        ]
+      }
     }
   },
   "scripts": {
@@ -23,13 +27,15 @@
     "@solveflow/agent": "workspace:*",
     "@solveflow/client": "workspace:*",
     "@solveflow/contracts": "workspace:*",
-    "expo": "57.0.22",
+    "expo": "57.0.23",
+    "expo-build-properties": "57.0.22",
     "expo-camera": "57.0.5",
     "expo-crypto": "57.0.3",
     "expo-file-system": "57.0.7",
     "expo-image-manipulator": "57.0.17",
     "expo-image-picker": "57.0.17",
     "expo-secure-store": "57.0.4",
+    "expo-sharing": "57.0.19",
     "expo-splash-screen": "57.0.9",
     "expo-sqlite": "57.0.3",
     "katex": "0.18.7",

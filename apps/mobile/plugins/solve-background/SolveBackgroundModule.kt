@@ -27,7 +27,7 @@ class SolveBackgroundModule(private val react: ReactApplicationContext) : ReactC
         check(react.hasActiveReactInstance())
         // Same live React context as the existing Pi job; no new solver, retry or process restart.
         HeadlessJsTaskContext.getInstance(react).startTask(HeadlessJsTaskConfig(
-          "SolveFlowActive", Arguments.createMap().apply { putString("runId", id) }, 125_000L, true
+          "SolveFlowActive", Arguments.createMap().apply { putString("runId", id) }, SolveRunBudget.JOB_DURATION_MS + 5000L, true
         ))
         pending.remove(id)?.resolve(null)
       } catch (_: Exception) { failed(id) }
@@ -43,7 +43,7 @@ class SolveBackgroundModule(private val react: ReactApplicationContext) : ReactC
   @ReactMethod fun start(id: String, promise: Promise) {
     if (!Regex("^[a-f0-9-]{36}$").matches(id)) { promise.reject("INVALID_RUN", "任务标识无效"); return }
     Handler(Looper.getMainLooper()).post {
-      if (pending.containsKey(id) || pending.size >= 4) { promise.reject("BUSY", "已有解题任务"); return@post }
+      if (pending.containsKey(id) || pending.size >= SolveRunBudget.MAX_JOBS) { promise.reject("BUSY", "已有解题任务"); return@post }
       pending[id] = promise
       try {
         ContextCompat.startForegroundService(react, Intent(react, SolveBackgroundService::class.java).putExtra("runId", id))
@@ -60,7 +60,7 @@ class SolveBackgroundModule(private val react: ReactApplicationContext) : ReactC
   @ReactMethod fun armTimer(id: Int, ms: Double) {
     timerHandler.post {
       timers.remove(id)?.let { timerHandler.removeCallbacks(it) }
-      if (timers.size >= 8) {
+      if (timers.size >= SolveRunBudget.MAX_JOBS) {
         val value = Arguments.createMap().apply { putInt("timerId", id) }
         context.get()?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)?.emit("solvePhaseTimeout", value)
         return@post
@@ -70,7 +70,7 @@ class SolveBackgroundModule(private val react: ReactApplicationContext) : ReactC
         val value = Arguments.createMap().apply { putInt("timerId", id) }
         context.get()?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)?.emit("solvePhaseTimeout", value)
       }
-      timers[id] = timer; timerHandler.postDelayed(timer, ms.toLong().coerceIn(1, 120000))
+      timers[id] = timer; timerHandler.postDelayed(timer, ms.toLong().coerceIn(1L, SolveRunBudget.PHASE_DURATION_MS))
     }
   }
   @ReactMethod fun cancelTimer(id: Int) { timerHandler.post { timers.remove(id)?.let { timerHandler.removeCallbacks(it) } } }
@@ -79,6 +79,6 @@ class SolveBackgroundModule(private val react: ReactApplicationContext) : ReactC
   @ReactMethod fun removeListeners(count: Int) {}
 }
 class SolveBackgroundPackage : ReactPackage {
-  override fun createNativeModules(context: ReactApplicationContext): List<NativeModule> = listOf(SolveBackgroundModule(context))
+  override fun createNativeModules(context: ReactApplicationContext): List<NativeModule> = listOf(SolveBackgroundModule(context), SolveDocumentModule(context))
   override fun createViewManagers(context: ReactApplicationContext): List<ViewManager<*, *>> = emptyList()
 }

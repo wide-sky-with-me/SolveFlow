@@ -44,7 +44,7 @@ export function projectQuestionRun(run: RunView, number?: number): RunView {
   const section = questionSections(original)?.find(item => item.number === number);
   if (!section) return run;
   const { questions: _questions, ...candidate } = original;
-  const projected = { ...candidate, answer: section.answer, selectedOptions: section.selectedOptions, steps: section.steps, figures: section.figures, problem: section.problem ?? candidate.problem, knowledgeDetails: section.knowledgeDetails, knowledgePoints: section.knowledgeDetails?.map(point => point.name) ?? candidate.knowledgePoints };
+  const projected = { ...candidate, answer: section.answer, writing: section.writing, chemistry: section.chemistry, parts: section.parts, responseValue: section.responseValue, selectedOptions: section.selectedOptions, steps: section.steps, figures: section.figures, problem: section.problem ?? candidate.problem, knowledgeDetails: section.knowledgeDetails, knowledgePoints: section.knowledgeDetails?.map(point => point.name) ?? candidate.knowledgePoints };
   return run.outcome?.status === "completed" ? { ...run, outcome: { ...run.outcome, candidate: projected } } : run;
 }
 

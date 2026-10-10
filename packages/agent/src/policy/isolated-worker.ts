@@ -3,6 +3,7 @@ import { Worker, MessagePort } from "node:worker_threads";
 import { assertBoundedJson } from "./bounded-json.js";
 import { SpendRequestSchema } from "./worker-spend-protocol.js";
 import { PublicAgentEventSchema, type PublicAgentEvent } from "@solveflow/contracts/agent";
+export const MAX_ISOLATED_WORKER_DURATION_MS = 120_000;
 
 export class WorkerBoundaryError extends Error {
   constructor(readonly code: "RUN_TIMEOUT" | "CANCELLED" | "WORKER_LOST" | "WORKER_OUTPUT_INVALID" | "WORKER_OUTPUT_LIMIT" | "MODEL_DISPATCH_DENIED" | "SPEND_LIMIT") { super(code); }
@@ -12,10 +13,10 @@ export class WorkerBoundaryError extends Error {
  * terminates JS execution and waits for actual thread exit. It is NOT an OS sandbox
  * or a process-group reaper: workers must not own unsupervised stdio child processes.
  * V8 heap limits do not cap native/Buffer memory. Actual Pi integration is separate. */
-export function runIsolatedWorker(entry: URL, input: unknown, options: { signal: AbortSignal; timeoutMs: number; graceMs?: number; onStarted?: () => void; onDiagnostic?: (diagnostic: PhaseDiagnostic) => void; image?: Uint8Array; toolPort?: MessagePort; authorizeModel?: (modelId: string, signal: AbortSignal) => void; onEvent?: (event: PublicAgentEvent) => Promise<void> }): Promise<unknown> {
+export function runIsolatedWorker(entry: URL, input: unknown, options: { signal: AbortSignal; timeoutMs: number; graceMs?: number; onStarted?: () => void; onDiagnostic?: (diagnostic: PhaseDiagnostic) => void; image?: Uint8Array; maxJsonBytes?: number; toolPort?: MessagePort; authorizeModel?: (modelId: string, signal: AbortSignal) => void; onEvent?: (event: PublicAgentEvent) => Promise<void> }): Promise<unknown> {
   const { signal, timeoutMs, graceMs = 100, authorizeModel, onStarted } = options;
-  if (entry.protocol !== "file:" || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000 || !Number.isInteger(graceMs) || graceMs < 0 || graceMs > 1000) throw new Error("INVALID_WORKER_CONFIG");
-  assertBoundedJson(input);
+  if (entry.protocol !== "file:" || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_ISOLATED_WORKER_DURATION_MS || !Number.isInteger(graceMs) || graceMs < 0 || graceMs > 1000) throw new Error("INVALID_WORKER_CONFIG");
+  assertBoundedJson(input, options.maxJsonBytes);
   signal.throwIfAborted();
   const toolPort = options.toolPort;
   if (toolPort !== undefined && !(toolPort instanceof MessagePort)) throw new Error("INVALID_WORKER_PORT");
@@ -59,7 +60,7 @@ export function runIsolatedWorker(entry: URL, input: unknown, options: { signal:
     worker.stderr?.on("data", drain);
     worker.on("message", (message: unknown) => {
       if (failure || ending) return;
-      try { assertBoundedJson(message); }
+      try { assertBoundedJson(message, options.maxJsonBytes); }
       catch { failure = new WorkerBoundaryError("WORKER_OUTPUT_INVALID"); terminate(); return; }
       if (typeof message === "object" && message !== null && "type" in message && message.type === "diagnostic") {
         const parsed = "diagnostic" in message ? PhaseDiagnosticSchema.safeParse(message.diagnostic) : undefined;

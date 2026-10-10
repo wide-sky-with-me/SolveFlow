@@ -12,7 +12,7 @@ test('downloads a complete local archive without model calls or changing saved r
   let posts = 0; page.on('request', request => { if (request.method() === 'POST') posts++; });
   await page.getByRole('tab', { name: '我的', exact: true }).click();
   await page.getByRole('button', { name: '导出本地记录', exact: true }).click();
-  await expect(page.getByText('导出不会删除历史，也不会发送到网络。暂不支持将文件导回应用。')).toBeVisible();
+  await expect(page.getByText('导出不会删除历史，也不会发送到网络。可通过「我的 → 恢复本地记录」导回应用。')).toBeVisible();
   const waiting = page.waitForEvent('download'); await page.getByRole('button', { name: '导出到本机', exact: true }).click(); const download = await waiting;
   expect(download.suggestedFilename()).toMatch(/^solveflow-history-.*\.ndjson$/);
   const path = await download.path(); if (!path) throw new Error('DOWNLOAD_MISSING');

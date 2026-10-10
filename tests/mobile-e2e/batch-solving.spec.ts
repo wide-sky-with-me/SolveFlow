@@ -24,6 +24,8 @@ test('camera gallery queues three background solves; compact history searches, r
   const buffer = Buffer.from(await page.evaluate(() => { const canvas = document.createElement('canvas'); canvas.width = 600; canvas.height = 300; const ctx = canvas.getContext('2d')!; ctx.fillStyle = 'white'; ctx.fillRect(0, 0, 600, 300); ctx.fillStyle = 'black'; ctx.fillText('19. x+1=3', 40, 100); return canvas.toDataURL('image/jpeg').split(',')[1]!; }), 'base64');
   for (let index = 1; index <= 3; index++) {
     const chooser = page.waitForEvent('filechooser'); await page.getByRole('dialog').getByRole('button', { name: '从相册选择', exact: true }).click(); await (await chooser).setFiles({ name: `batch-${index}.jpg`, mimeType: 'image/jpeg', buffer });
+    await expect(page.getByRole('heading', { name: '确认图片顺序', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '导入并解题（1张）', exact: true }).click();
     await expect(page.getByText(`已保存 ${index} 张`, { exact: true })).toBeVisible();
   }
   await expect.poll(() => solvers).toBe(3);
@@ -55,6 +57,12 @@ test('camera gallery queues three background solves; compact history searches, r
   await page.goBack(); await page.getByRole('textbox', { name: '搜索关键词' }).fill('原题号 19');
   await page.getByRole('button', { name: '打开批量', exact: true }).click(); await expect(page.getByText('题目 · 原题号 19', { exact: true })).toBeVisible();
   for (const [index, number] of ['19', '7', '11'].entries()) { await page.getByRole('tab', { name: `跳转第${index + 1}题`, exact: true }).click(); await expect(page.getByText(`题目 · 原题号 ${number}`, { exact: true })).toBeVisible(); await expect(page.getByRole('button', { name: '校验通过', exact: true })).toBeVisible(); }
+  await page.getByRole('navigation', { name: '主导航' }).getByRole('tab', { name: '题目', exact: true }).click();
+  await expect(page.getByText('全部题目', { exact: true })).toBeVisible();
+  await expect(page.getByText('共 3 题 · 点击快速跳转', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '快速跳转第2题', exact: true }).click();
+  await expect(page.getByText('全部题目', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('题目 · 原题号 7', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '继续拍摄', exact: true })).toHaveCount(0); await page.getByRole('button', { name: '批次操作', exact: true }).click(); await expect(page.getByRole('button', { name: '继续拍摄', exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
   const abandoned = page.waitForEvent('filechooser'); await page.getByRole('button', { name: '添加相册题图', exact: true }).click();
@@ -62,6 +70,7 @@ test('camera gallery queues three background solves; compact history searches, r
   await expect(page.getByRole('tab', { name: '历史题目', exact: true })).toHaveAttribute('aria-selected', 'true');
   await abandonedChooser.setFiles({ name: 'abandoned.jpg', mimeType: 'image/jpeg', buffer });
   await page.getByRole('tab', { name: '当前题目', exact: true }).click();
+  await page.getByRole('button', { name: '批次操作', exact: true }).click();
   await expect(page.getByRole('button', { name: '添加相册题图', exact: true })).toBeEnabled();
   await expect(page.getByText('3 张题图', { exact: true })).toBeVisible(); expect(solvers).toBe(3);
   await page.reload(); await page.getByRole('tab', { name: '历史题目', exact: true }).click(); await page.getByRole('tab', { name: '批量记录', exact: true }).click(); await expect(page.getByRole('button', { name: '打开批量', exact: true }).getByText('SAT 英语与数学', { exact: true })).toBeVisible();
@@ -78,6 +87,7 @@ test('batch capture keeps preview geometry stable while a photo is being saved',
       return toBlob.call(this, blob => {
         if (held) { callback(blob); return; }
         held = true;
+        document.documentElement.dataset.cameraBlobWaiting = 'true';
         window.addEventListener('test:finish-camera-photo', () => callback(blob), { once: true });
       }, type, quality);
     };
@@ -92,7 +102,10 @@ test('batch capture keeps preview geometry stable while a photo is being saved',
   try {
     expect(Math.abs(during!.height - before!.height)).toBeLessThanOrEqual(1);
     expect(Math.abs(during!.y - before!.y)).toBeLessThanOrEqual(1);
-  } finally { await page.evaluate(() => window.dispatchEvent(new Event('test:finish-camera-photo'))); }
+  } finally {
+    await expect(page.locator('html')).toHaveAttribute('data-camera-blob-waiting', 'true');
+    await page.evaluate(() => window.dispatchEvent(new Event('test:finish-camera-photo')));
+  }
   await expect(page.getByText('已保存 1 张', { exact: true })).toBeVisible();
   const after = await preview.boundingBox(); expect(after).toEqual(before);
   await page.getByRole('button', { name: '完成拍摄', exact: true }).click();

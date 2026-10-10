@@ -15,7 +15,7 @@ it("shares solver and verifier caps across separately constructed phase authorit
   const f = fixture(); const budget = new RunBudget();
   try {
     for (const role of ["solver", "verifier"] as const) {
-      const perPhase = role === "solver" ? 8 : 1;
+      const perPhase = role === "solver" ? 8 : 2;
       for (const phase of ["initial", "revision"]) {
         const authorize = createRunSpendAuthority(f.ledger, budget, { role, modelId: role, attemptPrefix: role + "-" + phase, maximumMicros: 1_000_000n });
         for (let i = 0; i < perPhase; i += 1) authorize(role, fresh());
@@ -23,8 +23,8 @@ it("shares solver and verifier caps across separately constructed phase authorit
       const excess = createRunSpendAuthority(f.ledger, budget, { role, modelId: role, attemptPrefix: role + "-extra", maximumMicros: 1_000_000n });
       expect(() => excess(role, fresh())).toThrow(role === "solver" ? "MODEL_LIMIT" : "VERIFIER_LIMIT");
     }
-    expect(budget.snapshot()).toMatchObject({ modelAttempts: 16, verifierAttempts: 2 });
-    expect(f.ledger.snapshot().reservedMicros).toBe("18000000");
+    expect(budget.snapshot()).toMatchObject({ modelAttempts: 16, verifierAttempts: 4 });
+    expect(f.ledger.snapshot().reservedMicros).toBe("20000000");
   } finally { f.close(); }
 });
 it("freezes role/model and retains attempts when durable fee reservation fails", () => {
@@ -44,7 +44,7 @@ it("denies expired parent run before persistent spending", () => {
   const f = fixture(); let now = 0; const budget = new RunBudget(() => now);
   try {
     const authorize = createRunSpendAuthority(f.ledger, budget, { role: "solver", modelId: "fixed", attemptPrefix: "phase", maximumMicros: 1n });
-    now = 120_001;
+    now = 180_001;
     expect(() => authorize("fixed", fresh())).toThrow("RUN_TIMEOUT");
     expect(f.ledger.snapshot().reservedMicros).toBe("0");
   } finally { f.close(); }

@@ -1,11 +1,12 @@
 "use client";
-import { useId, useState } from "react";
+import { useId } from "react";
+import { useReadingDisclosure } from './reading-state';
 import type { Figure } from "@solveflow/contracts/figure";
 import { niceTicks, placeLabels } from './figure-layout';
 import { MathText } from './math-text';
 const colors = { green: "var(--sf-green)", blue: "var(--sf-blue)", orange: "var(--sf-orange)", gray: "var(--sf-gray)" };
 export function AnswerFigure({ figure }: { figure: Figure }) {
-  const [zoomed, setZoomed] = useState(false);
+  const [zoomed, setZoomed] = useReadingDisclosure(`figure:${figure.id}`);
   const id = useId(); const [xmin, xmax] = figure.xRange; const [ymin, ymax] = figure.yRange;
   const scale = Math.min(440 / (xmax - xmin), 340 / (ymax - ymin));
   const sx = figure.equalAspect === false ? 440 / (xmax - xmin) : scale;
@@ -26,7 +27,7 @@ export function AnswerFigure({ figure }: { figure: Figure }) {
     <div className={`figure-viewport${zoomed ? " zoomed" : ""}`} tabIndex={0} role="region" aria-label={`${figure.title}，可放大并横向滚动`}>
     <svg viewBox={`${300 - viewWidth / 2 - 10} 0 ${viewWidth} 450`} fill="currentColor" role="img" aria-labelledby={`${id}-title ${id}-desc`}>
       <title id={`${id}-title`}>{figure.title}</title><desc id={`${id}-desc`}>{figure.description}</desc>
-      <defs><clipPath id={`${id}-clip`}><rect x={x(xmin)} y={y(ymax)} width={(xmax-xmin)*sx} height={(ymax-ymin)*sy} /></clipPath></defs>
+      <defs><clipPath id={`${id}-clip`}><rect x={x(xmin)} y={y(ymax)} width={(xmax-xmin)*sx} height={(ymax-ymin)*sy} /></clipPath>{Object.entries(colors).map(([name, color]) => <marker key={name} id={`${id}-arrow-${name}`} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill={color} /></marker>)}</defs>
       <rect x={x(xmin)} y={y(ymax)} width={(xmax-xmin)*sx} height={(ymax-ymin)*sy} fill="var(--sf-plot)" stroke="var(--sf-grid)" />
       <g className="figure-grid" fill="var(--sf-muted)" fontSize="24">
         {niceTicks(xmin, xmax).map(value => <g key={`x-${value}`}><line x1={x(value)} x2={x(value)} y1={y(ymin)} y2={y(ymax)} stroke="var(--sf-grid)" /><text x={x(value)} y={y(ymin)+28} textAnchor="middle">{value}</text></g>)}
@@ -38,20 +39,20 @@ export function AnswerFigure({ figure }: { figure: Figure }) {
         {ymin <= 0 && ymax >= 0 && <line x1={x(xmin)} x2={x(xmax)} y1={y(0)} y2={y(0)} stroke="var(--sf-axis)" />}
         {xmin <= 0 && xmax >= 0 && <line x1={x(0)} x2={x(0)} y1={y(ymin)} y2={y(ymax)} stroke="var(--sf-axis)" />}
         {[...figure.elements].sort((a, b) => Number(a.kind !== 'polygon') - Number(b.kind !== 'polygon')).map((item, i) => {
-          const color = colors[item.color];
+          const color = colors[item.color]; const dash = item.lineStyle === 'dashed' ? '8 6' : undefined;
           if (item.kind === "point") return null;
-          if (item.kind === "segment") return <line key={i} x1={x(item.from[0])} y1={y(item.from[1])} x2={x(item.to[0])} y2={y(item.to[1])} stroke={color} strokeWidth="3"><title>{item.label}</title></line>;
-          if (item.kind === "circle") return <ellipse key={i} cx={x(item.center[0])} cy={y(item.center[1])} rx={item.radius * sx} ry={item.radius * sy} fill="none" stroke={color} strokeWidth="3"><title>{item.label}</title></ellipse>;
+          if (item.kind === "segment") return <line key={i} x1={x(item.from[0])} y1={y(item.from[1])} x2={x(item.to[0])} y2={y(item.to[1])} markerEnd={item.arrow ? `url(#${id}-arrow-${item.color})` : undefined} stroke={color} strokeDasharray={dash} strokeWidth="3"><title>{item.label}</title></line>;
+          if (item.kind === "circle") return <ellipse key={i} cx={x(item.center[0])} cy={y(item.center[1])} rx={item.radius * sx} ry={item.radius * sy} fill="none" stroke={color} strokeDasharray={dash} strokeWidth="3"><title>{item.label}</title></ellipse>;
           if (item.kind === "polyline" || item.kind === "polygon") {
             const Shape = item.kind === "polygon" ? "polygon" : "polyline";
-            return <Shape key={i} points={item.points.map(([a, b]) => `${x(a)},${y(b)}`).join(" ")} fill={item.kind === "polygon" ? color : "none"} fillOpacity={0.16} stroke={color} strokeWidth="3"><title>{item.label}</title></Shape>;
+            return <Shape key={i} points={item.points.map(([a, b]) => `${x(a)},${y(b)}`).join(" ")} fill={item.kind === "polygon" ? color : "none"} fillOpacity={0.16} stroke={color} strokeDasharray={dash} strokeWidth="3"><title>{item.label}</title></Shape>;
           }
           const points = Array.from({ length: 129 }, (_, index) => {
             const a = xmin + (xmax-xmin)*index/128;
             const b = [...item.coefficients].reverse().reduce((sum, coefficient) => sum*a+coefficient, 0);
             return `${x(a)},${y(b)}`;
           }).join(" ");
-          return <polyline key={i} points={points} fill="none" stroke={color} strokeWidth="3"><title>{item.label}</title></polyline>;
+          return <polyline key={i} points={points} fill="none" stroke={color} strokeDasharray={dash} strokeWidth="3"><title>{item.label}</title></polyline>;
         })}
       </g>
       <g className="figure-points" clipPath={`url(#${id}-clip)`}>{figure.elements.map((item, i) => item.kind === 'point' && <circle key={i} cx={x(item.at[0])} cy={y(item.at[1])} r="5" fill={colors[item.color]} stroke="var(--sf-surface)" strokeWidth="2" />)}</g>
@@ -62,5 +63,6 @@ export function AnswerFigure({ figure }: { figure: Figure }) {
       </g>)}</g>
     </svg></div>
     <ul className="figure-legend">{figure.elements.filter(item => item.label).map((item, i) => <li key={i} style={{ color: colors[item.color] }}><MathText text={(item.kind === 'point' && ([...(item.label ?? '')].length > 14 || item.label?.includes('\\')) ? `P${figure.elements.filter(element => element.kind === 'point' && element.label).indexOf(item) + 1} · ` : '') + (item.label ?? '') + (item.kind === "point" && !(item.label ?? '').replace(/[\s（）]/g, c => c === '（' ? '(' : c === '）' ? ')' : '').includes(`(${item.at.join(',')})`) ? ` (${item.at.join(", ")})` : '')} /></li>)}</ul>
+    {figure.checks?.length && <p className="subject-note">已检查图中声明的 {figure.checks.length} 项数值关系；题意、单位和推导仍需核对。</p>}
   </figure>;
 }

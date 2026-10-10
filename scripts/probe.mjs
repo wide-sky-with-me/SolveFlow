@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { loadConfig, getLiveCallGate, getModelConnections, ConfigError } from "../packages/config/dist/index.js";
 import { ProbeReportSchema } from "../packages/contracts/dist/agent.js";
-import { runIsolatedWorker, WorkerBoundaryError } from "../packages/agent/dist/policy/isolated-worker.js";
+import { runIsolatedWorker, WorkerBoundaryError, MAX_ISOLATED_WORKER_DURATION_MS } from "../packages/agent/dist/policy/isolated-worker.js";
 import { createProbeImage } from "../packages/agent/dist/policy/probe-image.js";
 import { SpendLedger } from "../packages/agent/dist/policy/spend-ledger.js";
 import { initializeLedger } from "../packages/agent/dist/policy/initialize-ledger.js";
@@ -55,7 +55,7 @@ try {
       const input = { ...common, mode, connections };
       const approvedIds = new Set([modelAuthorizationId("solver", connections.solver.route), modelAuthorizationId("verifier", connections.verifier.route)]);
       const result = ProbeReportSchema.parse(await runIsolatedWorker(new URL("../packages/agent/dist/pi/probe-worker.js", import.meta.url), input,
-        { signal: controller.signal, timeoutMs: Math.max(1, Math.floor(budget.remainingMs())), image: createProbeImage(),
+        { signal: controller.signal, timeoutMs: Math.max(1, Math.floor(Math.min(MAX_ISOLATED_WORKER_DURATION_MS, budget.remainingMs()))), image: createProbeImage(),
           authorizeModel(modelId, signal) {
             budget.assertActive(signal);
             if (live) { if (!getLiveCallGate(config).allowed) throw new Error("LIVE_CALLS_NOT_AUTHORIZED"); spend(modelId, signal); }

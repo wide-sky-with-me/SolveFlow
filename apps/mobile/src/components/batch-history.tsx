@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { LocalHistorySummary } from '@solveflow/contracts/local';
-import { formatHistoryTime } from '@solveflow/client';
+import { formatHistoryTime } from '@solveflow/client/presentation';
 import type { BatchView } from './batch-workspace';
 import { Pressable, Text, View } from '../theme/primitives';
 import { Button, colors, s } from './ui';

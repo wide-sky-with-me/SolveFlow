@@ -110,11 +110,11 @@ try {
     } else answerFile = file;
   }
   assert.ok(historyChecked && previewChecked && answerFile, 'Both local documents boot and the history action crosses the bridge');
-  // Android can suspend animation frames for offscreen/background WebViews.
-  // A committed document must acknowledge readiness without waiting for a frame.
+  // A React commit must not expose an unpainted Android document. Hold its
+  // browser frames, then release them independently of font completion.
   const frozen = await browser.newPage(); const frozenMessages = [];
   await frozen.exposeFunction('captureNativeMessage', value => frozenMessages.push(JSON.parse(value)));
-  await frozen.addInitScript({ content: `Object.defineProperty(document.fonts, 'ready', {get:function(){return new Promise(function(){});}}); window.requestAnimationFrame = function(){return 1;}; window.cancelAnimationFrame = function(){};
+  await frozen.addInitScript({ content: `Object.defineProperty(document.fonts, 'ready', {get:function(){return new Promise(function(){});}}); window.pendingPaintFrames = new Map(); let paintId = 0; window.requestAnimationFrame = function(callback){window.pendingPaintFrames.set(++paintId, callback); return paintId;}; window.cancelAnimationFrame = function(id){window.pendingPaintFrames.delete(id);}; window.flushPaintFrame = function(){const callbacks=[...window.pendingPaintFrames.values()]; window.pendingPaintFrames.clear(); callbacks.forEach(callback=>callback(performance.now()));};
     window.ReactNativeWebView = {
       injectedObjectJson: function(){return \`${JSON.stringify(injected)}\`;},
       postMessage: function(message){window.captureNativeMessage(message);const event=JSON.parse(message);
@@ -122,6 +122,11 @@ try {
     };` });
   await frozen.goto(pathToFileURL(join(assets, answerFile)).href);
   await expect(frozen.locator('.problem-statement .katex')).toHaveCount(2);
+  await expect.poll(() => frozenMessages.some(message => message.type === '$$native_action' && message.data.actionId === 'onHeight')).toBe(true);
+  assert.equal(frozenMessages.some(message => message.type === '$$native_action' && message.data.actionId === 'onReady'), false, 'DOM commit/measurement alone is not paint readiness');
+  await frozen.evaluate(() => window.flushPaintFrame());
+  assert.equal(frozenMessages.some(message => message.type === '$$native_action' && message.data.actionId === 'onReady'), false, 'Keep the old page through the first browser frame');
+  await frozen.evaluate(() => window.flushPaintFrame());
   await expect.poll(() => frozenMessages.some(message => message.type === '$$native_action' && message.data.actionId === 'onReady')).toBe(true);
   await frozen.close();
   // Brief answers projected from a multi-question run must initialize too.
@@ -171,7 +176,7 @@ try {
   await page.locator('.step-details>summary').click();
   await expect(page.locator('.teaching-steps')).toBeVisible();
   await expect.poll(collapsedHeight).toBeGreaterThan(closedHeight);
-  await page.locator('.problem-heading').getByRole('button', { name: '查看原图' }).click();
+  await page.getByRole('button', { name: '查看题目图片', exact: true }).first().click();
   await expect.poll(() => messages.some(message => message.type === '$$native_action' && message.data.actionId === 'onViewOriginal')).toBe(true);
   await page.locator('.problem-heading').getByRole('button', { name: '重新解答' }).click();
   await expect.poll(() => messages.some(message => message.type === '$$native_action' && message.data.actionId === 'onRegenerate')).toBe(true);
@@ -226,7 +231,47 @@ try {
     await feedbackPage.close();
   }
   console.log('PASS: packaged verification timeout/invalid-output explanations distinguish unavailable verdicts from answer issues.');
-  console.log('PASS: late bridge startup recovered; early APK answer/history DOM bootstrap, readiness with pending fonts and suspended animation frames, brief multi-question payload, structured choice labels/options, history open bridge, formulas, image, diagram, knowledge, action bridge, dynamic height, 240px document layout, offline resources and injection safety. Not a physical-device test.');
+  const subjectBase = { ...value.outcome.candidate, problem: { text: 'Synthetic subject presentation check.', subject: 'general', uncertainties: [] }, steps: [], knowledgePoints: [], knowledgeDetails: [], figures: [] };
+  const species = (formula, coefficient, charge = 0) => ({ formula, coefficient, charge });
+  const subjectCases = [
+    { name: 'writing', candidate: { ...subjectBase, problem: { ...subjectBase.problem, subject: 'english', response: { type: 'essay', wordLimit: 750 } }, answer: 'A clear claim needs evidence.\n\nThe second paragraph explains why the evidence matters.', writing: { mode: 'revision', title: 'A Reasoned Argument', feedback: [{ paragraph: 2, comment: '说明证据与论点的联系。' }] } } },
+    { name: 'chemistry', candidate: { ...subjectBase, problem: { ...subjectBase.problem, subject: 'chemistry' }, answer: '还原过程，原子与电荷均守恒。', chemistry: { reactions: [{ reactants: [species('Fe', 1, 3), species('e', 1, -1)], products: [species('Fe', 1, 2)], arrow: 'forward' }] } } },
+    { name: 'economics', candidate: { ...subjectBase, problem: { ...subjectBase.problem, subject: 'economics', response: { type: 'drawing' } }, answer: '均衡为 Q=5、P=5。', figures: [{ schemaVersion: 1, id: 'market', kind: 'coordinate', purpose: 'economics', title: '供需均衡', description: '交点为 E(5,5)。', xRange: [0, 10], yRange: [0, 11], xLabel: 'Q (units)', yLabel: 'P ($/unit)', equalAspect: false,
+      elements: [{ id: 'd', kind: 'polynomial', coefficients: [10, -1], label: '需求 D', color: 'blue' }, { id: 's', kind: 'polynomial', coefficients: [0, 1], label: '供给 S', color: 'green' }, { id: 'e', kind: 'point', at: [5, 5], label: 'E' }, { kind: 'segment', from: [5, 0], to: [5, 5], lineStyle: 'dashed' }, { kind: 'segment', from: [6, 7], to: [8, 7], arrow: true }], checks: [{ kind: 'intersection', pointId: 'e', curveIds: ['d', 's'] }] }] } },
+  ];
+  for (const sample of subjectCases) {
+    const subjectPage = await browser.newPage({ viewport: { width: 360, height: 800 } });
+    const subjectErrors = []; const subjectExternal = [];
+    subjectPage.on('pageerror', error => subjectErrors.push(error.message));
+    subjectPage.on('request', request => { if (/^https?:/.test(request.url())) subjectExternal.push(request.url()); });
+    try {
+      const payload = encodeAnswerDocument({ ...value, outcome: { ...value.outcome, candidate: sample.candidate, verified: false, verificationStatus: 'not_requested', verification: null, warning: null } });
+      const props = { ...injected, initialProps: { ...injected.initialProps, props: { payload } } };
+      await subjectPage.addInitScript({ content: `window.ReactNativeWebView = { injectedObjectJson: () => ${JSON.stringify(JSON.stringify(props))}, postMessage: function() {} };` });
+      await subjectPage.goto(pathToFileURL(join(assets, answerFile)).href);
+      await expect(subjectPage.locator('.final-answer')).toBeVisible();
+      if (sample.name === 'writing') {
+        await expect(subjectPage.getByRole('heading', { name: '修改稿', exact: true })).toBeVisible();
+        await expect(subjectPage.locator('.writing-article p')).toHaveCount(2);
+        await expect(subjectPage.locator('.writing-title')).toHaveText('A Reasoned Argument');
+        await subjectPage.getByText('段落点评 · 1', { exact: true }).click();
+        await expect(subjectPage.getByText('说明证据与论点的联系。', { exact: true })).toBeVisible();
+      } else if (sample.name === 'chemistry') {
+        await expect(subjectPage.locator('.chemistry-reactions .katex')).toHaveCount(1);
+        await expect(subjectPage.locator('.chemistry-reactions .subject-note')).toContainText('原子与电荷守恒');
+      } else {
+        await expect(subjectPage.locator('.answer-figure line[stroke-dasharray]')).toHaveCount(1);
+        await expect(subjectPage.locator('.answer-figure line[marker-end]')).toHaveCount(1);
+        await expect(subjectPage.locator('.answer-figure .subject-note')).toContainText('1 项数值关系');
+      }
+      await expect(subjectPage.getByRole('button', { name: '校验', exact: true })).toBeVisible();
+      await expect(subjectPage.locator('.math-fallback,.katex-error')).toHaveCount(0);
+      assert.equal(await subjectPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      assert.deepEqual(subjectErrors, []); assert.deepEqual(subjectExternal, [], 'Subject resources must render offline');
+      console.log(`PASS: packaged ${sample.name} presentation, unverified status and offline 360px layout.`);
+    } finally { await subjectPage.close(); }
+  }
+  console.log('PASS: late bridge startup recovered; early APK answer/history DOM bootstrap, readiness after releasing browser frames with fonts still pending, brief multi-question payload, structured choice labels/options, history open bridge, formulas, image, diagram, knowledge, action bridge, dynamic height, 240px document layout, offline resources and injection safety. Not a physical-device test.');
 } finally {
   await browser?.close();
   await rm(directory, { recursive: true, force: true });

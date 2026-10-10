@@ -1,6 +1,7 @@
+import { useReadingDisclosure } from './reading-state';
 import { answerText } from "@solveflow/contracts/agent";
 import { useState } from 'react';
-import type { AnswerDocumentPayload } from '@solveflow/client';
+import type { AnswerDocumentPayload } from '@solveflow/client/presentation';
 import type { RunContext } from '@solveflow/contracts/http';
 import { TeachingSteps } from './answer-content';
 import { AnswerFigure } from './answer-figure';
@@ -13,7 +14,7 @@ export function OnDemandSteps({ explanation, disabled, onRequest, onCancel, onFo
   onRequest: () => Promise<void>; onCancel: () => Promise<void>;
   onFocus: (context: RunContext, label: string) => Promise<void>;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useReadingDisclosure('steps');
   const [requesting, setRequesting] = useState(false);
   const result = explanation?.outcome;
   const pending = requesting || !!explanation && result === null;
@@ -36,6 +37,7 @@ export function OnDemandSteps({ explanation, disabled, onRequest, onCancel, onFo
           {result.candidate.figures?.map(figure => <AnswerFigure key={figure.id} figure={figure} />)}
         </> : <>
           {result && <p role="alert">{result.status === 'needs_clarification' ? result.candidate.clarificationQuestions.join('；') : result.error.message}</p>}
+          {disabled && <p role="status">当前任务尚未结束或模型未配置，暂时无法生成步骤。</p>}
           <button disabled={disabled} onClick={() => void request()}>{result ? '重新生成步骤' : '查看详细步骤'}</button>
         </>}
     </div>}

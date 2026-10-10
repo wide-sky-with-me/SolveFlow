@@ -16,10 +16,11 @@ test('paginates summaries, cancels clearing, then atomically removes question da
   await page.reload(); await page.getByRole('tab', { name: '历史题目', exact: true }).click();
   await expect(page.getByText('45 条记录', { exact: true })).toBeVisible();
   await expect(page.locator('.history-entry')).toHaveCount(20);
-  await expect(page.locator('.history-ordinal').first()).toHaveText('序号 1');
-  await expect(page.locator('.history-ordinal').last()).toHaveText('序号 20');
-  await expect(page.locator('.history-meta time').first()).toHaveAttribute('datetime', now);
-  await expect(page.locator('.history-meta time').first()).toHaveText(/^保存于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  await expect(page.locator('.history-ordinal').first()).toHaveText('01');
+  await expect(page.locator('.history-ordinal').last()).toHaveText('20');
+  await expect(page.locator('.history-ordinal').first()).toHaveAttribute('aria-label', '序号 1');
+  await expect(page.locator('.history-time').first()).toHaveAttribute('datetime', now);
+  await expect(page.locator('.history-time').first()).toHaveText(/^保存于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   const viewport = page.locator('.history-viewport'); const bounds = await viewport.boundingBox(); if (!bounds) throw new Error('NO_HISTORY_VIEWPORT');
   if (info.project.name === 'mobile') {
     const cdp = await page.context().newCDPSession(page); const x = bounds.x + 100; const y = bounds.y + bounds.height - 60;
@@ -30,8 +31,8 @@ test('paginates summaries, cancels clearing, then atomically removes question da
   await expect.poll(() => viewport.evaluate(node => node.scrollTop)).toBeGreaterThan(30);
   await expect(page.locator('.history-more[aria-expanded="true"]')).toHaveCount(0);
   await page.getByRole('button', { name: '下一页', exact: true }).click(); await expect(page.locator('.history-entry')).toHaveCount(20);
-  await expect(page.locator('.history-ordinal').first()).toHaveText('序号 21');
-  await expect(page.locator('.history-ordinal').last()).toHaveText('序号 40');
+  await expect(page.locator('.history-ordinal').first()).toHaveText('21');
+  await expect(page.locator('.history-ordinal').last()).toHaveText('40');
   await expect(page.locator('.history-entry').first()).toBeInViewport();
   await expect.poll(() => viewport.evaluate(node => node.scrollTop)).toBe(0);
   await page.getByRole('tab', { name: '当前题目', exact: true }).click(); await page.getByRole('tab', { name: '历史题目', exact: true }).click();
@@ -40,7 +41,7 @@ test('paginates summaries, cancels clearing, then atomically removes question da
   await page.getByRole('textbox', { name: '搜索关键词', exact: true }).fill('已保存');
   await expect(page.getByText('第 1 / 3 页', { exact: true })).toBeVisible();
   await expect(page.locator('.history-entry')).toHaveCount(20);
-  await expect(page.locator('.history-ordinal').first()).toHaveText('序号 1');
+  await expect(page.locator('.history-ordinal').first()).toHaveText('01');
   await page.getByRole('button', { name: '收起搜索', exact: true }).click();
   await page.getByRole('button', { name: '清空历史', exact: true }).click();
   await expect(page.getByText('清空全部 45 道题？', { exact: true })).toBeVisible();

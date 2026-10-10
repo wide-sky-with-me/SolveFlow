@@ -4,7 +4,56 @@ import { LocalEngine } from './local-engine.js';
 import { LocalRepository, type LocalDocuments } from './local-repository.js';
 import { makeSafeAgentError, type SolveOutcome } from '@solveflow/contracts/agent';
 function setup() { const values = new Map<string, string>(); const documents: LocalDocuments = { async get(key) { return values.get(key) ?? null; }, async put(key, value) { values.set(key, value); }, async remove(key) { values.delete(key); }, async keys() { return [...values.keys()]; } }; const repository = new LocalRepository(documents); return { repository, values, engine: new LocalEngine(repository, randomUUID) }; }
+it('keeps completed batch learning usable while other photos solve and new photos dispatch', async () => {
+  const { engine, repository } = setup(); const batch = { id: randomUUID(), title: 'Synthetic batch', createdAt: new Date().toISOString(), exam: 'general' as const };
+  const records = await Promise.all([1, 2, 3].map(position => engine.create('data:image/jpeg;base64,AQID', 30, 20, 'general', { ...batch, position })));
+  const first = records[0]!;
+  const answer: SolveOutcome = { schemaVersion: 1, status: 'completed', verified: false, verificationStatus: 'not_requested', warning: null, verification: null, candidate: { schemaVersion: 1, kind: 'answer', problem: { text: 'x+1=3', subject: 'math', uncertainties: [] }, answer: 'x=2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] } };
+  await engine.start(first.session.id, '', undefined, async () => answer); await engine.waitForIdle();
+  const source = (await repository.read(first.session.id)).session.runs[0]!;
+  expect(source.status).toBe('completed');
+  let release = () => {}; const hold = new Promise<void>(resolve => { release = resolve; });
+  try {
+    const second = await engine.start(records[1]!.session.id, '', undefined, async () => { await hold; return answer; });
+    const steps = await engine.start(first.session.id, '步骤', { kind: 'explanation', sourceRunId: source.id }, async () => { await hold; return { ...answer, candidate: { ...answer.candidate, steps: [{ id: 's1', title: '两边减1', explanation: 'x=2' }] } }; });
+    const knowledge = await engine.start(first.session.id, '知识点', { kind: 'knowledge-list', sourceRunId: source.id }, async () => { await hold; return { ...answer, candidate: { ...answer.candidate, knowledgePoints: ['等式性质'], knowledgeDetails: [{ name: '等式性质', explanation: '两边做相同运算', application: '两边减1' }] } }; });
+    const third = await engine.start(records[2]!.session.id, '', undefined, async () => { await hold; return answer; });
+    expect(engine.actives.map(run => run.id)).toEqual(expect.arrayContaining([second.id, steps.id, knowledge.id, third.id]));
+    await expect(engine.start(first.session.id, '重复步骤', { kind: 'explanation', sourceRunId: source.id }, async () => answer)).rejects.toThrow('正在进行中');
+    const cancelled = engine.cancelRun(steps.id); release(); await cancelled; await engine.waitForIdle();
+    const saved = await repository.read(first.session.id);
+    expect(saved.session.runs[0]).toEqual(source);
+    expect(saved.session.runs.find(run => run.id === steps.id)?.status).toBe('cancelled');
+    expect(saved.session.runs.find(run => run.id === knowledge.id)?.status).toBe('completed');
+    expect((await repository.read(records[2]!.session.id)).session.runs[0]?.status).toBe('completed');
+  } finally { release(); await engine.waitForIdle(); }
+});
 const failure = (id: string): SolveOutcome => ({ schemaVersion: 1, status: 'failed', verified: false, error: makeSafeAgentError('MODEL_UNAVAILABLE', id) });
+it('does not create learning content against a candidate that can still be revised', async () => {
+  const { engine, repository } = setup(); const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20); const sourceId = randomUUID();
+  record.session.runs.push({ schemaVersion: 1, id: sourceId, sessionId: record.session.id, createdAt: record.session.createdAt, status: 'verifying', message: '', seq: 1, outcome: { schemaVersion: 1, status: 'completed', verified: false, verificationStatus: 'pending', verification: null, warning: null, candidate: { schemaVersion: 1, kind: 'answer', problem: { text: 'x+1=3', subject: 'math', uncertainties: [] }, answer: 'x=2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] } } });
+  await repository.save(record); const before = await repository.read(record.session.id); let calls = 0;
+  for (const kind of ['explanation', 'knowledge-list'] as const) await expect(engine.start(record.session.id, '', { kind, sourceRunId: sourceId }, async input => { calls++; return failure(input.identity.runId); })).rejects.toThrow('等待本题校验或修正完成');
+  expect(calls).toBe(0); expect(engine.actives).toEqual([]); expect(await repository.read(record.session.id)).toEqual(before);
+});
+it('keeps a durable answer when verification is interrupted without replaying models', async () => {
+  const { repository, engine } = setup(); const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  record.session.runs.push({ schemaVersion: 1, id: randomUUID(), sessionId: record.session.id, createdAt: new Date().toISOString(), status: 'verifying', message: '', seq: 2,
+    outcome: { schemaVersion: 1, status: 'completed', verified: false, verification: null, warning: null, verificationStatus: 'pending', candidate: { schemaVersion: 1, kind: 'answer', problem: { text: 'x+1=3', subject: 'math', uncertainties: [] }, answer: 'x=2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] } } });
+  await repository.save(record); await repository.recoverInterrupted();
+  const result = (await repository.read(record.session.id)).session.runs[0]!;
+  expect(result).toMatchObject({ status: 'completed', outcome: { status: 'completed', candidate: { answer: 'x=2' }, verified: false, warning: 'WORKER_LOST' } });
+  expect(engine.actives).toEqual([]);
+});
+it('persists a manually controlled stopwatch separately and removes it with its question', async () => {
+  const { repository, engine, values } = setup(); const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  const scope = `${randomUUID()}:single`;
+  expect(await repository.readStudyTimer(record.session.id, scope)).toEqual({ schemaVersion: 1, elapsedMs: 0, startedAt: null });
+  await repository.saveStudyTimer(record.session.id, scope, { schemaVersion: 1, elapsedMs: 12345, startedAt: null });
+  expect(await new LocalRepository({ async get(key) { return values.get(key) ?? null; }, async put() {}, async remove() {}, async keys() { return [...values.keys()]; } }).readStudyTimer(record.session.id, scope)).toMatchObject({ elapsedMs: 12345 });
+  expect((await repository.read(record.session.id)).session.runs).toEqual([]);
+  await engine.remove(record.session.id); expect([...values.keys()].some(key => key.startsWith('study-time.'))).toBe(false);
+});
 it('persists a local photo and terminal run without a server', async () => {
   const { repository, engine } = setup(); const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
   await engine.start(record.session.id, '题目', undefined, async input => failure(input.identity.runId)); await engine.waitForIdle();
@@ -30,6 +79,26 @@ it('does not call a model if saving the queued task fails', async () => {
   repository.save = async () => { throw new Error('disk full'); }; let calls = 0;
   await expect(engine.start(record.session.id, '', undefined, async input => { calls++; return failure(input.identity.runId); })).rejects.toThrow('disk full'); expect(calls).toBe(0);
 });
+
+it.each(['explanation', 'knowledge-list', 'verification'] as const)(
+  'rejects a missing saved source for %s before writing or reserving a slot',
+  async kind => {
+    const { repository, engine } = setup();
+    const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+    const save = vi.spyOn(repository, 'save');
+    const execute = vi.fn(async () => failure(randomUUID()));
+
+    await expect(engine.start(record.session.id, '', {
+      kind,
+      sourceRunId: randomUUID(),
+    }, execute)).rejects.toThrow('INVALID_SAVED_CONTEXT');
+
+    expect(save).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(engine.actives).toEqual([]);
+    expect((await repository.read(record.session.id)).session.runs).toEqual([]);
+  },
+);
 it('keeps favorites across stale solver writes, restart and cancellation, and removes metadata with the record', async () => {
   const { repository, engine, values } = setup(); const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
   expect((await repository.list())[0]?.favorite).toBe(false);
@@ -234,4 +303,134 @@ it('preserves submission order and independent outcomes when the device clock mo
     expect(saved.map(run => run.id)).toEqual([first.id, followUp.id]);
     expect(saved[0]?.outcome).toEqual(answer); expect(saved[1]?.outcome?.status).toBe('cancelled');
   } finally { vi.useRealTimers(); }
+});
+
+it('counts conversation and auxiliary attempts separately while bounding both', async () => {
+  const { repository, engine } = setup(); const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  const root = randomUUID();
+  record.session.runs = Array.from({ length: 10 }, (_, i) => ({ schemaVersion: 1, id: i ? randomUUID() : root, sessionId: record.session.id, status: 'failed', createdAt: record.session.createdAt, message: '', seq: 1, outcome: failure(root), ...(i ? { context: { kind: 'explanation' as const, sourceRunId: root } } : {}) }));
+  await repository.save(record);
+  await expect(engine.start(record.session.id, '继续追问', undefined, async input => failure(input.identity.runId))).resolves.toBeDefined();
+  await engine.waitForIdle();
+  expect((await repository.read(record.session.id)).session.runs).toHaveLength(11);
+});
+
+it.each(['conversation', 'auxiliary'] as const)('enforces the separate %s cap before issuing a model request', async kind => {
+  const { repository, engine } = setup(); const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20); const root = randomUUID();
+  const count = kind === 'conversation' ? 10 : 31;
+  record.session.runs = Array.from({ length: count }, (_, i) => ({ schemaVersion: 1, id: i ? randomUUID() : root, sessionId: record.session.id, status: 'failed', createdAt: record.session.createdAt, message: '', seq: 1, outcome: failure(root), ...(kind === 'auxiliary' && i ? { context: { kind: 'explanation' as const, sourceRunId: root } } : {}) }));
+  await repository.save(record); const execute = vi.fn(async () => failure(root));
+  await expect(engine.start(record.session.id, '', kind === 'auxiliary' ? { kind: 'explanation', sourceRunId: root } : undefined, execute)).rejects.toThrow(kind === 'conversation' ? '10轮' : '30次');
+  expect(execute).not.toHaveBeenCalled(); expect((await repository.read(record.session.id)).session.runs).toHaveLength(count);
+});
+
+it.each(['esat', 'tmua', 'tara'] as const)('preserves %s for batch snapshots, reopened requests and exported records', async exam => {
+  const { repository, engine } = setup();
+  const batch = { id: randomUUID(), title: '考试快照回归', exam, position: 1, createdAt: new Date().toISOString() };
+  const saved = await engine.create('data:image/jpeg;base64,AQID', 30, 20, exam, batch);
+  const reopened = new LocalEngine(repository, randomUUID);
+  await reopened.start(saved.session.id, '', undefined, async input => { expect(input.exam).toBe(exam); expect(input.verificationMode).toBe('automatic'); return failure(input.identity.runId); });
+  await reopened.waitForIdle();
+  expect(await repository.read(saved.session.id)).toMatchObject({ exam, batch: { exam } });
+  const rows = []; for await (const row of repository.exportHistory({ aborted: false })) rows.push(row);
+  expect(rows).toContainEqual(expect.objectContaining({ kind: 'question', record: expect.objectContaining({ exam, batch: expect.objectContaining({ exam }) }) }));
+});
+
+const reviewCandidate = { schemaVersion: 1 as const, kind: 'answer' as const, problem: { text: 'x+1=3', subject: 'math' as const, uncertainties: [] }, answer: 'x=3', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] };
+const reviewFailure: SolveOutcome = { schemaVersion: 1, status: 'completed', candidate: reviewCandidate, verified: false, warning: null, verification: { schemaVersion: 1, verdict: 'fail', checked: ['transcription', 'arithmetic'], issues: [{ code: 'ARITHMETIC', message: 'The value does not satisfy the equation.' }] } };
+async function reviewSource() {
+  const state = setup(); const record = await state.engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  const source = await state.engine.start(record.session.id, '', undefined, async () => ({ ...reviewFailure, verification: null, verificationStatus: 'not_requested' }));
+  await state.engine.waitForIdle(); return { ...state, record, source };
+}
+it('automatically takes over a failed manual check once in a new version, without marking the old answer correct', async () => {
+  const { engine, repository, record, source } = await reviewSource(); let calls = 0;
+  await engine.startVerification(record.session.id, '', { kind: 'verification', sourceRunId: source.id }, async input => {
+    calls++;
+    if (input.verificationTarget) return reviewFailure;
+    expect(input.useBackup).toBe(true); expect(input.focus?.kind).toBe('regenerate');
+    expect([...input.image.bytes]).toEqual([1, 2, 3]);
+    // A second failed check is terminal and cannot trigger another automatic run.
+    return { ...reviewFailure, candidate: { ...reviewCandidate, answer: 'x=2' } };
+  });
+  await vi.waitFor(async () => expect((await repository.readMetadata(record.session.id)).session.runs).toHaveLength(3));
+  await engine.waitForIdle(); const saved = (await repository.readMetadata(record.session.id)).session.runs;
+  expect(calls).toBe(2); expect(saved[0]?.outcome).toMatchObject({ candidate: { answer: 'x=3' }, verified: false });
+  expect(saved[1]?.outcome).toMatchObject({ candidate: { answer: 'x=3' }, verification: { verdict: 'fail' } });
+  expect(saved[2]?.outcome).toMatchObject({ candidate: { answer: 'x=2' }, verified: false });
+});
+it.each(['pass', 'unknown'] as const)('does not start a backup for a manual %s review', async verdict => {
+  const { engine, repository, record, source } = await reviewSource(); let calls = 0;
+  await engine.startVerification(record.session.id, '', { kind: 'verification', sourceRunId: source.id }, async () => {
+    calls++; return { ...reviewFailure, verified: verdict === 'pass', verification: { schemaVersion: 1, verdict, checked: ['transcription', 'arithmetic'], issues: verdict === 'pass' ? [] : [{ code: 'INSUFFICIENT_EVIDENCE', message: 'Not enough evidence.' }] } };
+  });
+  await engine.waitForIdle(); await new Promise(resolve => setTimeout(resolve, 0));
+  expect(calls).toBe(1); expect((await repository.readMetadata(record.session.id)).session.runs).toHaveLength(2);
+});
+it.each(['cancel', 'delete', 'settings'] as const)('suppresses pending manual takeover after %s even if a late check says FAIL', async action => {
+  const { engine, repository, record, source } = await reviewSource(); let calls = 0; let release = () => {};
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await engine.startVerification(record.session.id, '', { kind: 'verification', sourceRunId: source.id }, async () => { calls++; await gate; return reviewFailure; });
+  await vi.waitFor(() => expect(calls).toBe(1));
+  const ending = action === 'delete' ? engine.remove(record.session.id) : action === 'cancel' ? engine.cancel() : Promise.resolve(engine.invalidatePendingCorrections());
+  release(); await ending; await engine.waitForIdle(); await new Promise(resolve => setTimeout(resolve, 0));
+  expect(calls).toBe(1);
+  if (action === 'delete') expect(await repository.list()).toEqual([]);
+  else expect((await repository.readMetadata(record.session.id)).session.runs).toHaveLength(2);
+});
+it('never starts the manual correction when the failed review could not be saved', async () => {
+  const { engine, repository, record, source } = await reviewSource(); let calls = 0; const errors: string[] = [];
+  engine.onError(message => errors.push(message));
+  const save = repository.save.bind(repository); let writes = 0;
+  vi.spyOn(repository, 'save').mockImplementation(async value => { if (++writes === 2) throw new Error('synthetic disk full'); await save(value); });
+  await engine.startVerification(record.session.id, '', { kind: 'verification', sourceRunId: source.id }, async () => { calls++; return reviewFailure; });
+  await engine.waitForIdle(); await new Promise(resolve => setTimeout(resolve, 0));
+  expect(calls).toBe(1); expect(engine.storageBlocked).toBe(true); expect(errors.some(message => message.includes('备用自动解答未能启动'))).toBe(true);
+  await engine.retryPendingSaves(); await new Promise(resolve => setTimeout(resolve, 0));
+  expect(calls).toBe(1); expect((await repository.readMetadata(record.session.id)).session.runs).toHaveLength(2);
+});
+it('takes over the selected question even when another question on the same photo has a newer answer', async () => {
+  const { engine, repository, record, source } = await reviewSource();
+  const saved = await repository.read(record.session.id);
+  saved.session.runs[0]!.outcome = { ...reviewFailure, candidate: { ...reviewCandidate, questions: [1, 2].map(number => ({ number, problem: reviewCandidate.problem, answer: 'x=3', stepIds: [], figureIds: [] })) } };
+  await repository.save(saved);
+  await engine.start(record.session.id, 'Question two', { kind: 'question', sourceRunId: source.id, number: 2 }, async () => reviewFailure); await engine.waitForIdle();
+  let calls = 0;
+  await engine.startVerification(record.session.id, '', { kind: 'verification', sourceRunId: source.id, number: 1 }, async input => {
+    calls++; if (!input.verificationTarget) { expect(input.focus?.content).toContain('只重新完整解答第1题'); expect(input.useBackup).toBe(true); }
+    return reviewFailure;
+  });
+  await vi.waitFor(() => expect(calls).toBe(2)); await engine.waitForIdle();
+  const corrected = (await repository.readMetadata(record.session.id)).session.runs.at(-1);
+  expect(corrected?.context).toMatchObject({ kind: 'regenerate', number: 1 });
+  expect(corrected?.outcome).toMatchObject({ status: 'completed', verification: { verdict: 'fail' } });
+});
+it('captures takeover permission before admission so revocation during the queued write still wins', async () => {
+  const { engine, repository, record, source } = await reviewSource(); let calls = 0; let writing = false; let release = () => {};
+  const gate = new Promise<void>(resolve => { release = resolve; }); const save = repository.save.bind(repository);
+  vi.spyOn(repository, 'save').mockImplementationOnce(async value => { writing = true; await gate; await save(value); });
+  const accepted = engine.startVerification(record.session.id, '', { kind: 'verification', sourceRunId: source.id }, async () => { calls++; return reviewFailure; });
+  await vi.waitFor(() => expect(writing).toBe(true)); engine.invalidatePendingCorrections(); release(); await accepted;
+  await engine.waitForIdle(); await new Promise(resolve => setTimeout(resolve, 0));
+  expect(calls).toBe(1); expect((await repository.readMetadata(record.session.id)).session.runs).toHaveLength(2);
+});
+it('persists one overall stopwatch without a question and keeps it across clearing question history', async () => {
+  const { repository, engine, values } = setup();
+  expect(await repository.readOverallStudyTimer()).toEqual({ schemaVersion: 1, elapsedMs: 0, startedAt: null });
+  await repository.saveOverallStudyTimer({ schemaVersion: 1, elapsedMs: 12345, startedAt: null });
+  const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  await repository.saveStudyTimer(record.session.id, `${record.session.id}:single`, { schemaVersion: 1, elapsedMs: 9000, startedAt: null });
+  await engine.removeAll();
+  expect(await repository.readOverallStudyTimer()).toMatchObject({ elapsedMs: 12345 });
+  const reopened = new LocalRepository({ async get(key) { return values.get(key) ?? null; }, async put(key, value) { values.set(key, value); }, async remove(key) { values.delete(key); }, async keys() { return [...values.keys()]; } });
+  expect(await reopened.readOverallStudyTimer()).toMatchObject({ elapsedMs: 12345 });
+  await reopened.saveOverallStudyTimer({ schemaVersion: 1, elapsedMs: 0, startedAt: null });
+  expect(await repository.readOverallStudyTimer()).toMatchObject({ elapsedMs: 0 });
+});
+it('preserves a damaged overall stopwatch until an explicit reset', async () => {
+  const { repository, values } = setup(); values.set('study-time.overall', '{damaged');
+  await expect(repository.readOverallStudyTimer()).rejects.toThrow('部分本地记录无法读取');
+  expect(values.get('study-time.overall')).toBe('{damaged');
+  await repository.saveOverallStudyTimer({ schemaVersion: 1, elapsedMs: 0, startedAt: null });
+  expect(await repository.readOverallStudyTimer()).toMatchObject({ elapsedMs: 0 });
 });

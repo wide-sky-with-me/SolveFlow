@@ -2,6 +2,8 @@ const { withAndroidManifest, withMainApplication, withDangerousMod } = require('
 const fs = require('node:fs/promises');
 const path = require('node:path');
 module.exports = function withSolveBackground(config) {
+  // Decision: .agents/notes/implemented/agent/2026-10-08-device-time-and-stream-budget.md
+  // Decision: .agents/notes/implemented/agent/2026-10-08-unlimited-device-time.md
   config = withAndroidManifest(config, config => {
     const manifest = config.modResults.manifest;
     const permissions = ['android.permission.FOREGROUND_SERVICE', 'android.permission.FOREGROUND_SERVICE_DATA_SYNC', 'android.permission.WAKE_LOCK', 'android.permission.POST_NOTIFICATIONS'];
@@ -22,7 +24,10 @@ module.exports = function withSolveBackground(config) {
   return withDangerousMod(config, ['android', async config => {
     const target = path.join(config.modRequest.platformProjectRoot, 'app/src/main/java/com/solveflow/app');
     await fs.mkdir(target, { recursive: true });
-    for (const file of ['SolveBackgroundModule.kt', 'SolveBackgroundService.kt']) await fs.copyFile(path.join(__dirname, 'solve-background', file), path.join(target, file));
+    const { MAX_DEVICE_PHASE_DURATION_MS, MAX_DEVICE_JOB_DURATION_MS } = await import('@solveflow/contracts/agent');
+    const { MAX_LOCAL_MODEL_RUNS } = await import('@solveflow/contracts/local');
+    await fs.writeFile(path.join(target, 'SolveRunBudget.kt'), `package com.solveflow.app\n\ninternal object SolveRunBudget { const val PHASE_DURATION_MS = ${MAX_DEVICE_PHASE_DURATION_MS}L; const val JOB_DURATION_MS = ${MAX_DEVICE_JOB_DURATION_MS}L; const val MAX_JOBS = ${MAX_LOCAL_MODEL_RUNS} }\n`);
+    for (const file of ['SolveBackgroundModule.kt', 'SolveBackgroundService.kt', 'SolveDocumentModule.kt']) await fs.copyFile(path.join(__dirname, 'solve-background', file), path.join(target, file));
     return config;
   }]);
 };

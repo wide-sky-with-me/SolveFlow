@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { PhaseDiagnosticSchema, type PhaseDiagnostic } from "../policy/phase-diagnostic.js";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import { AgentInputSchema, PublicAgentEventSchema, parseCandidateWithEvidence, parseVerificationForCandidate, type NormalizedImage, type PhaseResult, type PublicAgentEvent } from "@solveflow/contracts/agent";
+import { AgentInputSchema, PublicAgentEventSchema, normalizeGeneratedCandidate, parseCandidateWithEvidence, parseCandidateForExam, parseVerificationForCandidate, type NormalizedImage, type PhaseResult, type PublicAgentEvent } from "@solveflow/contracts/agent";
 import { RunBudget, BudgetExceeded } from "../policy/run-budget.js";
 import { CapabilitySnapshot } from "../policy/capability-snapshot.js";
 import { budgetedPrompt, ModelDispatchDenied } from "./budgeted-prompt.js";
@@ -45,10 +45,10 @@ export async function runSessionPhase(session: AgentSession, options: { visualEv
       } catch { eventFailure = true; session.agent.abort(); }
     });
     // The original image is independently supplied on EVERY phase, including Verifier.
-    const { image, identity: _identity, ...data } = input;
+    const { image, materials, identity: _identity, ...data } = input;
     await budgetedPrompt({ session, capabilities: options.capabilities, budget: options.budget, role: input.role, signal: options.signal,
       ...(options.beforeModelDispatch ? { beforeModelDispatch: options.beforeModelDispatch } : {}),
-      message: JSON.stringify(data) + (options.visualEvidence ? `\n服务端图片顺序说明：${options.visualEvidence.description}` : ""), images: [image, ...(options.visualEvidence?.images ?? [])].map(item => ({ type: "image" as const, data: Buffer.from(item.bytes).toString("base64"), mimeType: item.mimeType })) });
+      message: JSON.stringify({ ...data, ...(materials?.length ? { materialOrder: materials.map(item => item.id) } : {}) }) + (options.visualEvidence ? `\n服务端图片顺序说明：${options.visualEvidence.description}` : ""), images: [image, ...(materials ?? []).map(item => item.image), ...(options.visualEvidence?.images ?? [])].map(item => ({ type: "image" as const, data: Buffer.from(item.bytes).toString("base64"), mimeType: item.mimeType })) });
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (eventFailure) throw new PhaseError("TOOL_LIMIT");
       const final = session.messages.at(-1);
@@ -63,7 +63,7 @@ export async function runSessionPhase(session: AgentSession, options: { visualEv
       let text = "";
       for (const part of final.content) {
         if (part.type !== "text") continue;
-        if (Buffer.byteLength(text, "utf8") + Buffer.byteLength(part.text, "utf8") > 32 * 1024) { diagnose("OUTPUT_SIZE_LIMIT"); throw new PhaseError("MODEL_OUTPUT_INVALID"); }
+        if (Buffer.byteLength(text, "utf8") + Buffer.byteLength(part.text, "utf8") > 64 * 1024) { diagnose("OUTPUT_SIZE_LIMIT"); throw new PhaseError("MODEL_OUTPUT_INVALID"); }
         text += part.text;
       }
       let value: unknown;
@@ -77,7 +77,7 @@ export async function runSessionPhase(session: AgentSession, options: { visualEv
         continue;
       }
       try {
-        if (input.role === "solver") return { role: "solver", candidate: parseCandidateWithEvidence(value, input.evidence), events };
+        if (input.role === "solver") return { role: "solver", candidate: parseCandidateForExam(parseCandidateWithEvidence(normalizeGeneratedCandidate(value), input.evidence), input.exam), events };
         return { role: "verifier", verification: parseVerificationForCandidate(value, input.candidate), events };
       } catch (error) {
         const fields = new Set(["schemaVersion", "kind", "problem", "text", "subject", "uncertainties", "answer", "steps", "id", "title", "explanation", "latex", "knowledgePoints", "citationIds", "clarificationQuestions", "refusalReason", "questions", "number", "stepIds", "figureIds", "figures", "xRange", "yRange", "elements", "coefficients", "checked", "verdict", "issues"]);

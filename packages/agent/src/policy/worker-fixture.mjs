@@ -6,6 +6,7 @@ else if (workerData.mode === "spin") { while (true) { /* deliberately ignores ca
 else if (workerData.mode === "hang") setInterval(() => {}, 1000);
 else if (workerData.mode === "crash") throw new Error("synthetic private error not for parent");
 else if (workerData.mode === "oversize") parentPort.postMessage({ text: "x".repeat(40 * 1024) });
+else if (workerData.mode === "echo") parentPort.postMessage(workerData);
 else if (workerData.mode === "logs") { process.stdout.write("x".repeat(40 * 1024)); setInterval(() => {}, 1000); }
 else if (workerData.mode === "cooperate") { parentPort.on("message", () => process.exit(0)); }
 else if (workerData.mode === "diagnostic") {

@@ -1,6 +1,6 @@
 import type { LocalHistorySummary } from '@solveflow/contracts/local';
 import { useEffect, useState } from 'react';
-import { historyEntry, formatHistoryTime } from '@solveflow/client';
+import { historyEntry, formatHistoryTime } from '@solveflow/client/presentation';
 import { subjectLabel } from '@solveflow/contracts/http';
 import { Image, Pressable, Text, View } from '../theme/primitives';
 import { Button, Card, s } from './ui';

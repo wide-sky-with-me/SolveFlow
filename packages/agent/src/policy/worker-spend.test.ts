@@ -43,21 +43,21 @@ it("preserves only the trusted spending-limit error across the worker boundary",
   await expect(runIsolatedWorker(entry, {}, { signal: fresh(), timeoutMs: 2000, authorizeModel: () => { throw new Error("SPEND_LIMIT"); } })).rejects.toThrow("SPEND_LIMIT");
 });
 
-it("worker client grants eighteen requests and rejects the nineteenth without sending", async () => {
+it("worker client grants twenty requests and rejects the twenty-first without sending", async () => {
   const { port1, port2 } = new MessageChannel(); let calls = 0;
   try {
     port2.on("message", value => { calls++; port2.postMessage({ type: "model.reserved", id: value.id, ok: true }); });
     const authorize = createWorkerSpendClient(port1);
-    for (let i = 0; i < 18; i++) await authorize("fixed", fresh());
+    for (let i = 0; i < 20; i++) await authorize("fixed", fresh());
     await expect(authorize("fixed", fresh())).rejects.toThrow("MODEL_DISPATCH_DENIED");
-    expect(calls).toBe(18);
+    expect(calls).toBe(20);
     expect(port1.listenerCount("message")).toBe(0); expect(port1.listenerCount("close")).toBe(0);
   } finally { port1.close(); port2.close(); }
 });
-it.each([18, 19])("parent worker authority bounds sequential requests at eighteen (%i)", async count => {
+it.each([20, 21])("parent worker authority bounds sequential requests at twenty (%i)", async count => {
   let calls = 0;
   const task = runIsolatedWorker(entry, { mode: "sequence", count }, { signal: fresh(), timeoutMs: 2000, authorizeModel: () => { calls++; } });
-  if (count === 18) await expect(task).resolves.toEqual({ granted: true });
+  if (count === 20) await expect(task).resolves.toEqual({ granted: true });
   else await expect(task).rejects.toThrow("MODEL_DISPATCH_DENIED");
-  expect(calls).toBe(18);
+  expect(calls).toBe(20);
 });

@@ -2,13 +2,15 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 const root = new URL('../packages/agent/', import.meta.url);
 // Explicit reviewed manifest; no cwd/HOME/AGENTS discovery or model-supplied paths.
-const manifest = { exams: ['SKILL.md', 'references/sat.md', 'references/act.md', 'references/ap.md'], general: ['SKILL.md'], math: ['SKILL.md', 'references/algebra.md'], diagram: ['SKILL.md', 'references/example.md', 'references/economics.md'], economics: ['SKILL.md'], physics: ['SKILL.md', 'references/models.md'], chemistry: ['SKILL.md', 'references/stoichiometry.md'], biology: ['SKILL.md', 'references/genetics-and-experiments.md'] };
+const manifest = { exams: ['SKILL.md', 'references/sat.md', 'references/act.md', 'references/ap.md', 'references/esat.md', 'references/tmua.md', 'references/tara.md'], general: ['SKILL.md'], writing: ['SKILL.md'], math: ['SKILL.md', 'references/algebra.md'], diagram: ['SKILL.md', 'references/example.md', 'references/economics.md'], economics: ['SKILL.md'], physics: ['SKILL.md', 'references/models.md'], chemistry: ['SKILL.md', 'references/stoichiometry.md'], biology: ['SKILL.md', 'references/genetics-and-experiments.md'] };
 const files = {}; const skills = [];
 for (const [name, paths] of Object.entries(manifest)) {
   for (const path of paths) {
     const content = await readFile(new URL(`resources/skills/${name}/${path}`, root), 'utf8');
     if (Buffer.byteLength(content) > 32 * 1024) throw new Error('SKILL_TOO_LARGE');
-    files[`/skills/${name}/${path}`] = content;
+    // Device read has its own fixed prefix; retain the server prefix in source resources.
+    // Decision: .agents/notes/implemented/agent/2026-10-06-skill-paths-and-source-number.md
+    files[`/skills/${name}/${path}`] = content.replaceAll('/solveflow/skills/', '/skills/');
     if (path === 'SKILL.md') { const description = /^description:\s*(.+)$/m.exec(content)?.[1]; if (!description) throw new Error('MISSING_SKILL_DESCRIPTION'); skills.push({ name, description, path: `/skills/${name}/SKILL.md` }); }
   }
 }

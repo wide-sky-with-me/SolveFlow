@@ -4,7 +4,7 @@ const runId = "00000000-0000-4000-8000-000000000001";
 it("rejects client-supplied owner, remote image and overlong follow-up", () => {
   expect(CreateSessionSchema.safeParse({ schemaVersion: 1, uploadId: runId, ownerId: runId }).success).toBe(false);
   expect(CreateRunSchema.safeParse({ schemaVersion: 1, imageUrl: "https://example.com/a.jpg" }).success).toBe(false);
-  expect(CreateRunSchema.safeParse({ schemaVersion: 1, message: "a".repeat(2001) }).success).toBe(false);
+  expect(CreateRunSchema.safeParse({ schemaVersion: 1, message: "a".repeat(8001) }).success).toBe(false);
 });
 it("requires versioned monotonic event metadata and excludes private fields", () => {
   const event = { schemaVersion: 1, type: "run.status", runId, seq: 1, status: "solving" };

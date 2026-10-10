@@ -7,7 +7,7 @@ import { connectDatabase, migrate, Repository } from "@solveflow/db";
 import { loadAppConfig } from "@solveflow/config";
 import { BootstrapSchema, NativeBootstrapSchema, UploadViewSchema, RunViewSchema, parseRunEvent } from "@solveflow/contracts/http";
 import { makeSafeAgentError } from "@solveflow/contracts/agent";
-import { createProbeImage } from "@solveflow/agent/application";
+import { createProbeImage, solve, RunBudget } from "@solveflow/agent/application";
 import { z } from "zod";
 import { createApp } from "./app.js";
 import { S3ImageStore } from "./storage.js";
@@ -287,6 +287,24 @@ it("persists owned step references, hashes the context and resolves it in the wo
     expect(value.history?.at(-1)?.answer).toContain("教学步骤"); resolved = true; return execute(value, ...args);
   }, randomUUID(), new AbortController().signal);
   expect(resolved).toBe(true);
+});
+
+it.each([undefined, 2])("verifies the saved answer for question %s without solving a replacement", async number => {
+  const user = await fixture(); const source = await queue(user);
+  const original = SolveOutcomeSchema.parse({ schemaVersion: 1, status: "completed", verified: false, verification: null, warning: null, verificationStatus: "not_requested",
+    candidate: { schemaVersion: 1, kind: "answer", problem: { text: "待核验原题", subject: "math", uncertainties: [] }, answer: "旧答案", steps: [{ id: "q1", title: "旧步骤", explanation: "旧推导" }],
+      ...(number ? { questions: [{ number: 1, answer: "第一题旧答案", stepIds: ["q1"], figureIds: [] }, { number: 2, answer: "第二题旧答案", stepIds: [], figureIds: [] }] } : {}),
+      knowledgePoints: [], citationIds: [], clarificationQuestions: [] } });
+  await processNext(repository, storage, async () => original, randomUUID(), new AbortController().signal);
+  const run = await repository.createRun(user.id, user.sessionId, randomUUID(), { schemaVersion: 1, context: { kind: "verification", sourceRunId: source.id, ...(number ? { number } : {}) } });
+  const roles: string[] = [];
+  await processNext(repository, storage, async (input, signal) => solve(input, async phase => {
+    roles.push(phase.role);
+    return { role: "verifier", events: [], verification: { schemaVersion: 1, verdict: "fail", checked: ["transcription", "logic"], issues: [{ code: "LOGIC", message: "旧结论与题意不符。" }] } };
+  }, new RunBudget(), signal), randomUUID(), new AbortController().signal);
+  expect(roles).toEqual(["verifier"]);
+  expect((await repository.getRun(user.id, run.id)).outcome).toMatchObject({ status: "completed", verified: false, candidate: { answer: number ? "第二题旧答案" : "旧答案" }, verification: { verdict: "fail" } });
+  expect((await repository.getRun(user.id, source.id)).outcome).toEqual(original);
 });
 
 it("retains the pending clarification for a short reply and carries corrections into later runs", async () => {

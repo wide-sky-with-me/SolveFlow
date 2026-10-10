@@ -2,7 +2,7 @@ import type { AnswerCandidate, ProblemStatement, KnowledgeDetail } from "./agent
 import type { Figure } from "./figure.js";
 
 type Step = AnswerCandidate["steps"][number];
-export interface QuestionSection { number: number; answer: string; selectedOptions?: string[] | undefined; steps: Step[]; figures: Figure[]; problem?: ProblemStatement | undefined; knowledgeDetails?: KnowledgeDetail[] | undefined }
+export interface QuestionSection { number: number; answer: string; writing?: AnswerCandidate['writing']; chemistry?: AnswerCandidate['chemistry']; parts?: AnswerCandidate['parts']; responseValue?: string | undefined; selectedOptions?: string[] | undefined; steps: Step[]; figures: Figure[]; problem?: ProblemStatement | undefined; knowledgeDetails?: KnowledgeDetail[] | undefined }
 
 // Legacy records have no ownership metadata. Only unambiguous, fully numbered
 // content is regrouped; this view never changes persisted answers or verification.
@@ -40,7 +40,7 @@ export function questionSections(candidate: AnswerCandidate): QuestionSection[] 
     const steps = new Map(candidate.steps.map(step => [step.id, step]));
     const figures = new Map((candidate.figures ?? []).map(figure => [figure.id, figure]));
     // Candidate is schema-validated at the HTTP/SSE boundary.
-    return candidate.questions.map(question => ({ number: question.number, answer: question.answer, selectedOptions: question.selectedOptions,
+    return candidate.questions.map(question => ({ number: question.number, answer: question.answer, writing: question.writing, chemistry: question.chemistry, parts: question.parts, responseValue: question.responseValue, selectedOptions: question.selectedOptions,
       steps: question.stepIds.map(id => cleanStep(steps.get(id)!, question.number)),
       figures: question.figureIds.map(id => figures.get(id)!), problem: question.problem, knowledgeDetails: question.knowledgeDetails,
     }));

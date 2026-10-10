@@ -1,6 +1,6 @@
 import type { DOMProps } from 'expo/dom';
 import { Paths } from 'expo-file-system';
-import { apiOrigin } from '@solveflow/client';
+import { apiOrigin } from '@solveflow/client/remote';
 /** No cookie jar, native module bridge or arbitrary file/network navigation in answer documents. */
 export const documentProps: DOMProps = {
   useExpoDOMWebView: false, unstable_useExpoModulesBridge: false, matchContents: true, scrollEnabled: false,

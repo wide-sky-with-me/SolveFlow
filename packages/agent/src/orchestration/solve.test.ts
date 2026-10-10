@@ -6,6 +6,15 @@ import { RunBudget } from "../policy/run-budget.js";
 const input = { schemaVersion: 1, role: "solver", identity: { ownerId: "a", sessionId: "s", runId: "r" }, message: "", image: { mimeType: "image/png", bytes: new Uint8Array([1, 2]) }, evidence: [] };
 const answer = { schemaVersion: 1, kind: "answer", problem: { text: "2x + 3 = 7", subject: "math", uncertainties: [] }, answer: "x = 2", steps: [{ id: "one", title: "求解", explanation: "移项后除以2" }], knowledgePoints: [], citationIds: [], clarificationQuestions: [] };
 const verdict = (value: Verification["verdict"]) => ({ schemaVersion: 1, verdict: value, checked: ["transcription", "arithmetic"], issues: value === "pass" ? [] : [{ code: "ARITHMETIC", stepId: "one", message: "请复查" }] });
+it('keeps the corrected candidate visible if its automatic recheck exhausts verification attempts', async () => {
+  const corrected = { ...answer, answer: 'Corrected answer: x=2' }; let checks = 0;
+  const result = await solve(input, async phase => {
+    if (phase.role === 'solver') return { role: 'solver', candidate: answer, events: [] };
+    if (++checks === 1) return { role: 'verifier', verification: verdict('fail'), events: [] };
+    throw new SolvePhaseError('VERIFIER_LIMIT');
+  }, new RunBudget(), new AbortController().signal, () => {}, { execute: async () => ({ role: 'solver', candidate: corrected, events: [] }) });
+  expect(result).toMatchObject({ status: 'completed', candidate: corrected, verified: false, verification: null, warning: 'VERIFIER_LIMIT' });
+});
 it.each([
   { values: ["pass"], phases: 2, verified: true },
   { values: ["fail", "pass"], phases: 4, verified: true },
@@ -31,12 +40,32 @@ it.each(["MODEL_TIMEOUT", "MODEL_OUTPUT_INVALID"] as const)("preserves an unveri
   }, new RunBudget(), new AbortController().signal);
   expect(result).toMatchObject({ status: "completed", verified: false, warning: code, verification: null });
 });
-it.each(["MODEL_UNAVAILABLE", "CAPABILITY_DENIED", "WORKER_LOST", "RUN_TIMEOUT"] as const)("does not downgrade fatal %s to success", async code => {
+it.each(["MODEL_UNAVAILABLE", "CAPABILITY_DENIED", "WORKER_LOST", "RUN_TIMEOUT"] as const)("does not downgrade a missing solver or fatal verifier %s to success", async code => {
   const result = await solve(input, async phase => {
-    if (phase.role === "verifier") throw new SolvePhaseError(code);
+    if (code === 'MODEL_UNAVAILABLE' || phase.role === "verifier") throw new SolvePhaseError(code);
     return { role: "solver", candidate: answer, events: [] };
   }, new RunBudget(), new AbortController().signal);
   expect(result).toMatchObject({ status: "failed", error: { code } });
+});
+it('preserves a completed solver answer when the automatic verifier stream becomes unavailable without calling backup', async () => {
+  let calls = 0; let backupCalls = 0;
+  const result = await solve(input, async phase => {
+    calls++;
+    if (phase.role === 'verifier') throw new SolvePhaseError('MODEL_UNAVAILABLE');
+    return { role: 'solver', candidate: answer, events: [] };
+  }, new RunBudget(), new AbortController().signal, () => {}, { execute: async () => { backupCalls++; throw new Error('UNEXPECTED_BACKUP'); } });
+  expect(result).toMatchObject({ status: 'completed', candidate: answer, verified: false, verification: null, warning: 'MODEL_UNAVAILABLE' });
+  expect(calls).toBe(2); expect(backupCalls).toBe(0);
+});
+it('keeps cancellation and explicit verification failures terminal after a valid answer', async () => {
+  const controller = new AbortController();
+  const cancelled = await solve(input, async phase => {
+    if (phase.role === 'verifier') { controller.abort(); throw new SolvePhaseError('MODEL_UNAVAILABLE'); }
+    return { role: 'solver', candidate: answer, events: [] };
+  }, new RunBudget(), controller.signal);
+  expect(cancelled).toMatchObject({ status: 'cancelled', error: { code: 'CANCELLED' } });
+  const manual = await solve({ ...input, verificationTarget: answer }, async () => { throw new SolvePhaseError('MODEL_UNAVAILABLE'); }, new RunBudget(), new AbortController().signal);
+  expect(manual).toMatchObject({ status: 'failed', error: { code: 'MODEL_UNAVAILABLE' } });
 });
 it("rejects invalid PASS and never treats it as verified", async () => {
   const result = await solve(input, async phase => phase.role === "solver" ? { role: "solver", candidate: answer, events: [] }

@@ -7,7 +7,7 @@ import { solve } from "../orchestration/solve.js";
 import { RunBudget } from "../policy/run-budget.js";
 import { createWorkerSpendClient } from "../policy/worker-spend-client.js";
 import { runOpenAiPhase } from "./openai-phase.js";
-import { assertBoundedJson } from "../policy/bounded-json.js";
+import { assertBoundedJson, MAX_APPLICATION_JSON_BYTES } from "../policy/bounded-json.js";
 const port = parentPort;
 if (!port) throw new Error("WORKER_ONLY");
 const controller = new AbortController();
@@ -24,5 +24,5 @@ try {
     return runOpenAiPhase(phase, budget, signal, { ...connection, learningPresentation: true, onDiagnostic: diagnostic => port.postMessage({ type: "diagnostic", diagnostic }), runDirectory: config.runDirectory, authorize: (_model, active) => authorize(connection.authorizationId, active) });
   }, new RunBudget(), controller.signal,
     event => port.postMessage({ type: "progress", event }));
-  assertBoundedJson(outcome); port.postMessage(outcome);
+  assertBoundedJson(outcome, MAX_APPLICATION_JSON_BYTES); port.postMessage(outcome);
 } finally { port.removeListener("message", cancel); port.close(); }

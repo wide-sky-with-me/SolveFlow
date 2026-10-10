@@ -15,6 +15,13 @@ import { runSessionPhase } from "./phase-runner.js";
 const identity = { ownerId: "owner", sessionId: "session", runId: "run" };
 const candidate = { schemaVersion: 1, kind: "answer", problem: { text: "1+1", subject: "math", uncertainties: [] }, answer: "2", steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] };
 const solverInput = { schemaVersion: 1, role: "solver", identity, message: "solve", image: { bytes: new Uint8Array([1, 2, 3]), mimeType: "image/png" }, evidence: [] };
+it('normalizes generated source numbers on the server without spending a format repair', async () => {
+  const f = await fixture();
+  f.faux.setResponses([fauxAssistantMessage(JSON.stringify({ ...candidate, problem: { ...candidate.problem, sourceNumber: 63 } }))]);
+  const result = await runSessionPhase(f.session, { ...f, input: solverInput });
+  expect(result).toMatchObject({ role: 'solver', candidate: { problem: { sourceNumber: '63' }, answer: '2' } });
+  expect(f.budget.snapshot()).toMatchObject({ modelAttempts: 1 });
+});
 it("diagnoses rejected output without logging private model content or unknown field names", async () => {
   const f = await fixture(); const log = vi.spyOn(console, "warn").mockImplementation(() => {});
   f.faux.setResponses([fauxAssistantMessage(JSON.stringify({ ...candidate, "private-canary": "private-answer" }))]);

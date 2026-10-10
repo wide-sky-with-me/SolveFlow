@@ -5,13 +5,13 @@ description: 各科课程中的坐标与数据关系图，涵盖数学函数/几
 
 # 用图解释本题
 
-输出以answerMode为准：brief只保留必要依据与加粗结果，完整推导与干扰项逐项解释留到detailed，知识点只在应用请求（focus.kind=knowledge-list）时给；原题明确要求的证明/FRQ得分依据及图示不能省略。只在用户请求时由应用调度独立校验，Skill不能自行宣称已通过。
+输出以answerMode和系统题型规则为准：选择题用selectedOptions表达结论，answer只留决定性理由；非选择题遵守结果格式。brief不输出额外推导或知识点，detailed与按需请求按系统分层；原题要求的证明、FRQ依据和图示必须保留。独立校验由应用调度（批量自动，单题按需），Skill不能自行声称通过。
 
 先判断图是否帮助理解：函数零点/交点、几何关系、供需均衡或剩余面积适合配图；简单运算不强行画。图是教学说明，不能用目测替代证明。原题图由problem.illustrations裁出，figures是新画的解答图，二者不能混淆。
 
 物理运动/受力分量、化学浓度变化、生物数量变化、地理时间序列等，只要可以用当前Schema准确表示，也可采用本方法。必须依据原题数据或明确关系，不能编造“实验数据”。地图、分子结构、器官图、流程图等超出当前坐标图能力时，保留原图并用文字、公式或Markdown表格解释，不把不支持的图形伪装为工具已经画出。
 
-1. 根据已知条件建立关系，写明定义域、单位和关键点。用calculate对关键交点、函数值或面积进行数值检查，保留真实工具证据；没有执行就不能宣称工具验算。
+1. 根据已知条件建立关系，写明定义域、单位和关键点。涉及关键交点、函数值或面积的数值运算时用calculate核对，保留真实工具证据；定性读图比较不需要计算工具，没有执行就不能宣称工具验算。
 2. 选覆盖关键点的xRange/yRange，填写xLabel/yLabel含变量与单位。几何用equalAspect:true保持真实比例；价格与数量等不同单位的坐标可用false，不将屏幕斜率当数值斜率。
 3. 输出最终Schema规定的figures。point是真实坐标点，segment是线段，circle是圆；polynomial.coefficients按常数项到最高次排列，最多三次。polyline.points是有序采样点或分段线段；polygon.points依边界顺序闭合，用于区域填色。
 4. 不连续曲线分别输出polyline，不能跨越无定义点连线。曲线采样只是近似，description写明“采样示意”，不足以准确表示时用公式解释。多边形不能自交，不把不确定边界涂成精确面积。
@@ -33,3 +33,9 @@ description: 各科课程中的坐标与数据关系图，涵盖数学函数/几
 每图最多24元素、每条折线128点、多边形32点，答案最多3图。不得输出任意SVG/HTML/代码/外部图片URL，不运行脚本或安装包。当前数值工具是calculate，不能假称已执行SymPy或有符号求解工具。
 
 组合示例按需读取/solveflow/skills/diagram/references/example.md；经济区域示例按需读取/solveflow/skills/diagram/references/economics.md。多题将每幅图id唯一分配到所属questions.figureIds。图形与文字都交独立Verifier；发现不一致一起修正。
+
+## 图内数值检查
+
+新图填写 purpose（function/geometry/economics/data）；经济图两轴必须写变量与单位。给参与检查的图元唯一 id，并用 checks 声明实际可核对的关系：point-on-curve 的 pointId/curveId，intersection 的 pointId/curveIds（两个不同曲线），polygon-area 的 polygonId/expected。关键函数点、均衡交点、剩余面积属于所求时应提供对应检查。多项式系数、点坐标、面积单位仍须从题意正确建模，检查不代替推导。
+
+应用依据图元计算并拒绝不一致的声明；仅检查明确声明的关系，不能证明未声明的几何命题或替代独立校验。采样折线的点必须落在实际线段上，不得把采样误差包装为精确交点；无法准确表示时调整结构或明确近似，不编造 checks。线条可设 lineStyle=dashed；表示移动方向的 segment 可设 arrow=true，说明旧/新曲线含义，不仅靠颜色。面积必须是简单闭合多边形的坐标面积，不支持曲线积分面积的自动检查。

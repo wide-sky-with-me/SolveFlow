@@ -1,3 +1,5 @@
+// Compatibility entry. New consumers select local, remote, learning or presentation.
+// Decision: .agents/notes/implemented/architecture/2026-10-05-source-and-build-boundaries.md
 export * from "./client.js";
 export * from "./sse.js";
 export * from "./submission.js";
@@ -16,3 +18,5 @@ export * from './tex-edit.js';
 
 export * from "./local-batch.js";
 export { verificationFeedback } from './verification-feedback.js';
+
+export * from './local-history-import.js';

@@ -41,13 +41,13 @@ test('failed explanation keeps the source answer and retries without regeneratin
   const candidate = { schemaVersion: 1, kind: 'answer', problem: { text: 'x+1=3', subject: 'math', uncertainties: [] }, answer: 'x=2', steps: [{ id: 's1', title: '两边减1', explanation: 'x=3-1=2' }], knowledgePoints: [], citationIds: [], clarificationQuestions: [] };
   await page.route('https://fixture-model.invalid/v1/chat/completions', async route => {
     const call = ++calls;
-    if (call === 2) return route.fulfill({ status: 503, body: 'fixture failure' });
+    if (call === 2 || call === 3) return route.fulfill({ status: 503, body: 'fixture failure' });
     await route.fulfill({ contentType: 'text/event-stream', body: modelSse(candidate, route.request().postDataJSON()) });
   });
   await page.goto('/'); await configureLocalModel(page); await chooseSyntheticPhoto(page);
   await page.getByRole('button', { name: '开始解题', exact: true }).click(); await expect(page.locator('.final-answer')).toContainText('x=2');
   await page.locator('.step-details>summary').click(); await expect(page.getByRole('button', { name: '重新生成步骤' })).toBeEnabled();
-  await expect(page.locator('.final-answer')).toContainText('x=2'); expect(calls).toBe(2);
-  await page.getByRole('button', { name: '重新生成步骤' }).click(); await expect(page.locator('.teaching-steps')).toContainText('两边减1'); expect(calls).toBe(3);
-  await page.locator('.step-details>summary').click(); await page.locator('.step-details>summary').click(); expect(calls).toBe(3);
+  await expect(page.locator('.final-answer')).toContainText('x=2'); expect(calls).toBe(3);
+  await page.getByRole('button', { name: '重新生成步骤' }).click(); await expect(page.locator('.teaching-steps')).toContainText('两边减1'); expect(calls).toBe(4);
+  await page.locator('.step-details>summary').click(); await page.locator('.step-details>summary').click(); expect(calls).toBe(4);
 });

@@ -61,13 +61,17 @@ for (const library of ['lib/arm64-v8a/libexpo-sqlite.so', 'lib/arm64-v8a/libherm
 for (const name of names.filter(entry => entry.startsWith('assets/'))) {
   const data = execFileSync('unzip', ['-p', apk, name], { maxBuffer: 128 * 1024 * 1024 });
   for (const secret of secrets) if (data.includes(secret)) throw new Error(`assets 中发现私密配置：${name}`);
+  // Official test players are external photo-test sources, never app assets.
+  if (/pearson(?:vue)?\.com|StartTestLaunch\.htm|testtaker\/common/i.test(data.toString('latin1'))) throw new Error(`assets 中发现外部考试播放器：${name}`);
+  if (/solveflow-storage-probe|probe-status\.json|SolveFlow isolated storage acceptance/.test(data.toString('latin1'))) throw new Error(`正式 APK 不得包含存储故障测试入口：${name}`);
 }
+if (names.some(name => /(?:^|\/)(?:runs-sim|runs-clean|uat-suite-[^/]+|exam-photo-[^/]+)(?:\/|$)/i.test(name))) throw new Error('APK 不得包含本地评测试卷或答卷目录。');
 
 const bytes = (await stat(apk)).size;
 const report = { schemaVersion: 1, artifact: '.runtime/artifacts/solveflow-arm64-local.apk', version, versionCode, bytes,
   sha256: createHash('sha256').update(await readFile(apk)).digest('hex'), mode: 'local-direct-model', architecture: 'arm64-v8a',
   signatureVerified: true, sameCertificateAsPrevious, serverEnvScanPassed: true, privateValuesChecked: secrets.length,
-  hermesAndLocalAnswerResources: true, documentResources: documents, builtAt: new Date().toISOString() };
+  hermesAndLocalAnswerResources: true, externalTestPlayerScanPassed: true, storageProbeScanPassed: true, documentResources: documents, builtAt: new Date().toISOString() };
 await writeFile(resolve(artifacts, 'android-local-build-report.json'), `${JSON.stringify(report, null, 2)}\n`);
 const archived = resolve(artifacts, `solveflow-arm64-local-${version}.apk`);
 await copyFile(apk, archived);

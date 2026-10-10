@@ -1,14 +1,14 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import katex from "katex";
+import { renderFormula } from './math-render';
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import { normalizeMathDelimiters } from "@solveflow/client";
+import { normalizeMathDelimiters } from '@solveflow/client/presentation';
 
 function Formula({ latex, inline = false }: { latex: string; inline?: boolean }) {
   if (latex.length > 2000) return <span>公式过长，暂不显示。</span>;
   let html: string;
-  try { html = katex.renderToString(latex, { displayMode: !inline, throwOnError: true, trust: false, strict: "error", maxExpand: 100, maxSize: 20, output: "htmlAndMathml" }); }
+  try { html = renderFormula(latex, inline); }
   catch { return <code className="math-fallback">{latex}</code>; }
   return inline ? <span className="math-inline" dangerouslySetInnerHTML={{ __html: html }} />
     : <DisplayFormula html={html} />;
@@ -37,7 +37,7 @@ function DisplayFormula({ html }: { html: string }) {
   return <div className="formula-shell"><div ref={viewport} className="math-block" tabIndex={0} aria-label="公式，可横向滚动"><div ref={content} className="formula-content" dangerouslySetInnerHTML={{ __html: html }} /></div>{overflow && <span className="formula-hint">左右滑动查看完整公式</span>}</div>;
 }
 export function MathBlock({ latex }: { latex: string }) { return <Formula latex={latex} />; }
-export const MathText = memo(function MathText({ text, originalImageUrl }: { text: string; originalImageUrl?: string | undefined }) {
+export const MathText = memo(function MathText({ text, originalImageUrl, inlineMathCode = false }: { text: string; originalImageUrl?: string | undefined; inlineMathCode?: boolean | undefined }) {
   const image = originalImageUrl && originalImageUrl.length <= 6 * 1024 * 1024 && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(originalImageUrl) ? originalImageUrl : undefined;
   // Stable component identities preserve loaded images and formula scroll state
   // when the enclosing answer reports a new height or verification status.
@@ -52,5 +52,5 @@ export const MathText = memo(function MathText({ text, originalImageUrl }: { tex
     }), [image]);
   return <div className="answer-markdown"><Markdown skipHtml remarkPlugins={[remarkGfm, remarkMath]}
     urlTransform={(url, key) => key === "src" && url === "attachment:original" && image ? image : ""}
-    components={components}>{normalizeMathDelimiters(text)}</Markdown></div>;
+    components={components}>{normalizeMathDelimiters(text, { inlineMathCode })}</Markdown></div>;
 });

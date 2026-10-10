@@ -14,7 +14,7 @@ it("charges failed calculation attempts and shares the business/MCP quota", asyn
 });
 it("cannot expose a result after the run budget expires", async () => {
   let time = 0; const budget = new RunBudget(() => time); const tool = createCalculateTool(budget);
-  time = 120_000;
+  time = 180_000;
   await expect(tool.execute("late", { schemaVersion: 1, expression: "2+2" }, fresh())).rejects.toThrow("RUN_TIMEOUT");
   expect(budget.snapshot().businessAttempts).toBe(0);
 });

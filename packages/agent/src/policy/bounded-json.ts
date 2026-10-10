@@ -1,11 +1,16 @@
 /** Bound JSON before validation/transforms and again before transport serialization.
  * This is not a replacement for bounded HTTP/provider receive buffers. */
-export function assertBoundedJson(input: unknown): void {
+// Decision: .agents/notes/implemented/agent/2026-10-04-exam-response-and-materials.md
+// Full drafts, the selected source answer and candidate parts travel together.
+// Tool/MCP callers retain the smaller default envelope.
+export const MAX_APPLICATION_JSON_BYTES = 256 * 1024;
+export function assertBoundedJson(input: unknown, maxBytes = 32 * 1024): void {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_APPLICATION_JSON_BYTES) throw new Error("INVALID_JSON_LIMIT");
   let bytes = 0;
   let nodes = 0;
   const ancestors = new Set<object>();
   const deny = (): never => { throw new Error("JSON_INPUT_LIMIT"); };
-  const add = (count: number) => { bytes += count; if (bytes > 32 * 1024) deny(); };
+  const add = (count: number) => { bytes += count; if (bytes > maxBytes) deny(); };
   const stringBytes = (value: string) => {
     if (value.length > 8192) deny();
     add(Buffer.byteLength(JSON.stringify(value), "utf8"));

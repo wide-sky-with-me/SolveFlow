@@ -1,6 +1,35 @@
 {
-  "name": "@solveflow/client", "version": "0.1.0", "private": true, "type": "module",
-  "exports": {".": {"types": "./dist/index.d.ts", "default": "./dist/index.js"}},
-  "scripts": {"build": "tsc -p tsconfig.build.json"},
-  "dependencies": {"@solveflow/contracts": "workspace:*", "zod": "4.5.4"}
+  "name": "@solveflow/client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./local": {
+      "types": "./dist/local.d.ts",
+      "default": "./dist/local.js"
+    },
+    "./remote": {
+      "types": "./dist/remote.d.ts",
+      "default": "./dist/remote.js"
+    },
+    "./learning": {
+      "types": "./dist/learning.d.ts",
+      "default": "./dist/learning.js"
+    },
+    "./presentation": {
+      "types": "./dist/presentation.d.ts",
+      "default": "./dist/presentation.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@solveflow/contracts": "workspace:*",
+    "zod": "4.5.4"
+  }
 }

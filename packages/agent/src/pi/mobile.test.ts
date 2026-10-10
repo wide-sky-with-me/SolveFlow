@@ -27,6 +27,27 @@ it('solves with tools and verifies when native AbortSignal lacks throwIfAborted'
   } finally { method.mockRestore(); }
 });
 function sse(content: object) { return new Response(`data: ${JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'user-selected-model', choices: [{ index: 0, delta: { role: 'assistant', content: JSON.stringify(content) }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } }); }
+it.each([63, 0, null, '', '   '])('normalizes optional generated sourceNumber %s without another model request', async sourceNumber => {
+  let calls = 0;
+  const result = await solveOnDevice({ ...input, verificationMode: 'manual' }, settings, { solver: 'fixture', verifier: null }, async () => {
+    calls++;
+    return sse(calls === 1 ? { ...candidate, problem: { ...candidate.problem, sourceNumber } } : candidate);
+  }, new AbortController().signal, () => {});
+  expect(result.status).toBe('completed');
+  expect(calls).toBe(1);
+  if (result.status === 'completed') {
+    if (typeof sourceNumber === 'number') expect(result.candidate.problem.sourceNumber).toBe(String(sourceNumber));
+    else expect(result.candidate.problem).not.toHaveProperty('sourceNumber');
+  }
+});
+it('still repairs a substantive invalid answer when sourceNumber can be normalized', async () => {
+  let calls = 0;
+  const result = await solveOnDevice({ ...input, verificationMode: 'manual' }, settings, { solver: 'fixture', verifier: null }, async () => {
+    calls++;
+    return sse(calls === 1 ? { ...candidate, answer: null, problem: { ...candidate.problem, sourceNumber: 63 } } : candidate);
+  }, new AbortController().signal, () => {});
+  expect(result.status).toBe('completed'); expect(calls).toBe(2);
+});
 describe('on-device Pi', () => {
   it.each([
     ['disabled-thinking', { thinking: { type: 'disabled' } }],
@@ -118,10 +139,10 @@ it('Pi actually executes Skill read and numeric calculation before independent v
   const outcome = await solveOnDevice(input, settings, { solver: 'fixture', verifier: null }, async (_url, init) => { bodies.push(String(init?.body)); if (bodies.length === 1) return tool('read', { path: '/skills/math/SKILL.md' }); if (bodies.length === 2) return tool('calculate', { schemaVersion: 1, expression: '3-1', angleUnit: 'rad' }); return sse(bodies.length === 3 ? candidate : pass); }, new AbortController().signal, () => {});
   expect(outcome).toMatchObject({ status: 'completed', verified: true }); expect(bodies).toHaveLength(4); expect(bodies[2]).toContain('tool_call_id'); expect(bodies[2]).toContain('approximate');
 });
-it('a repeated tool cycle stops at the shared 16 Solver rounds', async () => {
+it('stops a model that keeps requesting tools after a final-answer-only turn', async () => {
   let calls = 0;
   const outcome = await solveOnDevice(input, settings, { solver: 'fixture', verifier: null }, async () => { calls++; return tool('read', { path: '/skills/math/SKILL.md' }); }, new AbortController().signal, () => {});
-  expect(calls).toBe(16); expect(outcome).toMatchObject({ status: 'failed', error: { code: 'MODEL_LIMIT' } });
+  expect(calls).toBe(5); expect(outcome).toMatchObject({ status: 'failed', error: { code: 'MODEL_OUTPUT_INVALID' } });
 });
 it('rejects malformed, credential-bearing and insecure model settings', () => {
   for (const baseURL of ['http://model.invalid/v1', 'https://key@model.invalid/v1', 'https://model.invalid/v1?key=bad', 'https://model.invalid/v1#key']) expect(LocalSettingsSchema.safeParse({ ...settings, solver: { ...settings.solver, baseURL } }).success).toBe(false);
@@ -135,12 +156,40 @@ it('does not require constructing a global Response for native streamed response
   } finally { Object.defineProperty(globalThis, 'Response', { configurable: true, value: original }); }
 });
 
-it.each([[401, 'CAPABILITY_DENIED'], [402, 'SPEND_LIMIT'], [429, 'MODEL_UNAVAILABLE'], [503, 'MODEL_UNAVAILABLE']] as const)('preserves HTTP %i failure through Pi and records only safe metadata', async (status, code) => {
+it.each([[400, 'MODEL_REQUEST_REJECTED'], [413, 'MODEL_REQUEST_REJECTED'], [422, 'MODEL_REQUEST_REJECTED'], [401, 'CAPABILITY_DENIED'], [402, 'SPEND_LIMIT'], [404, 'MODEL_UNAVAILABLE'], [429, 'MODEL_RATE_LIMITED'], [503, 'MODEL_UNAVAILABLE']] as const)('preserves HTTP %i failure through Pi and records only safe metadata', async (status, code) => {
   const entries: import('@solveflow/contracts/local').LocalDiagnostic[] = [];
   const outcome = await solveOnDevice(input, settings, { solver: 'private-fixture-key', verifier: null }, async () => new Response('private-provider-body', { status }), new AbortController().signal, () => {}, entry => entries.push(entry));
   expect(outcome).toMatchObject({ status: 'failed', error: { code } });
   expect(entries).toContainEqual(expect.objectContaining({ event: 'failure', httpStatus: status, reason: 'http' }));
   expect(JSON.stringify(entries)).not.toMatch(/private-fixture-key|private-provider-body|x\+1=3/);
+});
+it('explicitly disables tools for the final answer and its one format repair', async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const entries: import('@solveflow/contracts/local').LocalDiagnostic[] = [];
+  const result = await solveOnDevice({ ...input, verificationMode: 'manual' }, settings, { solver: 'fixture', verifier: null }, async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    if (bodies.length <= 3) return tool('read', { path: '/skills/math/SKILL.md' });
+    return sse(bodies.length === 4 ? {} : candidate);
+  }, new AbortController().signal, () => {}, entry => entries.push(entry));
+  expect(result.status).toBe('completed'); expect(bodies).toHaveLength(5);
+  expect(entries.filter(entry => entry.event === 'request').slice(3).map(entry => entry.toolStopReason)).toEqual(['repeated', 'repeated']);
+  expect(bodies[0]).not.toHaveProperty('tool_choice');
+  for (const body of bodies.slice(3)) {
+    expect(body.tool_choice).toBe('none'); expect(body.tools).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain('tool_call_id');
+    expect(JSON.stringify(body)).toContain('工具观察');
+  }
+});
+it('keeps schema repair tool-free even when no tool limit was reached', async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const result = await solveOnDevice({ ...input, verificationMode: 'manual' }, settings, { solver: 'fixture', verifier: null }, async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body))); return sse(bodies.length === 1 ? {} : candidate);
+  }, new AbortController().signal, () => {});
+  expect(result.status).toBe('completed'); expect(bodies).toHaveLength(2);
+  expect(bodies[1]).toHaveProperty('tool_choice', 'none'); expect(bodies[1]?.tools ?? []).toEqual([]);
+});
+it.each([[400, 'MODEL_REQUEST_REJECTED'], [429, 'MODEL_RATE_LIMITED']] as const)('keeps connection-test HTTP %i classification without exposing provider text', async (status, code) => {
+  await expect(testModelConnection(settings.solver, 'fixture', async () => new Response('private-provider-body', { status }), new AbortController().signal)).rejects.toMatchObject({ code });
 });
 it('preserves network failure instead of misclassifying it as output format', async () => {
   const outcome = await solveOnDevice(input, settings, { solver: 'fixture', verifier: null }, async () => { throw new Error('private request details'); }, new AbortController().signal, () => {});
@@ -174,13 +223,67 @@ it('identifies token truncation and does not silently publish the partial answer
   expect(entries).toContainEqual(expect.objectContaining({ reason: 'truncated' }));
 });
 it('uses the injected native phase timer and preserves verifier timeout semantics', async () => {
-  let expire = () => {}; let scheduled = 0; let cleared = 0; let calls = 0;
+  let expire = () => {}; const scheduled: number[] = []; let cleared = 0; let calls = 0;
   const result = await solveOnDevice(input, settings, { solver: 'fixture', verifier: null }, async () => {
     calls++; if (calls === 1) return sse(candidate);
     expire(); throw new Error('aborted by native phase timer');
-  }, new AbortController().signal, () => {}, () => {}, (callback, ms) => { scheduled++; expire = callback; expect(ms).toBeLessThanOrEqual(scheduled === 1 ? 120000 : 20000); return () => { cleared++; }; });
+  }, new AbortController().signal, () => {}, () => {}, (callback, ms) => { scheduled.push(ms); expire = callback; return () => { cleared++; }; });
   expect(result).toMatchObject({ status: 'completed', verified: false, warning: 'MODEL_TIMEOUT' });
-  expect(scheduled).toBe(2); expect(cleared).toBe(2);
+  expect(scheduled).toEqual([240000, 300000]); expect(cleared).toBe(2);
+});
+
+it('sanitizes unescaped LaTeX backslashes and fences in verifier JSON output', async () => {
+  let calls = 0;
+  // Markdown fence and raw LaTeX backslashes inside message
+  const fail = { schemaVersion: 1, verdict: 'fail', checked: ['transcription'], issues: [{ code: 'ARITHMETIC', message: '步骤中 \\frac{1}{2} 与 \\sqrt{3} 符号错误' }] };
+  const rawVerifierText = '```json\n' + JSON.stringify(fail) + '\n```';
+  const outcome = await solveOnDevice(input, settings, { solver: 'fixture', verifier: null }, async () => {
+    calls++;
+    if (calls === 1) return sse(candidate);
+    if (calls === 2) {
+      return new Response(`data: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: { role: 'assistant', content: rawVerifierText }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+    }
+    // Solver revision on call 3, then verifier pass on call 4
+    return sse(calls === 3 ? candidate : pass);
+  }, new AbortController().signal, () => {});
+  expect(outcome).toMatchObject({ status: 'completed', verified: true });
+  expect(calls).toBe(4);
+});
+
+it('allows verifier 1 format repair when initial JSON has invalid syntax', async () => {
+  let calls = 0;
+  const outcome = await solveOnDevice(input, settings, { solver: 'fixture', verifier: null }, async () => {
+    calls++;
+    if (calls === 1) return sse(candidate);
+    if (calls === 2) {
+      return new Response(`data: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: { role: 'assistant', content: '{"verdict": "pass", broken' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+    }
+    return sse(pass);
+  }, new AbortController().signal, () => {});
+  expect(outcome).toMatchObject({ status: 'completed', verified: true });
+  expect(calls).toBe(3);
+});
+
+it('keeps the 300s verifier budget when candidate includes figures or illustrations', async () => {
+  const scheduled: number[] = [];
+  const candidateWithIllustration = {
+    ...candidate,
+    problem: {
+      ...candidate.problem,
+      illustrations: [{ id: 'i1', alt: '几何示意图', x: 0, y: 0, width: 1, height: 1 }],
+    },
+  };
+  const passWithDiagram = { ...pass, checked: ['transcription', 'arithmetic', 'logic', 'diagram'] };
+  let calls = 0;
+  const result = await solveOnDevice(input, settings, { solver: 'fixture', verifier: null }, async () => {
+    calls++;
+    return sse(calls === 1 ? candidateWithIllustration : passWithDiagram);
+  }, new AbortController().signal, () => {}, () => {}, (_callback, ms) => {
+    scheduled.push(ms);
+    return () => {};
+  });
+  expect(scheduled).toEqual([240000, 300000]);
+  expect(result).toMatchObject({ status: 'completed', verified: true });
 });
 
 // Self-authored curriculum fixtures; exercises routing/schema/Pi Skill loading, not LLM accuracy.
@@ -236,4 +339,64 @@ it('repairs missing structured choice labels instead of extracting a letter from
   expect(calls).toBe(2);
   expect(entries).toContainEqual(expect.objectContaining({ event: 'validation', fields: ['selectedOptions'] }));
   expect(outcome).toMatchObject({ status: 'completed', candidate: { selectedOptions: ['C'], answer: '两边减1。' } });
+});
+
+it('narrows repeated tool work to a final answer and still independently verifies it', async () => {
+  let calls = 0;
+  const result = await solveOnDevice(input, settings, { solver: 'fixture', verifier: null }, async (_url, init) => {
+    calls++;
+    if (calls <= 3) return tool('read', { path: '/skills/math/SKILL.md' });
+    const body = JSON.parse(String(init?.body));
+    expect(body.tools ?? []).toEqual([]);
+    return sse(calls === 4 ? candidate : pass);
+  }, new AbortController().signal, () => {});
+  expect(result).toMatchObject({ status: 'completed', verified: true });
+  expect(calls).toBe(5);
+});
+it('allows the existing one format repair after the final-answer-only turn', async () => {
+  let calls = 0;
+  const result = await solveOnDevice({ ...input, verificationMode: 'manual' }, settings, { solver: 'fixture', verifier: null }, async (_url, init) => {
+    calls++;
+    if (calls <= 3) return tool('read', { path: '/skills/math/SKILL.md' });
+    expect(JSON.parse(String(init?.body)).tools).toBeUndefined();
+    return sse(calls === 4 ? { kind: 'answer' } : candidate);
+  }, new AbortController().signal, () => {});
+  expect(result.status).toBe('completed'); expect(calls).toBe(5);
+});
+it('closes consecutive failed tool attempts without pretending a tool succeeded', async () => {
+  let calls = 0;
+  const result = await solveOnDevice({ ...input, verificationMode: 'manual' }, settings, { solver: 'fixture', verifier: null }, async (_url, init) => {
+    calls++;
+    if (calls <= 2) return tool('calculate', { schemaVersion: 1, expression: `unknown${calls}`, angleUnit: 'rad' });
+    const body = JSON.parse(String(init?.body)); expect(body.tools).toBeUndefined();
+    return sse(candidate);
+  }, new AbortController().signal, () => {});
+  expect(result.status).toBe('completed'); expect(calls).toBe(3);
+});
+it('preserves the answer after a 130s solve and an independent 300s verifier timeout', async () => {
+  let now = 0; let expire = () => {}; let delay = 0; let calls = 0;
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+  try {
+    const result = await solveOnDevice({ ...input, answerMode: 'brief' }, settings, { solver: 'fixture', verifier: null }, async () => {
+      if (++calls === 1) { now = 130000; return sse({ ...candidate, steps: [], knowledgePoints: [], knowledgeDetails: [], problem: { ...candidate.problem, options: [{ label: 'A', text: '1' }, { label: 'B', text: '2' }] }, selectedOptions: ['B'] }); }
+      expect(delay).toBe(300000); now += delay; expire(); throw new Error('phase expired');
+    }, new AbortController().signal, () => {}, () => {}, (callback, ms) => { expire = callback; delay = ms; return () => {}; });
+    expect(result).toMatchObject({ status: 'completed', verified: false, warning: 'MODEL_TIMEOUT', candidate: { answer: 'x=2' } });
+    expect(now).toBe(430000);
+  } finally { clock.mockRestore(); }
+});
+it('supports a complete essay while keeping brief teaching fields empty', async () => {
+  const answer = 'A complete response develops evidence and explains its relevance. '.repeat(80).trim();
+  const essay = { ...candidate, answer, steps: [], knowledgePoints: [], knowledgeDetails: [] };
+  const result = await solveOnDevice({ ...input, exam: 'ap', answerMode: 'brief' }, settings, { solver: 'fixture', verifier: null }, async (_url, init) => {
+    const body = JSON.parse(String(init?.body)); return sse(body.tools ? essay : pass);
+  }, new AbortController().signal, () => {});
+  expect(result).toMatchObject({ status: 'completed', verified: true, candidate: { answer, steps: [] } });
+});
+
+it('does not publish verified when the verifier only transcribed the image', async () => {
+  let calls = 0;
+  const outcome = await solveOnDevice(input, settings, { solver: 'fixture', verifier: null }, async () => sse(++calls === 1 ? candidate : { ...pass, checked: ['transcription'] }), new AbortController().signal, () => {});
+  expect(outcome).toMatchObject({ status: 'completed', verified: false, verification: { verdict: 'unknown', issues: [{ code: 'INSUFFICIENT_EVIDENCE' }] } });
+  expect(calls).toBe(2);
 });

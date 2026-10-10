@@ -31,3 +31,16 @@ it('does not extract choices or letters from answer text', () => {
   const text = 'Choose. (A) one (B) two (C) three (D) four';
   expect(problemText({ text, subject: 'math', uncertainties: [] })).toBe(text);
 });
+
+it('retains a complete written response in brief mode and in persisted outcomes without teaching steps', () => {
+  const answer = 'Evidence supports the stated conclusion. '.repeat(160).trim();
+  const essay = { ...candidate, problem: { text: 'Write an essay using the sources.', subject: 'english', uncertainties: [] }, selectedOptions: undefined, answer };
+  expect(BriefSolverCandidateSchema.parse(essay).answer).toBe(answer);
+  expect(AnswerCandidateSchema.parse(essay).answer).toBe(answer);
+  expect(BriefSolverCandidateSchema.safeParse({ ...essay, answer: 'x'.repeat(8001) }).success).toBe(false);
+  expect(BriefSolverCandidateSchema.safeParse({ ...essay, steps: [{ id: 's1', title: 'Extra teaching', explanation: 'Not requested' }] }).success).toBe(false);
+  const grouped = { ...essay, answer: 'Responses follow.', questions: [1, 2].map(number => ({ number, problem: essay.problem, answer, stepIds: [], figureIds: [] })) };
+  const parsed = BriefSolverCandidateSchema.parse(grouped);
+  expect(parsed.kind === 'answer' ? parsed.questions?.[1]?.answer : null).toBe(answer);
+  expect(AnswerCandidateSchema.parse(grouped).questions?.[1]?.answer).toBe(answer);
+});

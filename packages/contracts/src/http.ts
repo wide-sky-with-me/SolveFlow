@@ -1,20 +1,27 @@
 import { z } from "zod";
 import { PublicAgentEventSchema, RunStatusSchema, SolveOutcomeSchema } from "./agent.js";
+import { MAX_USER_MESSAGE_CHARACTERS } from './response-format.js';
+import { MaterialIdsSchema, QuestionImageIdsSchema } from './material.js';
 
 import { RunContextSchema } from "./run-context.js";
+export { questionAnswerState, type QuestionAnswerState } from './question-state.js';
 export { RunContextSchema, isAuxiliaryContext, type RunContext } from "./run-context.js";
 
 export const ResourceIdSchema = z.uuid();
+/** Includes worst-case JSON escaping of an 8000-character message and its context. */
+export const MAX_RUN_BODY_BYTES = 64 * 1024;
 export const CreateSessionSchema = z.strictObject({ schemaVersion: z.literal(1), uploadId: ResourceIdSchema, subject: z.enum(["math", "physics", "chemistry", "english", "general"]).default("general") });
 export function subjectLabel(subject: string) {
   const labels: Record<string, string> = { math: "数学", physics: "物理", chemistry: "化学", english: "英语", chinese: "语文", biology: "生物", history: "历史", geography: "地理", politics: "政治", economics: "经济学", general: "综合" };
   return labels[subject.toLowerCase()] ?? subject;
 }
-export const CreateRunSchema = z.strictObject({ schemaVersion: z.literal(1), message: z.string().trim().max(2000).default(""), uploadId: ResourceIdSchema.optional(), context: RunContextSchema.optional() });
+export const CreateRunSchema = z.strictObject({ schemaVersion: z.literal(1), message: z.string().trim().max(MAX_USER_MESSAGE_CHARACTERS).default(""), uploadId: ResourceIdSchema.optional(), context: RunContextSchema.optional() });
 export const IdempotencyKeySchema = z.string().min(8).max(128).regex(/^[a-zA-Z0-9_-]+$/);
 export const UploadViewSchema = z.strictObject({ schemaVersion: z.literal(1), id: ResourceIdSchema, mimeType: z.literal("image/jpeg"), bytes: z.number().int().positive().max(4 * 1024 * 1024), width: z.number().int().positive().max(2048), height: z.number().int().positive().max(2048), expiresAt: z.iso.datetime(), previewUrl: z.string().regex(/^\/api\/v1\/uploads\/[a-f0-9-]{36}\/image$/) });
-export const RunViewSchema = z.strictObject({ schemaVersion: z.literal(1), id: ResourceIdSchema, sessionId: ResourceIdSchema, status: RunStatusSchema, message: z.string().max(2000), createdAt: z.iso.datetime(), seq: z.number().int().nonnegative(), outcome: SolveOutcomeSchema.nullable(), context: RunContextSchema.optional() });
-export const SessionViewSchema = z.strictObject({ schemaVersion: z.literal(1), id: ResourceIdSchema, subject: z.string().max(40), createdAt: z.iso.datetime(), upload: UploadViewSchema, runs: z.array(RunViewSchema).max(10) });
+export const RunViewSchema = z.strictObject({ schemaVersion: z.literal(1), id: ResourceIdSchema, sessionId: ResourceIdSchema, status: RunStatusSchema, message: z.string().max(MAX_USER_MESSAGE_CHARACTERS), createdAt: z.iso.datetime(), seq: z.number().int().nonnegative(), outcome: SolveOutcomeSchema.nullable(), context: RunContextSchema.optional(), materialIds: MaterialIdsSchema.optional(), imageIds: QuestionImageIdsSchema.optional() });
+export const MAX_CONVERSATION_RUNS = 10;
+export const MAX_AUXILIARY_RUNS = 30;
+export const SessionViewSchema = z.strictObject({ schemaVersion: z.literal(1), id: ResourceIdSchema, subject: z.string().max(40), createdAt: z.iso.datetime(), upload: UploadViewSchema, runs: z.array(RunViewSchema).max(MAX_CONVERSATION_RUNS + MAX_AUXILIARY_RUNS) });
 export const SessionListSchema = z.strictObject({ schemaVersion: z.literal(1), sessions: z.array(z.strictObject({ id: ResourceIdSchema, subject: z.string().max(40), createdAt: z.iso.datetime(), title: z.string().max(120) })).max(50) });
 export const ServiceInfoSchema = z.strictObject({ schemaVersion: z.literal(1), mode: z.enum(["disabled", "live", "demo"]), solvingAvailable: z.boolean(), unavailableReason: z.enum(["SPEND_LIMIT", "SERVICE_UNAVAILABLE"]).optional() });
 export const BootstrapSchema = ServiceInfoSchema.extend({ ownerId: ResourceIdSchema });

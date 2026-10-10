@@ -11,10 +11,11 @@ import { readUpload } from "./images.js";
 import type { ImageStore } from "./storage.js";
 import { createProbeImage } from "@solveflow/agent/application";
 import { boundedBody } from "./bounded-body.js";
+import { MAX_RUN_BODY_BYTES } from '@solveflow/contracts/http';
 
-async function jsonBody(request: Request): Promise<unknown> {
+async function jsonBody(request: Request, maxBytes = 16 * 1024): Promise<unknown> {
   if (!request.headers.get("content-type")?.startsWith("application/json") || !request.body) throw new ApiError("INVALID_INPUT");
-  try { return JSON.parse((await boundedBody(request, 16 * 1024)).toString("utf8")); }
+  try { return JSON.parse((await boundedBody(request, maxBytes)).toString("utf8")); }
   catch (error) { if (error instanceof ApiError) throw error; throw new ApiError("INVALID_INPUT"); }
 }
 export function createApp(options: { repository: Repository; storage: ImageStore; config: Pick<AppConfig, "origin" | "cookieSecret" | "mode">; canSolve?: () => boolean; spendStatus?: () => "SPEND_LIMIT" | "SERVICE_UNAVAILABLE" | undefined }) {
@@ -106,7 +107,7 @@ export function createApp(options: { repository: Repository; storage: ImageStore
   app.get("/api/v1/sessions/:id", async c => c.json(await repository.getSession(c.get("ownerId"), ResourceIdSchema.parse(c.req.param("id")))));
   app.delete("/api/v1/sessions/:id", async c => { await repository.deleteSession(c.get("ownerId"), ResourceIdSchema.parse(c.req.param("id"))); return c.body(null, 204); });
   app.post("/api/v1/sessions/:id/runs", async c => {
-    const input = CreateRunSchema.parse(await jsonBody(c.req.raw));
+    const input = CreateRunSchema.parse(await jsonBody(c.req.raw, MAX_RUN_BODY_BYTES));
     const run = await repository.createRun(c.get("ownerId"), ResourceIdSchema.parse(c.req.param("id")), IdempotencyKeySchema.parse(c.req.header("idempotency-key")), input, () => {
       const info = serviceInfo(); if (info.unavailableReason) throw new ApiError(info.unavailableReason);
       return info.solvingAvailable;

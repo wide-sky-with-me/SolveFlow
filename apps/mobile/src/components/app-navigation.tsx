@@ -1,8 +1,10 @@
 import { Pressable, View, AnimatedView, AnimatedText } from '../theme/primitives';
 import { useEffect, useRef } from 'react';
-import { Animated, Easing, StyleSheet } from 'react-native';
-import { colors } from './ui';
+import { Animated, Easing, StyleSheet, View as IconShape } from 'react-native';
+import { colors, layout } from './ui';
 import { useReducedMotion } from './use-reduced-motion';
+import { AppBrand } from './app-brand';
+import type { ExamType } from '@solveflow/contracts/local';
 
 export type AppTab = 'questions' | 'profile';
 const easing = Easing.bezier(.2, 0, 0, 1);
@@ -19,8 +21,8 @@ function TabIcon({ kind, progress }: { kind: AppTab; progress: Animated.Value })
       {kind === 'questions' ? <>
         <AnimatedView style={[styles.backPaper, { transform: [{ translateX: interpolate(progress, 0, -2) }, { rotate: progress.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '-12deg'] }) }] }]} />
         <View style={[styles.paper, styles.paperFilled]}>
-          <AnimatedView style={[styles.line, styles.whiteLine, { opacity: incoming, transform: [{ scaleX: interpolate(progress, .35, 1) }] }]} />
-          <AnimatedView style={[styles.line, styles.shortLine, styles.whiteLine, { opacity: progress.interpolate({ inputRange: [0, .45, 1], outputRange: [0, 0, 1] }), transform: [{ scaleX: interpolate(progress, .2, 1) }] }]} />
+          <Animated.View style={[styles.line, styles.whiteLine, { opacity: incoming, transform: [{ scaleX: interpolate(progress, .35, 1) }] }]} />
+          <Animated.View style={[styles.line, styles.shortLine, styles.whiteLine, { opacity: progress.interpolate({ inputRange: [0, .45, 1], outputRange: [0, 0, 1] }), transform: [{ scaleX: interpolate(progress, .2, 1) }] }]} />
         </View>
       </> : <View style={styles.person}>
         <AnimatedView style={[styles.head, styles.headFilled, { transform: [{ scale: interpolate(progress, .8, 1) }] }]} />
@@ -67,31 +69,36 @@ function CameraItem({ disabled, reduced, onPress }: { disabled: boolean; reduced
   return <Pressable accessibilityRole="button" accessibilityLabel="拍照" accessibilityState={{ disabled }} disabled={disabled} onPressIn={() => feedback(true)} onPressOut={() => feedback(false)} onPress={onPress} style={[styles.item, disabled && styles.disabled]}>
     <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={styles.captureCircle}>
       <AnimatedView style={[styles.captureShade, { opacity: shutter }]} />
-      <View style={styles.camera}><View style={styles.cameraTop} />
-        <AnimatedView testID="nav-camera-shutter" style={[styles.lens, { transform: [{ rotate: shutter.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '45deg'] }) }] }]}>
-          <AnimatedView style={[styles.shutterBlade, { transform: [{ translateY: interpolate(shutter, -5, -1) }] }]} />
-          <AnimatedView style={[styles.shutterBlade, { transform: [{ translateY: interpolate(shutter, 5, 1) }] }]} />
-        </AnimatedView>
-        <AnimatedView style={[styles.cameraLight, { opacity: shutter }]} />
-      </View>
+      {/* White strokes sit on the blue icon in both themes, not on a themed surface. */}
+      <IconShape style={styles.camera}><IconShape style={styles.cameraTop} />
+        <Animated.View testID="nav-camera-shutter" style={[styles.lens, { transform: [{ rotate: shutter.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '45deg'] }) }] }]}>
+          <Animated.View style={[styles.shutterBlade, { transform: [{ translateY: interpolate(shutter, -5, -1) }] }]} />
+          <Animated.View style={[styles.shutterBlade, { transform: [{ translateY: interpolate(shutter, 5, 1) }] }]} />
+        </Animated.View>
+        <Animated.View style={[styles.cameraLight, { opacity: shutter }]} />
+      </IconShape>
     </View>
   </Pressable>;
 }
 
-export function AppNavigation({ tab, onTab, onCamera, cameraDisabled }: { tab: AppTab; onTab: (tab: AppTab) => void; onCamera: () => void; cameraDisabled: boolean }) {
+export function AppNavigation({ tab, exam = 'general', onTab, onCamera, cameraDisabled }: { tab: AppTab; exam?: ExamType; onTab: (tab: AppTab) => void; onCamera: () => void; cameraDisabled: boolean }) {
   const reduced = useReducedMotion();
-  return <View style={styles.bar} accessibilityLabel="主导航" role="navigation">
+  return <View testID="app-navigation" style={styles.bar} accessibilityLabel="主导航" role="navigation">
+    <AppBrand exam={exam} />
+    <View testID="navigation-items" style={styles.items}>
     <TabItem kind="questions" label="题目" selected={tab === 'questions'} reduced={reduced} onPress={() => onTab('questions')} />
     <CameraItem disabled={cameraDisabled} reduced={reduced} onPress={onCamera} />
     <TabItem kind="profile" label="我的" selected={tab === 'profile'} reduced={reduced} onPress={() => onTab('profile')} />
+    </View>
   </View>;
 }
 const styles = StyleSheet.create({
-  bar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', paddingHorizontal: 20, paddingVertical: 3, borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: '#fff' },
-  item: { flex: 1, minHeight: 46, alignItems: 'center', justifyContent: 'center' },
+  bar: { paddingVertical: 3, borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: '#fff' },
+  items: { flexDirection: 'row', alignItems: 'center', width: '100%', maxWidth: layout.workspaceWidth, alignSelf: 'center', paddingHorizontal: 20 },
+  item: { flex: 1, minHeight: 48, alignItems: 'center', justifyContent: 'center' },
   content: { alignItems: 'center', gap: 1 },
   icon: { width: 28, height: 28 }, layer: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, alignItems: 'center', justifyContent: 'center' },
-  labelSlot: { width: 36, height: 14 }, label: { position: 'absolute', width: 36, textAlign: 'center', lineHeight: 14, color: colors.muted, fontSize: 10, fontWeight: '500' }, selectedLabel: { color: colors.blue },
+  labelSlot: { width: 44, height: 17 }, label: { position: 'absolute', width: 44, textAlign: 'center', lineHeight: 17, color: colors.muted, fontSize: 12, fontWeight: '500' }, selectedLabel: { color: colors.blue },
   paper: { width: 18, height: 21, borderWidth: 1.8, borderColor: colors.muted, borderRadius: 4, justifyContent: 'center', paddingHorizontal: 3, gap: 4 },
   backPaper: { position: 'absolute', width: 18, height: 21, borderRadius: 4, backgroundColor: '#c2d7ff' },
   paperFilled: { backgroundColor: colors.blue, borderColor: colors.blue },

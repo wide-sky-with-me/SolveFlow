@@ -9,7 +9,8 @@
 .answer-document .math-block,.answer-document .answer-table-scroll { width:100%; max-width:100%; min-width:0; overflow-x:auto; padding:4px 2px; overscroll-behavior-x:contain; -webkit-overflow-scrolling:touch; }
 .answer-document .math-block .katex-display { margin:.4em 0; text-align:left; width:max-content; min-width:100%; }
 .answer-document .math-block .katex-display>.katex { text-align:left; }
-.answer-document .math-inline { display:inline-flex; max-width:100%; overflow-x:auto; vertical-align:baseline; }
+/* KaTeX fractions extend beyond their line box; reserve ink space before clipping the scroll axis. */
+.answer-document .math-inline { display:inline-flex; max-width:100%; overflow-x:auto; overflow-y:hidden; padding:.5em .125em; margin:-.5em 0; vertical-align:baseline; }
 .answer-document .math-inline>.katex { flex:none; }
 .answer-document .answer-code { white-space:pre-wrap; overflow-wrap:anywhere; }
 .answer-document .math-fallback { white-space:pre-wrap; color:var(--sf-warning); }
@@ -31,7 +32,9 @@
 .answer-document .figure-viewport svg { display:block; width:100%; min-width:260px; height:auto; }
 .answer-document .figure-viewport.zoomed svg { width:900px; max-width:none; }
 .answer-document .original-crop-viewport svg { display:block; width:100%; height:auto; max-height:380px; }
-.answer-document .original-crop-viewport.zoomed svg { width:800px; max-width:none; max-height:none; }
+.answer-document button.original-image-preview { display:block; width:100%; padding:0; border:0; background:transparent; overflow:hidden; cursor:zoom-in; }
+.answer-document button.original-photo-preview { display:block; width:88px; height:88px; margin-top:12px; padding:0; overflow:hidden; cursor:zoom-in; }
+.answer-document .original-photo-preview img { display:block; width:100%; height:100%; object-fit:contain; }
 .answer-document .figure-legend { padding-left:18px; font-size:13px; }
 .answer-document .knowledge-panel { border-top:1px solid var(--sf-line); padding-top:6px; }
 .answer-document details { border-bottom:1px solid var(--sf-line); padding:8px 0; }
@@ -99,13 +102,13 @@
   .answer-document .problem-heading { gap:6px; }
   .answer-document .problem-heading h4 { font-size:15px; }
   .answer-document .problem-actions { gap:2px; }
-  .answer-document .problem-actions button { font-size:12px; padding:6px; min-height:40px; }
+  .answer-document .problem-actions button { font-size:13px; padding:8px 10px; min-height:44px; }
   .answer-document .problem-actions svg { width:14px; height:14px; }
 }
 
 .answer-document .answer-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
 .answer-document .answer-heading h3 { margin:0; }
-.answer-document .verify-button { min-height:36px; padding:6px 10px; font-size:13px; }
+.answer-document .verify-button { min-height:44px; padding:8px 12px; font-size:13px; }
 .answer-document .verify-button:disabled { opacity:.75; }
 
 .answer-document .answer-markdown strong .katex { font-weight:700; }
@@ -122,3 +125,16 @@
 /* Prose and controls inherit the device font. Mathematical glyphs retain
    KaTeX's metric-compatible fonts; replacing those breaks TeX layout. */
 .answer-document .katex { font-size:1em; }
+
+/* Composition is read as an article; review notes never interrupt its body. */
+.answer-document .writing-article { max-width:68ch; margin:18px auto; line-height:1.95; }
+.answer-document .writing-article .answer-markdown p { margin:0 0 1.2em; }
+.answer-document .writing-title { margin:0 0 20px; text-align:center; font-size:1.15em; line-height:1.6; overflow-wrap:anywhere; }
+.answer-document .writing-feedback { margin-top:20px; padding-top:12px; border-top:1px solid var(--sf-line); }
+.answer-document .writing-feedback summary { min-height:44px; cursor:pointer; color:var(--sf-muted); }
+.answer-document .writing-feedback li { margin:12px 0; }
+.answer-document .writing-paragraph { font-size:13px; font-weight:600; color:var(--sf-muted); }
+.answer-document .chemistry-reactions { min-width:0; margin-top:18px; padding-top:12px; border-top:1px solid var(--sf-line); }
+.answer-document .chemistry-reactions h4 { margin:0 0 12px; }
+
+.answer-document .subject-note { margin:10px 0; font-size:13px; line-height:1.7; color:var(--sf-muted); }

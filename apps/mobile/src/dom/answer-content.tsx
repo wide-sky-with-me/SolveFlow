@@ -1,4 +1,6 @@
+import { ReadingDetails } from './reading-state';
 import { type AnswerCandidate } from "@solveflow/contracts/agent";
+import { ChemistryContent, WritingContent } from './subject-content';
 import { questionSections } from "@solveflow/contracts/http";
 import { AnswerFigure } from "./answer-figure";
 import { MathBlock, MathText } from "./math-text";
@@ -15,23 +17,28 @@ export function TeachingSteps({ steps, originalImageUrl, onAskStep, disabled, qu
     </div>
   </li>)}</ol>;
 }
-function AnswerConclusion({ answer, selectedOptions, figures, originalImageUrl, onVerify, verificationDisabled, verificationLabel }: { answer: string; selectedOptions?: string[] | undefined; figures: AnswerCandidate['figures']; originalImageUrl?: string | undefined } & Actions) {
-  return <div className="final-answer reading-card"><header className="answer-heading"><h3>{selectedOptions ? `答案：${selectedOptions.join('、')}` : '答案'}</h3>{onVerify && <button className="verify-button" disabled={verificationDisabled} onClick={onVerify}>{verificationLabel ?? '校验'}</button>}</header>
-    {answer && <div className="answer-explanation"><MathText text={answer} originalImageUrl={originalImageUrl} /></div>}{figures?.map(figure => <AnswerFigure key={figure.id} figure={figure} />)}</div>;
+function AnswerConclusion({ answer, selectedOptions, parts, responseValue, response, writing, chemistry, stateKey, figures, originalImageUrl, onVerify, verificationDisabled, verificationLabel }: { answer: string; writing?: AnswerCandidate['writing']; chemistry?: AnswerCandidate['chemistry']; stateKey: string; parts?: AnswerCandidate['parts']; responseValue?: string | undefined; response?: AnswerCandidate['problem']['response']; selectedOptions?: string[] | undefined; figures: AnswerCandidate['figures']; originalImageUrl?: string | undefined } & Actions) {
+  const isWriting = response?.type === 'essay' || Boolean(writing);
+  const heading = writing?.mode === 'feedback' ? '写作点评' : writing?.mode === 'revision' ? '修改稿' : isWriting ? '参考作文' : selectedOptions ? `答案：${selectedOptions.join('、')}` : '答案';
+  return <div className="final-answer reading-card"><header className="answer-heading"><h3>{heading}</h3>{onVerify && <button className="verify-button" disabled={verificationDisabled} onClick={onVerify}>{verificationLabel ?? '校验'}</button>}</header>
+    {responseValue && <p className="response-value">可填答案：<strong>{responseValue}</strong></p>}
+    {isWriting ? <WritingContent answer={answer} writing={writing} response={response} stateKey={stateKey} /> : <div className="answer-explanation"><MathText text={answer} originalImageUrl={originalImageUrl} /></div>}
+    {parts?.map(part => <section key={part.label} className="response-part"><h4>{part.label}</h4><MathText text={part.answer} originalImageUrl={originalImageUrl} /></section>)}
+    {chemistry && <ChemistryContent chemistry={chemistry} />}{figures?.map(figure => <AnswerFigure key={figure.id} figure={figure} />)}</div>;
 }
 export function AnswerContent({ candidate, subject, originalImageUrl, onAskStep, onAskQuestion, disabled, hideSteps = false, onVerify, verificationLabel, verificationDisabled }: { hideSteps?: boolean; candidate: AnswerCandidate; subject: string; originalImageUrl?: string | undefined } & Actions) {
   const sections = questionSections(candidate);
   if (!sections) return <>
-    <AnswerConclusion answer={candidate.answer} selectedOptions={candidate.selectedOptions} figures={candidate.figures} originalImageUrl={originalImageUrl} onVerify={onVerify} verificationLabel={verificationLabel} verificationDisabled={verificationDisabled} />
-    {!hideSteps && <details className="step-details reading-card"><summary aria-label="详细步骤"><span>详细步骤</span><span className="steps-expand">展开</span><span className="steps-collapse">收起</span></summary><TeachingSteps steps={candidate.steps} originalImageUrl={originalImageUrl} onAskStep={onAskStep} disabled={disabled} />
-    {candidate.figures?.map(figure => <AnswerFigure key={figure.id} figure={figure} />)}</details>}
+    <AnswerConclusion stateKey="answer" writing={candidate.writing} chemistry={candidate.chemistry} answer={candidate.answer} parts={candidate.parts} responseValue={candidate.responseValue} response={candidate.problem.response} selectedOptions={candidate.selectedOptions} figures={candidate.figures} originalImageUrl={originalImageUrl} onVerify={onVerify} verificationLabel={verificationLabel} verificationDisabled={verificationDisabled} />
+    {!hideSteps && <ReadingDetails stateKey="steps" className="step-details reading-card"><summary aria-label="详细步骤"><span>详细步骤</span><span className="steps-expand">展开</span><span className="steps-collapse">收起</span></summary><TeachingSteps steps={candidate.steps} originalImageUrl={originalImageUrl} onAskStep={onAskStep} disabled={disabled} />
+    {candidate.figures?.map(figure => <AnswerFigure key={figure.id} figure={figure} />)}</ReadingDetails>}
   </>;
   return <div className="question-sections">{sections.map(section => <section className="question-section" key={section.number} aria-label={`第${section.number}题解答`}>
     <header className="question-heading"><h3>第{section.number}题</h3><span>{subject}</span></header>
     {onAskQuestion && candidate.questions?.some(question => question.number === section.number) && <button className="context-button" disabled={disabled} onClick={() => onAskQuestion(section.number)}>追问这一题</button>}
-    <AnswerConclusion answer={section.answer} selectedOptions={section.selectedOptions} figures={section.figures} originalImageUrl={originalImageUrl} onVerify={onVerify} verificationLabel={verificationLabel} verificationDisabled={verificationDisabled} />
-    {!hideSteps && <details className="step-details reading-card"><summary aria-label="详细步骤"><span>详细步骤</span><span className="steps-expand">展开</span><span className="steps-collapse">收起</span></summary>
+    <AnswerConclusion stateKey={`question:${section.number}`} writing={section.writing} chemistry={section.chemistry} answer={section.answer} parts={section.parts} responseValue={section.responseValue} response={section.problem?.response} selectedOptions={section.selectedOptions} figures={section.figures} originalImageUrl={originalImageUrl} onVerify={onVerify} verificationLabel={verificationLabel} verificationDisabled={verificationDisabled} />
+    {!hideSteps && <ReadingDetails stateKey={`steps:${section.number}`} className="step-details reading-card"><summary aria-label="详细步骤"><span>详细步骤</span><span className="steps-expand">展开</span><span className="steps-collapse">收起</span></summary>
     <TeachingSteps steps={section.steps} originalImageUrl={originalImageUrl} questionNumber={section.number} onAskStep={onAskStep} disabled={disabled} />
-    {section.figures.map(figure => <AnswerFigure key={figure.id} figure={figure} />)}</details>}
+    {section.figures.map(figure => <AnswerFigure key={figure.id} figure={figure} />)}</ReadingDetails>}
   </section>)}</div>;
 }

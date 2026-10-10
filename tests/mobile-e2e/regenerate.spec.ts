@@ -13,7 +13,7 @@ for (const mode of ['single', 'multi'] as const) test(`${mode} regeneration pres
   await page.route('https://fixture-model.invalid/v1/chat/completions', async route => {
     posted.push(lastModelInput(route.request().postDataJSON())); const call = posted.length;
     if (call === 1) await gate;
-    if (call === 2) return route.fulfill({ status: 503, body: 'fixture unavailable' });
+    if (call === 2 || call === 3) return route.fulfill({ status: 503, body: 'fixture unavailable' });
     const answer = GeneratedSolverCandidateSchema.parse({ ...candidate, questions: undefined, answer: '重新计算后的完整答案', steps: [{ id: 'fresh', title: '重新列式', explanation: '重新核对原题后完整计算。' }] });
     await route.fulfill({ contentType: 'text/event-stream', body: modelSse(answer, route.request().postDataJSON()) });
   });
@@ -54,7 +54,7 @@ for (const mode of ['single', 'multi'] as const) test(`${mode} regeneration pres
     await expect.poll(() => posted.length, { message: '重新解答按钮应发起第二次模型请求' }).toBe(2);
     await expect(thread.getByRole('heading', { name: '这次没能完成解题' })).toBeVisible();
     await thread.getByRole('button', { name: '诊断详情', exact: true }).click();
-    await expect(page.getByText(/HTTP 503/)).toBeVisible();
+    await expect(page.getByText(/HTTP 503/)).toHaveCount(2); await expect(page.getByText(/HTTP 503/).first()).toBeVisible();
     await page.getByRole('button', { name: '关闭诊断' }).click();
     await thread.getByRole('button', { name: '历史解答', exact: true }).click(); await page.getByRole('radio', { name: '第1次解答', exact: true }).click();
     await expect(thread.getByText('旧的不完整解答', { exact: true })).toBeVisible();
@@ -62,7 +62,7 @@ for (const mode of ['single', 'multi'] as const) test(`${mode} regeneration pres
     await expect(thread.getByText('重新计算后的完整答案', { exact: true })).toBeVisible();
     await thread.getByRole('button', { name: '历史解答', exact: true }).click(); await page.getByRole('radio', { name: '第3次解答', exact: true }).click();
     await thread.getByRole('button', { name: '重新尝试' }).click();
-    await expect.poll(() => posted.length).toBe(3);
+    await expect.poll(() => posted.length).toBe(4);
     // Dispatching the Verifier is not completion; reload only after the saved terminal result.
     await expect(thread.getByTestId('solve-progress')).toHaveCount(0);
     await page.reload(); if (mode === 'multi') await page.getByRole('tab', { name: '跳转第2题', exact: true }).click();

@@ -26,9 +26,11 @@ test("shows question text and original crops before answers and keeps knowledge 
   await expect(q2.getByText("希望补充哪一部分？")).toBeVisible();
   expect(posted[0]).toMatchObject({ focus: { kind: "knowledge", sourceRunId: id(3), content: expect.stringContaining("第2题的知识点：市场均衡") } });
   await page.reload(); await page.getByRole('tab', { name: '跳转第2题', exact: true }).click(); await expect(q2.getByText("希望补充哪一部分？")).toBeVisible(); await expect(q1.locator(".thread-progress")).toHaveCount(0);
-  await page.setViewportSize({ width: 320, height: 800 }); await page.getByRole('tab', { name: '跳转第1题', exact: true }).click(); await q1.getByRole("button", { name: "放大原题图" }).click();
+  await page.setViewportSize({ width: 320, height: 800 }); await page.getByRole('tab', { name: '跳转第1题', exact: true }).click(); await q1.getByRole("button", { name: "查看题目图片" }).click();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  expect(await q1.locator(".original-crop-viewport").evaluate(node => node.scrollWidth > node.clientWidth)).toBe(true);
+  await expect(page.getByRole("img", { name: "原始题图大图" })).toBeVisible();
+  await page.getByRole("button", { name: "关闭大图" }).click();
+  expect(await q1.locator(".original-crop-viewport").evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
   // Next has an empty route-announcer alert; assert the application error surfaces.
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.screenshot({ path: `.runtime/screenshots/${info.project.name}-learning-content.png`, fullPage: true });

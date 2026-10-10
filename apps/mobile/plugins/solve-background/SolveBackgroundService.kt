@@ -18,14 +18,14 @@ class SolveBackgroundService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     val id = intent?.getStringExtra("runId") ?: return START_NOT_STICKY.also { if (jobs.isEmpty()) stopSelf() }
     if (jobs.containsKey(id)) { SolveBackgroundModule.started(id); return START_NOT_STICKY }
-    if (jobs.size >= 4) { SolveBackgroundModule.failed(id); return START_NOT_STICKY }
+    if (jobs.size >= SolveRunBudget.MAX_JOBS) { SolveBackgroundModule.failed(id); return START_NOT_STICKY }
     try {
       handler.removeCallbacks(idle)
       val expire = Runnable { SolveBackgroundModule.expired(id); finish(id) }
-      jobs[id] = expire; handler.postDelayed(expire, 120_000)
+      jobs[id] = expire; handler.postDelayed(expire, SolveRunBudget.JOB_DURATION_MS)
       notifyProgress()
       if (wake == null) wake = (getSystemService(POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SolveFlow:activeSolve").apply { setReferenceCounted(false) }
-      wake?.acquire(125_000)
+      wake?.acquire(SolveRunBudget.JOB_DURATION_MS + 5000L)
       SolveBackgroundModule.started(id)
     } catch (_: Exception) { SolveBackgroundModule.failed(id); finish(id) }
     return START_NOT_STICKY

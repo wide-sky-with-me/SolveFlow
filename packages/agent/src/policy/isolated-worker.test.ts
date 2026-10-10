@@ -42,6 +42,11 @@ it("refuses oversized inputs and invalid entry protocols before spawning", () =>
   expect(() => runIsolatedWorker(entry, { text: "x".repeat(40 * 1024) }, { signal: fresh(), timeoutMs: 1000 })).toThrow("JSON_INPUT_LIMIT");
   expect(() => runIsolatedWorker(new URL("https://example.com/worker.js"), {}, { signal: fresh(), timeoutMs: 1000 })).toThrow("INVALID_WORKER_CONFIG");
 });
+it('transfers complete drafts through an explicitly bounded application envelope', async () => {
+  const input = { mode: 'echo', message: '文'.repeat(8000), focus: { answer: '答'.repeat(8000) } };
+  expect(() => runIsolatedWorker(entry, input, { signal: fresh(), timeoutMs: 2000 })).toThrow('JSON_INPUT_LIMIT');
+  expect(await runIsolatedWorker(entry, input, { signal: fresh(), timeoutMs: 2000, maxJsonBytes: 256 * 1024 })).toEqual(input);
+});
 it("delivers bounded diagnostic metadata separately from the final result", async () => {
   const onDiagnostic = vi.fn();
   expect(await runIsolatedWorker(entry, { mode: "diagnostic" }, { signal: fresh(), timeoutMs: 2000, onDiagnostic })).toEqual({ result: "fixture" });

@@ -4,13 +4,17 @@ import { realpath, stat } from 'node:fs/promises';
 import { resolve, extname, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import proxyApi from './api-proxy.cjs';
+import { webModelProxy } from './web-model-proxy.mjs';
+import { loadWebEnv } from './web-env.mjs';
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.ttf': 'font/ttf', '.woff': 'font/woff', '.woff2': 'font/woff2' };
-export function webServer(directory, apiPort = null) {
+export function webServer(directory, apiPort = null, environment = null, modelFetch = fetch, onModelDiagnostic = () => {}) {
   if (apiPort !== null && (!Number.isInteger(apiPort) || apiPort < 1024 || apiPort > 65535)) throw new Error('INVALID_API_PORT');
   const root = resolve(directory);
+  const modelProxy = webModelProxy(environment, modelFetch, onModelDiagnostic);
   return createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
+    if (await modelProxy(req, res)) return;
     if (req.url?.startsWith('/api/v1/')) { if (apiPort === null) { res.writeHead(404); res.end(); } else proxyApi(req, res, apiPort); return; }
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self' https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
     res.setHeader('Cache-Control', 'no-cache');
@@ -27,7 +31,8 @@ export function webServer(directory, apiPort = null) {
   });
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  const server = webServer(fileURLToPath(new URL('../apps/mobile/dist/', import.meta.url)));
+  const environment = await loadWebEnv(new URL('../.env', import.meta.url));
+  const server = webServer(fileURLToPath(new URL('../apps/mobile/dist/', import.meta.url)), null, environment, fetch, entry => console.log(JSON.stringify(entry)));
   server.requestTimeout = 15000; server.headersTimeout = 10000;
   server.listen(3100, '127.0.0.1', () => console.log('SolveFlow React Native Web: http://127.0.0.1:3100'));
   const stop = () => { server.closeAllConnections(); server.close(); };

@@ -1,7 +1,7 @@
 import sharp from "sharp";
 import { NormalizedImageSchema, originalIllustrationBounds, type NormalizedImage, type AnswerCandidate } from "@solveflow/contracts/agent";
 /** Server-derived aids only; original image is still supplied separately and unchanged. */
-export async function prepareVisualEvidence(image: NormalizedImage, candidate: AnswerCandidate | undefined, signal: AbortSignal): Promise<{ images: NormalizedImage[]; description: string }> {
+export async function prepareVisualEvidence(image: NormalizedImage, candidate: AnswerCandidate | undefined, signal: AbortSignal, materialCount = 0): Promise<{ images: NormalizedImage[]; description: string }> {
   signal.throwIfAborted();
   const source = () => sharp(image.bytes, { limitInputPixels: 2048 * 2048, failOn: "warning" }).timeout({ seconds: 3 });
   const { width, height } = await source().metadata();
@@ -26,7 +26,7 @@ export async function prepareVisualEvidence(image: NormalizedImage, candidate: A
     const cutHeight = Math.max(1, Math.min(height - top, Math.ceil((bounds.y + bounds.height) * height) - top));
     const cut = await source().extract({ left, top, width: cutWidth, height: cutHeight }).resize({ width: 640, height: 640, fit: "inside", withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
     signal.throwIfAborted(); bytes += cut.byteLength; if (bytes > 4 * 1024 * 1024) throw new Error("VISUAL_EVIDENCE_LIMIT");
-    images.push(NormalizedImageSchema.parse({ bytes: cut, mimeType: "image/jpeg" })); labels.push(`${images.length + 1}: ${crop.question === undefined ? "本题" : `第${crop.question}题`}/${crop.id}`);
+    images.push(NormalizedImageSchema.parse({ bytes: cut, mimeType: "image/jpeg" })); labels.push(`${images.length + 1 + materialCount}: ${crop.question === undefined ? "本题" : `第${crop.question}题`}/${crop.id}`);
   }
-  return { images, description: `图片1是未经绘制修改的授权原图，尺寸${width}×${height}。图片2是同一原图的坐标辅助副本：红色网格是服务端叠加，每格0.1，不是原题条件；x向右、y向下。原题裁框坐标必须相对图片1整个宽高，不能相对某个图形。${labels.length ? `后续图片是服务端按候选坐标增加3%原图宽高留白后实际裁出的画面（${labels.join("；")}），即前端将展示的区域。逐一检查图形、顶点和标记是否完整；若任何内容被截断或框到别题，必须fail并建议扩大/修正边界，不可只核对文字。` : "先对照网格确定图形最左/上/右/下的位置，含标签留白后再计算width=右-左、height=下-上。"}` };
+  return { images, description: `图片1是未经绘制修改的授权原图，尺寸${width}×${height}。图片${2 + materialCount}是同一原图的坐标辅助副本：红色网格是服务端叠加，每格0.1，不是原题条件；x向右、y向下。原题裁框坐标必须相对图片1整个宽高，不能相对某个图形。${labels.length ? `后续图片是服务端按候选坐标增加3%原图宽高留白后实际裁出的画面（${labels.join("；")}），即前端将展示的区域。逐一检查图形、顶点和标记是否完整；若任何内容被截断或框到别题，必须fail并建议扩大/修正边界，不可只核对文字。` : "先对照网格确定图形最左/上/右/下的位置，含标签留白后再计算width=右-左、height=下-上。"}` };
 }

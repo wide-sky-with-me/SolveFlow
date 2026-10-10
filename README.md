@@ -1,49 +1,26 @@
 # SolveFlow
 
-基于 Pi SDK 的拍照解题应用，Android 与 Web 共用 React Native / Expo。当前默认是**设备直连模型、本地保存数据**：在设置页填写模型服务地址、模型名及密钥，无需 SolveFlow 后端或域名。iOS 原生构建暂不推进。
+基于 Pi SDK 的拍照解题应用，Android 与 Web 共用 React Native / Expo。默认由设备直连用户配置的模型，本地保存题图和记录，无需部署 SolveFlow 后端。iOS 构建与模拟器验证见[操作指南](docs/cookbook/ios-simulator.md)。
 
-题目复述、原题局部图、公式、结构化图示、知识点和题内追问继续复用原实现。独立校验由本机编排强制执行。当前真实状态和限制见 [本地应用验收](docs/LOCAL_APP_ACCEPTANCE.md)，架构见 [ADR 0013](docs/adr/0013-local-device-agent.md)。旧服务端数据和配置保留，不自动迁移。
+支持相机/上传、裁切、批量解题、公式图示、同题追问和本地备份恢复。单题默认简洁答案，步骤、知识点和校验按需生成；批量任务自动独立核验。模型校验不保证答案正确。考试类型形成题目快照，Pearson 官方播放器仅作外部样卷来源。
 
 ## 运行
 
-Node 24.19.0、pnpm 11.25.0。
+Node/pnpm 版本以 [package.json](package.json) 为准，使用锁定依赖：
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm dev
-# 或构建后运行静态网页
-pnpm build
-pnpm start
-# 本机已有 Android SDK，可生成内部测试 APK
-pnpm mobile:apk
 ```
 
-网页地址默认 http://127.0.0.1:3100 。首次进入设置页；仅支持兼容 Chat Completions 的 HTTPS 模型服务，解题模型需支持图片和工具。Web 直连要求供应商允许 CORS，密钥刷新后需重填。安卓密钥使用系统安全存储。历史记录可离线查看，新解题需要联网。
+以命令输出的地址为准。首次进入应用设置，配置支持图片输入的 HTTPS 模型服务，显式选择 Chat Completions 或 Responses。原生密钥保存在系统安全存储；手工Web密钥仅在内存，模型服务需允许CORS。本地Web也可按[环境桥接指南](docs/cookbook/local-web.md)复用`.env`，真实密钥留在Node。历史可离线查看，新解题需要联网。
 
-安卓安装包在 `.runtime/artifacts/solveflow-arm64-local.apk`。内部测试签名，不是商店发布签名；生成包与真机验收分别记录。卸载/清除数据会丢失本地题图和记录，暂无备份导出。
+静态 Web、Android 打包、旧服务路径与验证命令见 [开发流程](docs/development.md)。内部测试 APK 不等于正式签名发布，备份不包含密钥；卸载或清除数据前应自行导出记录。
 
-## 验证
+## 项目入口
 
-```sh
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm build
-# 启动静态 Web 后，执行本地应用浏览器回归
-pnpm test:e2e
-```
+- [当前架构](docs/architecture.md) 与 [文档导航](docs/README.md)
+- [发布状态和未完成项](docs/project-status.md)，区分构建、浏览器、真机和模型实测
+- [开发规则](AGENTS.md)、[变更流程](docs/cookbook/change-management.md) 与 [测试边界](docs/testing.md)
 
-纯测试使用合成数据和明确的模型夹具。真实模型调用需 opt-in。旧服务端命令保留为 `server:dev` / `server:start`（当前已停止）；数据库集成测试仍使用隔离DB/桶。现有浏览器回归已迁到本地存储与直连模型协议，保留相机、分题、公式图示、安全渲染及取消断线断言。
-
-## 设计与记录
-
-- [当前技术设计](docs/TECHNICAL_DESIGN.md)
-- [RN 架构决定](docs/adr/0012-react-native-universal-client.md)
-- [RN 迁移验收](docs/REACT_NATIVE_ACCEPTANCE.md)
-- [Android/iOS 安装包构建](docs/NATIVE_PACKAGING.md)
-- [本地配置](docs/LOCAL_SETUP.md)
-- [模型配置](docs/MODEL_SELECTION.md)
-- [兼容性与各轮实际测试](docs/PI_COMPATIBILITY.md)
-- [M1 真实模型记录](docs/M1_LIVE_ACCEPTANCE.md)
-- [实施范围](docs/IMPLEMENTATION_PLAN.md)
-- [费用策略](docs/SPEND_LEDGER.md)
+当前行为在所属子系统文档维护；决策原因在 `.agents/notes/` 按主题搜索；既有 ADR 和验收报告按原路径保存为历史证据。

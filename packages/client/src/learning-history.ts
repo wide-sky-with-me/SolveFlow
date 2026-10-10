@@ -33,7 +33,7 @@ export function conversationHistory(runs: readonly { message: string; outcome: S
   }), maxBytes);
 }
 
-export function resolveLearningContext(runs: readonly RunView[], context: RunContext | null): Pick<SolverInput, "focus" | "problemCorrection"> {
+function learningContext(runs: readonly RunView[], context: RunContext | null): Pick<SolverInput, "focus" | "problemCorrection"> {
   const selected = context ? questionThreadHistory(runs, context) : runs;
   // Corrections remain available verbatim on later follow-ups; never rewrite old answers.
   const correction = context?.kind === "correction" ? context : selected.findLast(run => run.context?.kind === "correction")?.context;
@@ -84,4 +84,32 @@ export function resolveLearningContext(runs: readonly RunView[], context: RunCon
   const label = `${address?.number === undefined ? "" : `只讨论第${address.number}题。`}${context.kind === "question" ? `第${context.number}题` : `步骤 ${context.stepId}`}`;
   const content = excerpt(`${label}，来自此前答案版本。\n${steps.map(step => `${step.title}\n${step.latex ?? ""}\n${step.explanation}`).join("\n")}`, 2000);
   return { ...result, focus: { sourceRunId: context.sourceRunId, kind: context.kind, content, verified: source.verified } };
+}
+
+/** Include only the explicitly addressed answer in full; older dialogue stays bounded. */
+export function resolveLearningContext(runs: readonly RunView[], context: RunContext | null): Pick<SolverInput, "focus" | "problemCorrection"> {
+  const result = learningContext(runs, context);
+  if (!context || !result.focus) return result;
+  const selected = questionThreadHistory(runs, context);
+  const index = selected.findIndex(run => run.id === context.sourceRunId);
+  const source = selected[index]?.outcome;
+  if (source?.status !== 'completed') return result;
+  // Follow the reviewed version's ancestry: a newer draft on another branch
+  // of the same question is not the article this feedback addressed.
+  let draftRun: RunView | undefined;
+  let parentId = source.candidate.writing?.mode === 'feedback' ? selected[index]?.context?.sourceRunId : undefined;
+  const visited = new Set<string>();
+  while (parentId && visited.size < 10 && !visited.has(parentId)) {
+    visited.add(parentId);
+    const parent = selected.slice(0, index).find(run => run.id === parentId);
+    if (parent?.outcome?.status === 'completed' && parent.outcome.candidate.problem.response?.type === 'essay') { draftRun = parent; break; }
+    parentId = parent?.context?.sourceRunId;
+  }
+  const draft = draftRun?.outcome?.status === 'completed' ? { sourceRunId: draftRun.id, answer: draftRun.outcome.candidate.answer, ...(draftRun.outcome.candidate.writing?.title ? { title: draftRun.outcome.candidate.writing.title } : {}) } : undefined;
+  return { ...result, focus: { ...result.focus, answer: source.candidate.answer,
+    ...(source.candidate.parts ? { parts: source.candidate.parts } : {}),
+    ...(source.candidate.writing ? { writing: source.candidate.writing } : {}),
+    ...(source.candidate.chemistry ? { chemistry: source.candidate.chemistry } : {}),
+    ...(draft ? { draft } : {}),
+  } };
 }

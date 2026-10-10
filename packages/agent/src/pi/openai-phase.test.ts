@@ -9,12 +9,13 @@ import { SolverInputSchema } from "@solveflow/contracts/agent";
 import { runOpenAiPhase } from "./openai-phase.js";
 import { RunBudget } from "../policy/run-budget.js";
 
-it.each(["unavailable", "deny", "invalid-json"])("real session fails safely for %s and reclaims private directories", async scenario => {
+it.each(["unavailable", "rejected", "rate-limit", "deny", "invalid-json"])("real session fails safely for %s and reclaims private directories", async scenario => {
   const directory = await mkdtemp(join(tmpdir(), "solveflow-phase-test-")); let requests = 0; let permits = 0;
   const server = createServer(async (request, response) => {
     requests++;
     for await (const _chunk of request) { /* Drain the bounded synthetic input. */ }
     if (scenario === "unavailable") { response.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: "secret-error-canary", type: "missing" } })); return; }
+    if (scenario === "rejected" || scenario === "rate-limit") { response.writeHead(scenario === "rejected" ? 400 : 429, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: "secret-error-canary" } })); return; }
     response.writeHead(200, { "content-type": "text/event-stream" });
     response.end('data: {"id":"x","object":"chat.completion.chunk","created":1,"model":"fixture","choices":[{"index":0,"delta":{"role":"assistant","content":"not-json"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
   });
@@ -27,7 +28,7 @@ it.each(["unavailable", "deny", "invalid-json"])("real session fails safely for 
     image: { mimeType: "image/png", bytes: new Uint8Array([1, 2, 3]) }, evidence: [] });
   const budget = new RunBudget();
   try {
-    const expected = scenario === "unavailable" ? "MODEL_UNAVAILABLE" : scenario === "deny" ? "CAPABILITY_DENIED" : "MODEL_OUTPUT_INVALID";
+    const expected = scenario === "unavailable" ? "MODEL_UNAVAILABLE" : scenario === "rejected" ? "MODEL_REQUEST_REJECTED" : scenario === "rate-limit" ? "MODEL_RATE_LIMITED" : scenario === "deny" ? "CAPABILITY_DENIED" : "MODEL_OUTPUT_INVALID";
     await expect(runOpenAiPhase(input, budget, new AbortController().signal, { model, apiKey: "synthetic-local-only", runDirectory: directory,
       authorize() { permits++; if (scenario === "deny") throw new Error("private-ledger-canary"); } })).rejects.toThrow(expected);
     const attempts = scenario === "invalid-json" ? 2 : 1;

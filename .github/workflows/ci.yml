@@ -1,0 +1,75 @@
+name: Repository checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          run_install: false
+          cache: false
+      - run: pnpm install --frozen-lockfile
+      # Audit the full lockfile, including build dependencies. Failures stay visible.
+      - run: pnpm deps:audit
+
+  docs:
+    name: Documentation policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
+      - run: node --test scripts/test-project-docs.mjs
+      - run: node scripts/check-project-docs.mjs
+
+  offline:
+    name: Offline code and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CI: '1'
+      EXPO_NO_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          run_install: false
+          cache: false
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      # typecheck builds the shared dist modules used by subprocess tests.
+      - run: pnpm exec vitest run --project unit --maxWorkers=2
+      - run: pnpm exec vitest run --project offline --maxWorkers=2
+      - run: pnpm build

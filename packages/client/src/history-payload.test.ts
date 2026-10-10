@@ -32,3 +32,11 @@ it('shows local calendar date and zero-padded hours, minutes and seconds', () =>
   expect(formatHistoryTime(new Date(2026, 8, 20, 8, 3, 7).toISOString())).toBe('2026-09-20 08:03:07');
   expect(formatHistoryTime(new Date(2026, 0, 2, 0, 0, 0).toISOString())).toBe('2026-01-02 00:00:00');
 });
+it('shows saved answer states in history and leaves legacy documents without a fabricated status', () => {
+  const summary = { schemaVersion: 1 as const, id, subject: 'math' as const, createdAt: session.createdAt, text: 'A saved question.', pending: false, favorite: false };
+  for (const answerState of ['verified', 'answered', 'failed', 'unanswered'] as const) {
+    expect(decodeHistoryDocument(encodeHistoryDocument([{ ...summary, answerState }], null, false)).entries[0]?.answerState).toBe(answerState);
+  }
+  expect(decodeHistoryDocument(encodeHistoryDocument([summary], null, false)).entries[0]).not.toHaveProperty('answerState');
+  expect(decodeHistoryDocument(encodeHistoryDocument([{ ...session, runs: [] }], null, false)).entries[0]?.answerState).toBe('unanswered');
+});

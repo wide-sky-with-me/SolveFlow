@@ -12,7 +12,8 @@ export function forgetCurrentRecords(route: CurrentPage, records: ReadonlySet<st
 }
 /** Bounded view history contains IDs and batch labels, never photos or model state. */
 export class NavigationState {
-  private entries: { key: number; route: WorkspacePage }[] = [{ key: 0, route: { page: 'current' } }];
+  private entries: { key: number; route: WorkspacePage }[];
+  constructor(route: WorkspacePage = { page: 'current' }) { this.entries = [{ key: 0, route }]; }
   private cursor = 0; private nextKey = 1; private exitAt: number | null = null;
   get route() { return this.entries[this.cursor]!.route; }
   get key() { return this.entries[this.cursor]!.key; }

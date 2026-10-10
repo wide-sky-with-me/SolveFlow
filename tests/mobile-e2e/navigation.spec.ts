@@ -74,6 +74,15 @@ test('switching to profile during solving preserves the run and renders its resu
     await page.getByRole('tab', { name: '我的', exact: true }).click();
     await expect(page.getByRole('button', { name: '设置', exact: true })).toBeDisabled();
     await expect(page.getByRole('button', { name: '拍照', exact: true })).toBeDisabled();
+    const hiddenMotion = await page.getByTestId('solve-scan').evaluate(async node => {
+      const samples: string[] = [];
+      for (let i = 0; i < 5; i++) {
+        await new Promise(resolve => setTimeout(resolve, 80));
+        samples.push(getComputedStyle(node).transform);
+      }
+      return new Set(samples).size;
+    });
+    expect(hiddenMotion).toBe(1);
     release();
     await expect(page.getByText('未校验', { exact: true })).toHaveCount(1);
     await page.getByRole('tab', { name: '题目', exact: true }).click();
@@ -133,7 +142,16 @@ test('related icon layers transition, rapid switching settles, and camera uses a
   await expect(page.getByTestId('nav-outline-profile')).toHaveCSS('opacity', '0');
   const icon = await page.getByTestId('nav-icon-profile').boundingBox(); const target = await mine.boundingBox();
   if (!icon || !target) throw new Error('NAV_NOT_VISIBLE');
-  expect(Math.abs(icon.x + icon.width / 2 - target.x - target.width / 2)).toBeLessThan(1);
+  if (await page.getByTestId('desktop-brand').isVisible()) {
+    // Wide Web places the label beside the icon; narrow layouts keep it below.
+    const label = await mine.getByText('我的', { exact: true }).last().boundingBox();
+    if (!label) throw new Error('NAV_LABEL_NOT_VISIBLE');
+    expect(icon.x).toBeGreaterThanOrEqual(target.x);
+    expect(icon.x + icon.width).toBeLessThan(label.x);
+    expect(label.x + label.width).toBeLessThanOrEqual(target.x + target.width);
+  } else {
+    expect(Math.abs(icon.x + icon.width / 2 - target.x - target.width / 2)).toBeLessThan(1);
+  }
   expect(icon.width).toBe(28); expect(target.height).toBeGreaterThanOrEqual(44);
   for (let index = 0; index < 3; index++) { await questions.click(); await mine.click(); }
   await questions.click();

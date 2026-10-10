@@ -6,6 +6,7 @@ const result = (extra: object) => SolveOutcomeSchema.parse({ schemaVersion: 1, s
 it('distinguishes an unfinished verifier from an incorrect answer, using recorded causes only', () => {
   expect(verificationFeedback(result({}))).toMatchObject({ title: '校验超时', issues: [] });
   expect(verificationFeedback(result({ warning: 'MODEL_OUTPUT_INVALID' }))).toMatchObject({ title: '校验结果无法读取', issues: [] });
+  expect(verificationFeedback(result({ warning: 'MODEL_UNAVAILABLE' }))).toMatchObject({ title: '校验未完成', reason: '校验服务暂不可用，已保留解答；答案尚未验证。', issues: [] });
   expect(verificationFeedback(result({ warning: null, verificationStatus: 'not_requested' }))).toBeNull();
 });
 it('shows the actual issue, category and actionable advice for fail and unknown', () => {

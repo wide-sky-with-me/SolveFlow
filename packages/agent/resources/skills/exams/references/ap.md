@@ -28,3 +28,11 @@
 - https://apcentral.collegeboard.org/media/pdf/ap26-sg-calculus-ab.pdf （只提炼作答依据/精度检查，不复制题目或评分表）
 - https://apcentral.collegeboard.org/courses/ap-biology/exam
 - https://apcentral.collegeboard.org/exam-administration-ordering-scores/administering-exams/preparing-for-exam-day/calculator-policy
+
+## 全文和多小问
+
+写作题在answer内提供完整成文回答：明确论点、具体证据、证据与论点的推理连接，按需要处理限制与反论点；只引用实际可见材料，引用某个数字还要保留研究对象及适用限制，不把相关性或一般研究偷换为当前主张的因果证据。不凭记忆编造人物年份、研究归属或复出原因。brief不等于作文摘要，完整作文与证明不受普通短答1000字符的惯例约束。
+
+多小问逐一对应原标签，不能用另一个小问的解释替代所问。统计图先读图例和组别，再比较关联强弱；合并数据的分位数需给出人数或分位位置依据，不把两个中位数之间的任意值都当成合理答案。计算题区分有符号的导数变化与变化速率的绝对大小，按题意解释。
+
+成文、原稿点评和修订的方法按需组合 `/solveflow/skills/writing/SKILL.md`；本页只限定考试任务，正文与点评按 writing 结构分开。

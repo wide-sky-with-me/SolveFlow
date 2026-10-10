@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AgentInputSchema, SolverInputSchema, VerifierInputSchema, NormalizedImageSchema, SolverCandidateSchema, VerificationSchema,
   PublicAgentEventSchema, SafeAgentErrorSchema, ToolEvidenceSchema,
-  makeSafeAgentError, parseCandidateWithEvidence, parseVerificationForCandidate,
+  makeSafeAgentError, normalizeGeneratedCandidate, parseCandidateWithEvidence, parseVerificationForCandidate,
 } from "./agent.js";
 
 const answer = () => ({
@@ -16,6 +16,45 @@ const input = () => ({
   message: "", image: { bytes: new Uint8Array([1, 2, 3]), mimeType: "image/png" }, subject: "math", evidence: [evidence()],
 });
 const pass = () => ({ schemaVersion: 1, verdict: "pass", issues: [], checked: ["transcription", "arithmetic"] });
+it('allows an explicit incomplete-choice result without guessing an option label, while retaining complete-choice validation', () => {
+  const value = { ...answer(), problem: { ...answer().problem, response: { type: 'single-choice' }, optionsComplete: false, options: [{ label: 'A', text: '1' }], uncertainties: ['选项不完整，仅给出计算结果'] } };
+  expect(SolverCandidateSchema.safeParse(value).success).toBe(true);
+  expect(SolverCandidateSchema.safeParse({ ...value, selectedOptions: ['A'] }).success).toBe(false);
+  expect(SolverCandidateSchema.safeParse({ ...value, problem: { ...value.problem, optionsComplete: true } }).success).toBe(false);
+});
+
+describe('generated source number compatibility', () => {
+  it('normalizes metadata without changing the strict persisted schema or mutating input', () => {
+    const original = { ...answer(), problem: { ...answer().problem, sourceNumber: 63 } };
+    expect(SolverCandidateSchema.safeParse(original).success).toBe(false);
+    const normalized = SolverCandidateSchema.parse(normalizeGeneratedCandidate(original));
+    expect(normalized.problem.sourceNumber).toBe('63');
+    expect(original.problem.sourceNumber).toBe(63);
+    expect(normalized.answer).toBe(original.answer);
+  });
+  it('keeps per-question source numbers separate from numeric question identities', () => {
+    const original = { ...answer(), steps: [], problem: { ...answer().problem, sourceNumber: null }, questions: [
+      { number: 1, problem: { ...answer().problem, sourceNumber: 9 }, answer: 'x=2', stepIds: [], figureIds: [] },
+      { number: 2, problem: { ...answer().problem, sourceNumber: '3(a)' }, answer: 'x=2', stepIds: [], figureIds: [] },
+    ] };
+    const normalized = SolverCandidateSchema.parse(normalizeGeneratedCandidate(original));
+    expect(normalized.problem).not.toHaveProperty('sourceNumber');
+    if (normalized.kind !== 'answer') throw new Error('ANSWER_REQUIRED');
+    expect(normalized.questions?.map(item => [item.number, item.problem?.sourceNumber])).toEqual([[1, '9'], [2, '3(a)']]);
+    expect(original.questions[0]?.problem.sourceNumber).toBe(9);
+  });
+  it.each([-1, .5, Number.MAX_SAFE_INTEGER + 1, true, {}, []])('rejects ambiguous sourceNumber %s', sourceNumber => {
+    const value = { ...answer(), problem: { ...answer().problem, sourceNumber } };
+    expect(SolverCandidateSchema.safeParse(normalizeGeneratedCandidate(value)).success).toBe(false);
+  });
+  it('does not repair answer identities, selected options, citations or unknown fields', () => {
+    for (const patch of [{ answer: 2 }, { selectedOptions: ['X'] }, { citationIds: null }, { verified: true }]) {
+      const value = { ...answer(), ...patch, problem: { ...answer().problem, sourceNumber: 63 } };
+      expect(SolverCandidateSchema.safeParse(normalizeGeneratedCandidate(value)).success).toBe(false);
+    }
+    expect(normalizeGeneratedCandidate({ schemaVersion: 1, verdict: 'pass', sourceNumber: 63 })).toEqual({ schemaVersion: 1, verdict: 'pass', sourceNumber: 63 });
+  });
+});
 
 describe("server-only adapter inputs", () => {
   it("accepts image-only solver and independent verifier with original evidence", () => {
@@ -30,7 +69,7 @@ describe("server-only adapter inputs", () => {
   });
   it.each([
     { key: "image", value: undefined },
-    { key: "message", value: "x".repeat(4001) },
+    { key: "message", value: "x".repeat(8001) },
     { key: "role", value: "admin" },
     { key: "subject", value: "x".repeat(41) },
     { key: "identity", value: { ownerId: "a", sessionId: "s", runId: "r", permission: "all" } },

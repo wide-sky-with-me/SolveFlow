@@ -6,6 +6,7 @@ import { useReducedMotion } from './use-reduced-motion';
 export type HistoryKind = 'single' | 'batch';
 export function HistoryToolbar({ kind, onKind, query, onQuery }: { kind: HistoryKind; onKind: (kind: HistoryKind) => void; query: string; onQuery: (value: string) => void }) {
   const [search, setSearch] = useState(false); const [width, setWidth] = useState(0); const [focused, setFocused] = useState(false);
+  const [searchMounted, setSearchMounted] = useState(false);
   const position = useRef(new Animated.Value(kind === 'single' ? 0 : 1)).current;
   const reveal = useRef(new Animated.Value(0)).current; const reduced = useReducedMotion();
   const input = useRef<TextInput>(null); const searchButton = useRef<View>(null);
@@ -14,10 +15,14 @@ export function HistoryToolbar({ kind, onKind, query, onQuery }: { kind: History
     animation.start(); return () => animation.stop();
   }, [kind, reduced, position]);
   useEffect(() => {
+    if (search) setSearchMounted(true);
     const animation = Animated.timing(reveal, { toValue: search ? 1 : 0, duration: reduced ? 0 : 180, useNativeDriver: false });
-    animation.start(({ finished }) => { if (finished && search) input.current?.focus(); }); return () => animation.stop();
+    animation.start(({ finished }) => {
+      if (!finished) return;
+      if (search) input.current?.focus(); else setSearchMounted(false);
+    }); return () => animation.stop();
   }, [search, reduced, reveal]);
-  function close() { onQuery(''); setSearch(false); searchButton.current?.focus(); }
+  function close() { input.current?.blur(); onQuery(''); setSearch(false); searchButton.current?.focus(); }
   return <View style={styles.container}>
     <View style={styles.row} testID="history-toolbar">
       <View style={styles.tabs} onLayout={event => setWidth(event.nativeEvent.layout.width)}>
@@ -29,8 +34,8 @@ export function HistoryToolbar({ kind, onKind, query, onQuery }: { kind: History
       </Pressable>
     </View>
     <AnimatedView style={{ height: reveal.interpolate({ inputRange: [0, 1], outputRange: [0, 58] }), opacity: reveal, overflow: 'hidden' }}>
-      {search && <View style={[styles.searchField, focused && { borderColor: colors.blue }]}>
-        <TextInput ref={input} accessibilityLabel="搜索关键词" placeholder="题号、关键词或批次名称" value={query} onChangeText={onQuery} returnKeyType="search" autoCorrect={false} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)} onKeyPress={event => { if (event.nativeEvent.key === 'Escape') close(); }} style={styles.input} />
+      {(search || searchMounted) && <View pointerEvents={search ? 'auto' : 'none'} accessibilityElementsHidden={!search} importantForAccessibility={search ? 'auto' : 'no-hide-descendants'} aria-hidden={!search} style={[styles.searchField, focused && { borderColor: colors.blue }]}>
+        <TextInput ref={input} editable={search} accessibilityLabel="搜索关键词" placeholder="题号、关键词或批次名称" value={query} onChangeText={onQuery} returnKeyType="search" autoCorrect={false} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)} onKeyPress={event => { if (event.nativeEvent.key === 'Escape') close(); }} style={styles.input} />
         <Pressable accessibilityRole="button" accessibilityLabel={query ? '清除搜索' : '关闭搜索'} onPress={() => { if (query) { onQuery(''); input.current?.focus(); } else close(); }} style={styles.searchButton}><Text style={{ fontSize: 24, color: colors.muted }}>×</Text></Pressable>
       </View>}
     </AnimatedView>

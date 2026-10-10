@@ -1,4 +1,4 @@
-import { MAX_SOLVER_MODEL_ATTEMPTS, MAX_VERIFIER_MODEL_ATTEMPTS } from "@solveflow/contracts/agent";
+import { MAX_RUN_DURATION_MS, MAX_SOLVER_MODEL_ATTEMPTS, MAX_VERIFIER_MODEL_ATTEMPTS } from "@solveflow/contracts/agent";
 
 export type ToolCategory = "file" | "business" | "search";
 
@@ -10,6 +10,8 @@ export class BudgetExceeded extends Error {
 }
 
 /** One run, no refunds: failed calls, retries and format repairs consume attempts. */
+// Decision: .agents/notes/implemented/agent/2026-10-08-device-time-and-stream-budget.md
+// Decision: .agents/notes/implemented/agent/2026-10-08-unlimited-device-time.md
 export class RunBudget {
   private readonly startedAt: number;
   private modelAttempts = 0;
@@ -19,12 +21,12 @@ export class RunBudget {
   private searchAttempts = 0;
   private formatRepairUsed = false;
 
-  constructor(private readonly now: () => number = () => performance.now()) {
+  constructor(private readonly now: () => number = () => performance.now(), private readonly durationMs: number | null = MAX_RUN_DURATION_MS) {
     this.startedAt = now();
   }
 
   remainingMs(): number {
-    return Math.max(0, 120_000 - (this.now() - this.startedAt));
+    return this.durationMs === null ? Infinity : Math.max(0, this.durationMs - (this.now() - this.startedAt));
   }
 
   assertActive(signal: AbortSignal): void {

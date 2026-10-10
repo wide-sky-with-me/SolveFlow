@@ -20,3 +20,9 @@ Writing：如果用户提供作文题，回应具体议题和观点关系。用�
 - https://www.act.org/content/act/en/products-and-services/the-act/test-preparation/description-of-english-test.html
 - https://www.act.org/content/act/en/products-and-services/the-act/test-preparation/description-of-science-test.html
 - https://www.act.org/content/act/en/products-and-services/the-act/test-preparation/act-exam-sections-and-structure.html
+
+## 替换范围与图形定位
+
+English先确定划线包括哪些标点，特别是末尾的逗号和破折号；替换后重新读取整句，不保留本应被删除的标点。连接词检查紧邻句与全文推进：否定某形式后给出替代形式、叙述延续、条件情景与既定因果应区分；不要只找一个相同词或把远处的对比强套给当前句。所有格及单复数只根据明示语法关系判断，不从单个场景/容器擅自推出所有者数量。
+
+Science图示选择题先跟踪每个箭头的端点，区别相邻物体、其内部、边界与周围区域；不得把标签附近的位置当作箭头指向。组别/图例确认后再比较趋势，数据密集导致无法分辨时指出需要放大的具体区域。

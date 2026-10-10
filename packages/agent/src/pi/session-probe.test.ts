@@ -234,17 +234,17 @@ describe("locked Pi SDK offline session", () => {
     } finally { session.dispose(); }
   });
 
-  it("limits independent no-tool verifier calls to two", async () => {
+  it("limits independent no-tool verifier calls to four per run", async () => {
     const f = await fixture();
     const { session } = await f.make([]);
     const capabilities = new CapabilitySnapshot({ ownerId: "a", runId: "run" }, []);
-    f.faux.setResponses([fauxAssistantMessage("pass"), fauxAssistantMessage("unknown")]);
+    f.faux.setResponses([fauxAssistantMessage("pass"), fauxAssistantMessage("unknown"), fauxAssistantMessage("pass"), fauxAssistantMessage("unknown")]);
     const call = () => budgetedPrompt({ session, capabilities, budget: f.budget, role: "verifier", message: "verify", signal: new AbortController().signal });
     try {
-      await call(); await call();
+      await call(); await call(); await call(); await call();
       await expect(call()).rejects.toThrow("VERIFIER_LIMIT");
-      expect(f.faux.state.callCount).toBe(2);
-      expect(f.budget.snapshot().verifierAttempts).toBe(2);
+      expect(f.faux.state.callCount).toBe(4);
+      expect(f.budget.snapshot().verifierAttempts).toBe(4);
     } finally { session.dispose(); }
   });
 
@@ -254,7 +254,7 @@ describe("locked Pi SDK offline session", () => {
     const capabilities = new CapabilitySnapshot({ ownerId: "a", runId: "run" }, []);
     let clock = 0;
     const budget = new RunBudget(() => clock);
-    clock = 119_950;
+    clock = 179_950;
     let cancelled = false;
     f.faux.setResponses([async (_context, options) => {
       const signal = options?.signal;

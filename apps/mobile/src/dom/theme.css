@@ -1,5 +1,5 @@
-:root { --sf-bg:#f5f7fb; --sf-surface:#fff; --sf-ink:#182235; --sf-muted:#6b7a90; --sf-line:#e7ecf3; --sf-soft:#edf3ff; --sf-accent:#2867dd; --sf-hover:#deebff; --sf-warning-bg:#fff7e6; --sf-warning:#755014; --sf-plot:#f7faf7; --sf-grid:#d9e3dc; --sf-axis:#8b9b91; --sf-green:#28705b; --sf-blue:#326bb6; --sf-orange:#b56520; --sf-gray:#67736c; }
-:root[data-theme=dark] { color-scheme:dark; --sf-bg:#0e1520; --sf-surface:#182232; --sf-ink:#e6edf7; --sf-muted:#a6b5ca; --sf-line:#334156; --sf-soft:#243955; --sf-accent:#8bb5ff; --sf-hover:#304d74; --sf-warning-bg:#3e3423; --sf-warning:#e8c37e; --sf-plot:#15232b; --sf-grid:#34474f; --sf-axis:#a6b5ca; --sf-green:#70d5b5; --sf-blue:#8bb5ff; --sf-orange:#efb573; --sf-gray:#b8c6bf; }
+:root { --sf-bg:#f5f7fb; --sf-surface:#fff; --sf-ink:#172338; --sf-muted:#607087; --sf-line:#e3eaf3; --sf-soft:#edf3ff; --sf-accent:#2867dd; --sf-hover:#deebff; --sf-error:#a33229; --sf-warning-bg:#fff7e6; --sf-warning:#755014; --sf-plot:#f7faf7; --sf-grid:#d9e3dc; --sf-axis:#8b9b91; --sf-green:#28705b; --sf-blue:#326bb6; --sf-orange:#b56520; --sf-gray:#67736c; }
+:root[data-theme=dark] { color-scheme:dark; --sf-bg:#0e1520; --sf-surface:#182232; --sf-ink:#e6edf7; --sf-muted:#a6b5ca; --sf-line:#334156; --sf-soft:#243955; --sf-accent:#8bb5ff; --sf-hover:#304d74; --sf-error:#ffb2a8; --sf-warning-bg:#3e3423; --sf-warning:#e8c37e; --sf-plot:#15232b; --sf-grid:#34474f; --sf-axis:#a6b5ca; --sf-green:#70d5b5; --sf-blue:#8bb5ff; --sf-orange:#efb573; --sf-gray:#b8c6bf; }
 html,body { background:var(--sf-bg); }
 .answer-document .figure-legend .answer-markdown { display:inline; }
 .answer-document .figure-legend .answer-markdown p { display:inline; margin:0; }
@@ -11,3 +11,5 @@ html,body { background:var(--sf-bg); }
 
 /* A changing WebView height must not trigger Chromium text inflation and reflow. */
 .answer-document { -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+/* Theme attribute is set synchronously by useDocumentTheme (useLayoutEffect) before first paint.
+   No additional FOUC mitigation is required for this document. */

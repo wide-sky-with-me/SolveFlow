@@ -1,7 +1,7 @@
 export type ThemeMode = 'system' | 'light' | 'dark';
 export type ThemeScheme = 'light' | 'dark';
 export const themeColors = {
-  light: { background: '#f5f7fb', surface: '#ffffff', ink: '#172338', muted: '#6b7a90', line: '#e3eaf3', accent: '#2867dd' },
+  light: { background: '#f5f7fb', surface: '#ffffff', ink: '#172338', muted: '#607087', line: '#e3eaf3', accent: '#2867dd' },
   dark: { background: '#0e1520', surface: '#182232', ink: '#e6edf7', muted: '#a6b5ca', line: '#334156', accent: '#8bb5ff' },
 };
 // Existing light design tokens map to deliberate dark roles, without filtering photos or changing geometry.
@@ -12,9 +12,10 @@ const backgrounds: Record<string, string> = {
   '#f0f5ff': '#1e3049', '#eaf1ff': '#263b59', '#dbe8ff': '#314b70', '#d5e3ff': '#304767', '#c8dafa': '#3c557b',
   '#e1eaf9': '#324965', '#e1e9f6': '#324965', '#eef2f7': '#202e42', '#eef2f8': '#202e42', '#fff3d9': '#433722', '#bdd8ee': '#345267',
   '#c2d7ff': '#426491', '#d9e6ff': '#35537a',
+  '#6695ec': '#4d74bd', '#82aafa': '#4a68a8', '#9bbcff': '#3d6099',
 };
 const foregrounds: Record<string, string> = {
-  '#172338': '#e6edf7', '#182235': '#e6edf7', '#6b7a90': '#a6b5ca', '#738299': '#a6b5ca', '#738276': '#a8c4b2',
+  '#172338': '#e6edf7', '#182235': '#e6edf7', '#607087': '#a6b5ca', '#6b7a90': '#a6b5ca', '#738299': '#a6b5ca', '#738276': '#a8c4b2',
   '#2867dd': '#8bb5ff', '#2761cf': '#8bb5ff', '#a33229': '#ffb2a8', '#b33939': '#ffb2a8', '#95630d': '#e8c37e', '#755014': '#e8c37e',
 };
 export function themeColor(value: string, property: string, scheme: ThemeScheme): string {

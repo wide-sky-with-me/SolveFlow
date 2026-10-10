@@ -1,13 +1,171 @@
 import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { LocalEngine } from './local-engine.js';
-import { LocalRepository, type LocalDocuments } from './local-repository.js';
+import { LocalDataError, LocalRepository, type LocalDocuments } from './local-repository.js';
 import { makeSafeAgentError } from '@solveflow/contracts/agent';
+import { LocalRecordSchema, StoredLocalRecordSchema } from '@solveflow/contracts/local';
 function setup() {
   const values = new Map<string, string>(); const reads: string[] = [];
   const documents: LocalDocuments = { async get(key) { reads.push(key); return values.get(key) ?? null; }, async put(key, value) { values.set(key, value); }, async remove(key) { values.delete(key); }, async keys() { return [...values.keys()]; } };
   const repository = new LocalRepository(documents); return { values, reads, documents, repository, engine: new LocalEngine(repository, randomUUID) };
 }
+
+it.each([1, 2] as const)('reads historical model error text in v%s without treating the question as damaged or rewriting it', async version => {
+  const { values, documents, repository, engine } = setup();
+  const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  const error = makeSafeAgentError('MODEL_UNAVAILABLE', 'legacy-trace');
+  record.session.runs.push({ schemaVersion: 1, id: randomUUID(), sessionId: record.session.id, status: 'failed', createdAt: record.session.createdAt, message: '', seq: 2, outcome: { schemaVersion: 1, status: 'failed', error, verified: false } });
+  await repository.save(record);
+  const legacyRecord = version === 1 ? record : StoredLocalRecordSchema.parse(JSON.parse(values.get(`record.${record.session.id}`)!));
+  const raw = JSON.stringify(legacyRecord).replace(error.message, '指定模型暂不可用，请检查服务端配置。');
+  expect((version === 1 ? LocalRecordSchema : StoredLocalRecordSchema).safeParse(JSON.parse(raw)).success).toBe(false);
+  values.set(`record.${record.session.id}`, raw); const snapshot = [...values];
+  const reopened = new LocalRepository(documents);
+  expect((await reopened.read(record.session.id)).session.runs[0]?.outcome).toMatchObject({ error });
+  expect((await reopened.readMetadata(record.session.id)).session.runs[0]?.outcome).toMatchObject({ error });
+  expect(await reopened.listHistory()).toHaveLength(1);
+  expect((await reopened.exportQuestion(record.session.id)).record.session.runs[0]?.outcome).toMatchObject({ error });
+  expect(reopened.issues).toEqual([]); expect([...values]).toEqual(snapshot);
+  for (const wrong of [raw.replace('指定模型暂不可用，请检查服务端配置。', 'PRIVATE_PROVIDER_ERROR'), raw.replace('"retryable":false', '"retryable":true'), raw.replace('"traceId":"legacy-trace"', '"traceId":"legacy-trace","stack":"PRIVATE_STACK"')]) {
+    values.set(`record.${record.session.id}`, wrong);
+    await expect(reopened.read(record.session.id)).rejects.toBeInstanceOf(LocalDataError);
+    expect(values.get(`record.${record.session.id}`)).toBe(wrong);
+  }
+});
+/** Models the Web adapter's classification while retaining the original non-string value. */
+function damagedValue(documents: LocalDocuments, key: string, value: unknown) {
+  const get = documents.get; const put = documents.put; const remove = documents.remove;
+  let raw: unknown = value;
+  documents.get = async reading => {
+    if (reading !== key || raw === undefined) return get(reading);
+    if (typeof raw !== 'string') throw new LocalDataError(key);
+    return raw;
+  };
+  documents.put = async (writing, value) => { await put(writing, value); if (writing === key) raw = value; };
+  documents.remove = async removing => { await remove(removing); if (removing === key) raw = undefined; };
+  return () => raw;
+}
+
+it('rebuilds a non-string derived summary without rewriting the source question or reading its photo', async () => {
+  const { documents, values, reads, repository, engine } = setup();
+  const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  const source = values.get(`record.${record.session.id}`); const photo = values.get(`image.${record.session.id}`);
+  const peek = damagedValue(documents, `summary.${record.session.id}`, { broken: true }); reads.length = 0;
+  expect(await repository.listHistory()).toMatchObject([{ id: record.session.id }]);
+  expect(peek()).toEqual(expect.any(String));
+  expect(values.get(`record.${record.session.id}`)).toBe(source); expect(values.get(`image.${record.session.id}`)).toBe(photo);
+  expect(reads.some(key => key.startsWith('image.'))).toBe(false); expect(repository.issues).toHaveLength(0);
+});
+
+it.each(['favorite', 'batch-title'] as const)('requires explicit repair before removing a non-string %s override', async kind => {
+  const { documents, values, repository, engine } = setup();
+  const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  const key = `${kind}.${record.session.id}`; const original = { broken: true };
+  const source = [...values]; const peek = damagedValue(documents, key, original);
+  if (kind === 'favorite') {
+    expect(await repository.listHistory()).toEqual([]);
+    expect(repository.issues).toContainEqual(expect.objectContaining({ key, repairable: true }));
+  }
+  expect(peek()).toBe(original); expect([...values]).toEqual(source);
+  await repository.repairAuxiliary(key); expect(peek()).toBeUndefined();
+  expect(await repository.listHistory()).toMatchObject([{ id: record.session.id }]); expect(repository.issues).toHaveLength(0);
+  expect(values.get(`record.${record.session.id}`)).toBe(source.find(([key]) => key.startsWith('record.'))?.[1]);
+});
+
+it.each(['summary', 'favorite'] as const)('propagates %s read I/O failures and leaves storage untouched', async kind => {
+  const { documents, values, repository, engine } = setup();
+  const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20); const snapshot = [...values];
+  const key = `${kind}.${record.session.id}`; const get = documents.get;
+  documents.get = async reading => { if (reading === key) throw new Error('storage unavailable'); return get(reading); };
+  const operation = kind === 'summary' ? repository.listHistory() : repository.repairAuxiliary(key);
+  await expect(operation).rejects.toThrow('storage unavailable');
+  expect([...values]).toEqual(snapshot); expect(repository.issues).toHaveLength(0);
+});
+it('reads legacy false bookmarks across startup, history and export without changing the question', async () => {
+  const { values, documents, engine } = setup();
+  const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20, 'tara');
+  const rawRecord = values.get(`record.${record.session.id}`);
+  values.set(`favorite.${record.session.id}`, JSON.stringify({ schemaVersion: 1, favorite: false }));
+  const reopened = new LocalRepository(documents);
+  await reopened.recoverInterrupted();
+  expect(await reopened.listHistory()).toMatchObject([{ id: record.session.id, favorite: false }]);
+  expect(await reopened.list()).toMatchObject([{ id: record.session.id, favorite: false }]);
+  const exported = [];
+  for await (const line of reopened.exportHistory(new AbortController().signal)) exported.push(line);
+  expect(exported).toContainEqual(expect.objectContaining({ kind: 'question', favorite: false, record: expect.objectContaining({ exam: 'tara' }) }));
+  expect(values.get(`record.${record.session.id}`)).toBe(rawRecord);
+  await reopened.setFavorite(record.session.id, true);
+  expect(await reopened.listHistory()).toMatchObject([{ favorite: true }]);
+  await reopened.setFavorite(record.session.id, false);
+  expect(values.has(`favorite.${record.session.id}`)).toBe(false);
+});
+
+it('isolates malformed bookmarks with a visible issue and preserves their original bytes', async () => {
+  const { values, repository, engine } = setup();
+  const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  const healthy = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  for (const value of [{ schemaVersion: 2, favorite: false }, { schemaVersion: 1, favorite: 'false' }, { schemaVersion: 1, favorite: false, extra: true }]) {
+    values.set(`favorite.${record.session.id}`, JSON.stringify(value));
+    await repository.recoverInterrupted();
+    expect((await repository.listHistory()).map(row => row.id)).toEqual([healthy.session.id]);
+    expect(repository.issues).toContainEqual(expect.objectContaining({ key: `favorite.${record.session.id}`, sessionId: record.session.id }));
+    expect(values.get(`favorite.${record.session.id}`)).toBe(JSON.stringify(value));
+  }
+  await repository.repairAuxiliary(`favorite.${record.session.id}`);
+  expect(await repository.listHistory()).toHaveLength(2); expect(repository.issues).toHaveLength(0);
+});
+
+it.each(['{invalid', ''])('isolates malformed source records (%j) without hiding healthy history or overwriting the original', async raw => {
+  const { values, repository, engine } = setup(); const bad = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  const healthy = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  values.set(`record.${bad.session.id}`, raw); values.delete(`summary.${bad.session.id}`);
+  await repository.recoverInterrupted();
+  expect((await repository.listHistory()).map(row => row.id)).toEqual([healthy.session.id]);
+  expect(values.get(`record.${bad.session.id}`)).toBe(raw);
+  await expect(repository.repairAuxiliary(`record.${bad.session.id}`)).rejects.toThrow();
+  await expect(engine.create('data:image/jpeg;base64,AQID', 30, 20)).resolves.toBeDefined();
+});
+
+it('does not misclassify storage I/O errors as corrupt data', async () => {
+  const { documents, repository, engine } = setup(); await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  documents.get = async () => { throw new Error('disk unavailable'); };
+  await expect(repository.listHistory()).rejects.toThrow('disk unavailable'); expect(repository.issues).toHaveLength(0);
+});
+
+it('reports corruption discovered when opening a question even if its summary is still valid', async () => {
+  const { values, repository, engine } = setup(); const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  await repository.listHistory(); let notices = 0;
+  const unsubscribe = repository.subscribeIssues(() => { notices++; });
+  values.set(`image.${record.session.id}`, '{broken');
+  await expect(repository.read(record.session.id)).rejects.toThrow();
+  expect(repository.issues).toContainEqual({ key: `image.${record.session.id}`, sessionId: record.session.id, repairable: false });
+  await expect(repository.read(record.session.id)).rejects.toThrow(); expect(notices).toBe(1);
+  unsubscribe();
+});
+
+it.each(['missing', 'invalid'] as const)('recovers interrupted metadata with a %s photo without blocking other records', async mode => {
+  const { values, reads, repository, engine } = setup();
+  const damaged = await engine.create('data:image/jpeg;base64,AQID', 30, 20, 'esat');
+  const healthy = await engine.create('data:image/jpeg;base64,AQID', 30, 20, 'tmua');
+  for (const record of [damaged, healthy]) {
+    record.session.runs.push({ schemaVersion: 1, id: randomUUID(), sessionId: record.session.id, status: 'solving', createdAt: record.session.createdAt, message: '', seq: 2, outcome: null });
+    await repository.save(record);
+  }
+  if (mode === 'missing') values.delete(`image.${damaged.session.id}`);
+  else values.set(`image.${damaged.session.id}`, 'invalid image document');
+  reads.length = 0;
+  await repository.recoverInterrupted();
+  expect(reads.some(key => key.startsWith('image.'))).toBe(false);
+  expect(await repository.listHistory()).toHaveLength(2);
+  for (const id of [damaged.session.id, healthy.session.id]) {
+    expect((await repository.readMetadata(id)).session.runs[0]).toMatchObject({ status: 'failed', outcome: { error: { code: 'WORKER_LOST' } } });
+  }
+  await expect(repository.read(damaged.session.id)).rejects.toThrow();
+  expect((await repository.read(healthy.session.id)).image).toBe(healthy.image);
+  const snapshot = [...values]; await repository.recoverInterrupted(); expect([...values]).toEqual(snapshot);
+  await engine.remove(damaged.session.id);
+  expect(await repository.listHistory()).toMatchObject([{ id: healthy.session.id }]);
+});
 it('migrates old records once and lists summaries after restart without reading photos or answers', async () => {
   const { values, reads, documents, engine } = setup();
   const record = await engine.create('data:image/jpeg;base64,' + 'AAAA'.repeat(300000), 1000, 1000);
@@ -100,4 +258,51 @@ it('lists many saved questions through one bulk metadata read and still rebuilds
   await expect(repository.listHistory()).rejects.toThrow('read failed');
   documents.getMany = async () => [];
   await expect(repository.listHistory()).rejects.toThrow('本地批量读取失败');
+});
+
+it('reuses a bounded summary snapshot and updates it after writes without rescanning storage', async () => {
+  const { repository, engine, documents, reads } = setup();
+  const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  await repository.listHistory({ cached: true });
+  let scans = 0; const keys = documents.keys; documents.keys = async () => { scans++; return keys(); };
+  reads.length = 0;
+  await Promise.all(Array.from({ length: 20 }, () => repository.listHistory({ cached: true })));
+  expect(scans).toBe(0); expect(reads).toEqual([]);
+  record.session.subject = 'math'; await repository.save(record);
+  await repository.setFavorite(record.session.id, true);
+  expect(await repository.listHistory({ cached: true })).toMatchObject([{ subject: 'math', favorite: true }]);
+  expect(scans).toBe(0);
+  const detached = await repository.listHistory({ cached: true }); detached[0]!.subject = 'invalid';
+  expect((await repository.listHistory({ cached: true }))[0]?.subject).toBe('math');
+  await engine.remove(record.session.id);
+  expect(await repository.listHistory({ cached: true })).toEqual([]);
+});
+
+it('stores photos separately and updates answers without rewriting immutable image bytes', async () => {
+  const { repository, engine, documents, values } = setup();
+  const record = await engine.create('data:image/jpeg;base64,' + 'AAAA'.repeat(100000), 1000, 1000);
+  const written: { key: string; bytes: number }[] = []; const put = documents.put;
+  documents.put = async (key, value) => { written.push({ key, bytes: value.length }); await put(key, value); };
+  record.session.subject = 'math'; await repository.save(record);
+  expect(written.some(row => row.bytes > 10000)).toBe(false);
+  expect(JSON.parse(values.get(`record.${record.session.id}`)!)).not.toHaveProperty('image');
+  expect((await repository.read(record.session.id)).image).toBe(record.image);
+  await engine.remove(record.session.id); expect([...values.keys()]).toEqual([]);
+});
+it('reads legacy records and migrates them atomically on save without losing the photo', async () => {
+  const { repository, engine, values } = setup(); const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  values.set(`record.${record.session.id}`, JSON.stringify(record));
+  values.delete(`image.${record.session.id}`);
+  expect((await repository.read(record.session.id)).image).toBe(record.image);
+  await repository.save(record);
+  expect(JSON.parse(values.get(`record.${record.session.id}`)!)).toMatchObject({ schemaVersion: 2 });
+  expect((await repository.read(record.session.id)).image).toBe(record.image);
+});
+
+it('retains a legacy image and record if an atomic migration fails', async () => {
+  const { values, documents, repository, engine } = setup(); const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  values.set(`record.${record.session.id}`, JSON.stringify(record)); values.delete(`image.${record.session.id}`); const before = [...values];
+  documents.batch = async () => { throw new Error('transaction aborted'); };
+  await expect(repository.save(record)).rejects.toThrow('transaction aborted');
+  expect([...values]).toEqual(before); expect(await repository.read(record.session.id)).toEqual(record);
 });

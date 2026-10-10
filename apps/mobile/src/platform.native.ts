@@ -3,8 +3,11 @@ import * as SecureStore from 'expo-secure-store';
 import * as Picker from 'expo-image-picker';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { File, Paths } from 'expo-file-system';
-import { cropPixels, type ClientStore, type Crop } from '@solveflow/client';
+import { cropPixels, type Crop } from '@solveflow/client/presentation';
+import { type ClientStore } from '@solveflow/client/remote';
 import type { Photo } from './platform.types';
+import { MAX_BATCH_PHOTOS } from '@solveflow/contracts/local';
+import { fileNameTime, type ImportPhoto } from './batch-photo-order';
 const keyOf = (key: string) => `solveflow.${Array.from(new TextEncoder().encode(key), byte => byte.toString(16).padStart(2, '0')).join('')}`;
 export const store: ClientStore = {
   get: key => SecureStore.getItemAsync(keyOf(key)),
@@ -15,6 +18,21 @@ const fromAsset = (asset: Picker.ImagePickerAsset): Photo => ({ uri: asset.uri, 
 export async function pickPhoto(): Promise<Photo | null> {
   const result = await Picker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: false, quality: 1, exif: false, base64: false, preferredAssetRepresentationMode: Picker.UIImagePickerPreferredAssetRepresentationMode.Compatible });
   return result.canceled || !result.assets[0] ? null : fromAsset(result.assets[0]);
+}
+export async function pickPhotos(limit: number): Promise<ImportPhoto[]> {
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_BATCH_PHOTOS) throw new Error('批次已满，请新建批次。');
+  const result = await Picker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: limit, orderedSelection: true, quality: 1, exif: false, base64: false, preferredAssetRepresentationMode: Picker.UIImagePickerPreferredAssetRepresentationMode.Compatible });
+  if (result.canceled) return [];
+  try {
+    if (result.assets.length > limit || result.assets.reduce((sum, asset) => sum + (asset.fileSize ?? new File(asset.uri).size), 0) > 100 * 1024 * 1024) throw new Error('选择的图片超过本批剩余数量或100MB，请分次导入。');
+  } catch (cause) {
+    for (const asset of result.assets) releasePhoto(fromAsset(asset));
+    throw cause;
+  }
+  return result.assets.map((asset, id) => {
+    const fileName = (asset.fileName || `图片${id + 1}`).slice(0, 160); const timestamp = fileNameTime(fileName);
+    return { id, photo: fromAsset(asset), fileName, ...(timestamp === undefined ? {} : { timestamp, timeSource: 'filename' as const }) };
+  });
 }
 export async function recoverPhoto(): Promise<Photo | null> {
   const result = await Picker.getPendingResultAsync();
@@ -39,7 +57,7 @@ export async function transformPhoto(photo: Photo, crop?: Crop, rotate = false, 
       if (Math.max(width, height) > maxDimension) context.resize(width >= height ? { width: maxDimension } : { height: maxDimension });
     } finally { interim?.release(); }
     const image = await context.renderAsync();
-    try { const result = await image.saveAsync({ format: SaveFormat.JPEG, compress: .92 }); return { uri: result.uri, width: result.width, height: result.height, owned: true }; }
+    try { const result = await image.saveAsync({ format: SaveFormat.JPEG, compress: .92 }); return { uri: result.uri, width: result.width, height: result.height, owned: true, normalized: true }; }
     finally { image.release(); }
   } finally { context.release(); }
 }

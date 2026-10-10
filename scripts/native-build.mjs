@@ -59,9 +59,7 @@ try {
   } else {
     if (command === 'apk' && (!java || android.missing.length)) throw new Error(`Android编译工具尚未就绪，请先运行 pnpm mobile:doctor。缺少：${!java ? 'Java ' : ''}${android.missing.join(', ')}`);
     if (compileOnly) console.log('--compile-only 为旧版兼容参数；当前生成可在设置页配置模型的本地应用。');
-    await run(process.execPath, ['scripts/prepare-mobile-agent.mjs']);
-    await run('pnpm', ['--filter', '@solveflow/contracts', 'build']); await run('pnpm', ['--filter', '@solveflow/client', 'build']);
-    await run('pnpm', ['--filter', '@solveflow/agent', 'build']);
+    await run('pnpm', ['build:shared']);
     await run(process.execPath, ['scripts/prepare-mobile-assets.mjs']);
     if (command === 'apk') {
       if (await prebuildNeeded()) await run('pnpm', ['--filter', '@solveflow/mobile', 'exec', 'expo', 'prebuild', '--platform', 'android', '--no-install']);
@@ -86,6 +84,7 @@ try {
       // default mmap-friendly packaging for store AABs and Hermes startup.
       const gradle = ['assembleRelease', '--console=plain', `--max-workers=${Math.max(2, Math.min(8, cpus().length - 2))}`, '-PreactNativeArchitectures=arm64-v8a', '-Pexpo.useLegacyPackaging=true'];
       if (process.env.SOLVEFLOW_GRADLE_NO_DAEMON === '1') gradle.push('--no-daemon');
+      if (process.env.SOLVEFLOW_KOTLIN_IN_PROCESS === '1') gradle.push('-Pkotlin.compiler.execution.strategy=in-process');
       await run(resolve(app, 'android/gradlew'), gradle, resolve(app, 'android'));
       const source = resolve(app, 'android/app/build/outputs/apk/release/app-release.apk'); await stat(source);
       const directory = resolve(root, '.runtime/artifacts'); await mkdir(directory, { recursive: true });

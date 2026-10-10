@@ -24,7 +24,8 @@ for (const state of ["unknown", "clarification", "policy", "emergency", "budget"
     let dialogs = 0; page.on("dialog", async dialog => { dialogs++; await dialog.dismiss(); });
     await seedLocalSession(page, session, image);
     if (state === "unknown") {
-      await expect(page.getByText("当前结果未通过完整校验，请结合题目检查后再使用。")).toBeVisible();
+      await expect(page.getByRole("region", { name: "校验说明", exact: true })).toContainText("校验无法确认");
+      await expect(page.getByText("无法确认条件", { exact: true })).toBeVisible();
       await expect(page.getByText("模型独立校验通过", { exact: true })).toHaveCount(0);
       await expect(page.locator(".answer-document script")).toHaveCount(0);
     } else if (state === "clarification") await expect(page.getByText("请补齐题目右侧的条件。")).toBeVisible();
@@ -39,7 +40,7 @@ for (const state of ["unknown", "clarification", "policy", "emergency", "budget"
     }
     else await expect(page.getByRole("heading", { name: "本次解题已取消" })).toBeVisible();
     if (state === 'budget' || state === 'cancelled') {
-      await page.getByRole('button', { name: '查看原图', exact: true }).click();
+      await page.getByRole('button', { name: '查看题目图片', exact: true }).click();
       await expect(page.getByRole('img', { name: '原始题图大图', exact: true })).toBeVisible();
       await page.getByRole('button', { name: '关闭大图', exact: true }).click();
     }

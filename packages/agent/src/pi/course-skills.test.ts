@@ -19,6 +19,9 @@ const cases = [
   { name: "exams", reference: "sat.md", expression: "1/3", expected: 1/3 },
   { name: "exams", reference: "act.md", expression: "(15-5)/2", expected: 5 },
   { name: "exams", reference: "ap.md", expression: "(20-8)/4", expected: 3 },
+  { name: "exams", reference: "esat.md", expression: "(60/3.6)*2", expected: 100/3 },
+  { name: "exams", reference: "tmua.md", expression: "2**2-4", expected: 0 },
+  { name: "exams", reference: "tara.md", expression: "80*0.75", expected: 60 },
   { name: "physics", reference: "models.md", expression: "(10-2)/2*3**2/2", expected: 18 },
   { name: "chemistry", reference: "stoichiometry.md", expression: "10/100*44", expected: 4.4 },
   { name: "biology", reference: "genetics-and-experiments.md", expression: "0.5/0.75", expected: 2 / 3 },
@@ -76,7 +79,7 @@ it.each(cases)("loads the production $name skill and reference on demand, then c
 it("excludes course skills when calculator is absent and revokes admitted resources", async () => {
   const signal = new AbortController().signal;
   const admission = await admitSkills({ root, owner: "owner", manifest: approvedSkills, availableTools: ["read"], signal });
-  try { expect(admission.skills.map(skill => skill.name)).toEqual(["exams", "general"]); for (const fixture of cases.filter(item => item.name !== "exams")) expect(admission.excluded).toContainEqual({ name: fixture.name, missingTools: ["calculate"] }); }
+  try { expect(admission.skills.map(skill => skill.name)).toEqual(["exams", "general", "writing"]); expect(admission.snapshot.read('/solveflow/skills/writing/SKILL.md', 'owner', signal)).toContain('focus.draft'); for (const fixture of cases.filter(item => item.name !== "exams")) expect(admission.excluded).toContainEqual({ name: fixture.name, missingTools: ["calculate"] }); }
   finally { admission.snapshot.revoke(); }
   expect(() => admission.snapshot.read("/solveflow/skills/general/SKILL.md", "owner", signal)).toThrow();
 });

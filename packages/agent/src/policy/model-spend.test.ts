@@ -51,20 +51,20 @@ it("unlimited spending still binds model routes, cancellation and maximum reques
   expect(() => gate("unknown-route", signal)).toThrow("MODEL_DISPATCH_DENIED");
   const cancelled = new AbortController(); cancelled.abort(new Error("CANCELLED"));
   expect(() => gate(modelAuthorizationId("solver", selected), cancelled.signal)).toThrow("CANCELLED");
-  for (let i = 0; i < 18; i++) gate(modelAuthorizationId(i < 16 ? "solver" : "verifier", selected), signal);
+  for (let i = 0; i < 20; i++) gate(modelAuthorizationId(i < 16 ? "solver" : "verifier", selected), signal);
   expect(() => gate(modelAuthorizationId("solver", selected), signal)).toThrow("MODEL_DISPATCH_DENIED");
 });
 
-it("finite spending permits sixteen solver requests and two verifier requests only", () => {
+it("finite spending permits sixteen solver requests and four verifier requests only", () => {
   const directory = mkdtempSync(join(tmpdir(), "solveflow-round-budget-"));
   const file = join(directory, "ledger"); writeFileSync(file, "", { mode: 0o600 });
   const ledger = SpendLedger.open(file);
   try {
     const selected = route(); const signal = new AbortController().signal;
     const gate = createModelSpendGate(ledger, { solver: selected, verifier: selected }, "extended");
-    for (let i = 0; i < 18; i++) gate(modelAuthorizationId(i < 16 ? "solver" : "verifier", selected), signal);
-    expect(ledger.snapshot().attempts).toBe(18);
+    for (let i = 0; i < 20; i++) gate(modelAuthorizationId(i < 16 ? "solver" : "verifier", selected), signal);
+    expect(ledger.snapshot().attempts).toBe(20);
     expect(() => gate(modelAuthorizationId("solver", selected), signal)).toThrow("MODEL_DISPATCH_DENIED");
-    expect(ledger.snapshot().attempts).toBe(18);
+    expect(ledger.snapshot().attempts).toBe(20);
   } finally { ledger.close(); rmSync(directory, { recursive: true, force: true }); }
 });

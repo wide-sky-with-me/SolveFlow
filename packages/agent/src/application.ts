@@ -7,7 +7,7 @@ import { runIsolatedWorker } from "./policy/isolated-worker.js";
 import { SpendLedger } from "./policy/spend-ledger.js";
 import { createModelSpendGate, quoteModelRequest } from "./policy/model-spend.js";
 import { ModelConnectionsSchema, type ModelConnections, type ModelRoute } from "@solveflow/contracts/model";
-import { assertBoundedJson } from "./policy/bounded-json.js";
+import { assertBoundedJson, MAX_APPLICATION_JSON_BYTES } from "./policy/bounded-json.js";
 export { createProbeImage } from "./policy/probe-image.js";
 export { solve } from "./orchestration/solve.js";
 export { RunBudget } from "./policy/run-budget.js";
@@ -29,7 +29,7 @@ export async function runApplicationAgent(raw: unknown, settings: {
   const input = SolverInputSchema.parse(raw);
   const connections = ModelConnectionsSchema.parse(settings.connections);
   const { image, ...data } = input;
-  assertBoundedJson(data);
+  assertBoundedJson(data, MAX_APPLICATION_JSON_BYTES);
   const ledgerPath = fileURLToPath(new URL("../../../.runtime/m0-spend/ledger.jsonl", import.meta.url));
   let ledger: SpendLedger | null = null;
   if (settings.capRmb !== null) {
@@ -42,7 +42,7 @@ export async function runApplicationAgent(raw: unknown, settings: {
     const authorizeModel = createModelSpendGate(ledger, { solver: connections.solver.route, verifier: connections.verifier.route }, input.identity.runId);
     directory = await mkdtemp(join(tmpdir(), "solveflow-app-agent-"));
     const result = await runIsolatedWorker(new URL("./pi/application-worker.js", import.meta.url), { data, mimeType: image.mimeType, connections, runDirectory: directory },
-      { signal: settings.signal, timeoutMs: settings.timeoutMs, image: image.bytes, authorizeModel, onEvent: settings.onEvent, onDiagnostic: diagnostic => {
+      { maxJsonBytes: MAX_APPLICATION_JSON_BYTES, signal: settings.signal, timeoutMs: settings.timeoutMs, image: image.bytes, authorizeModel, onEvent: settings.onEvent, onDiagnostic: diagnostic => {
         if (diagnostic.runId !== input.identity.runId) throw new Error("DIAGNOSTIC_IDENTITY_MISMATCH");
         console.warn(JSON.stringify(diagnostic));
       } });

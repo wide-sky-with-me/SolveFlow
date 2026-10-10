@@ -1,13 +1,19 @@
-import { Directory } from 'expo-file-system';
+import { Directory, type File } from 'expo-file-system';
 import { ZodError } from 'zod';
-import { writeHistoryExport, type HistoryExportProgress, type LocalRepository } from '@solveflow/client';
-export async function exportHistory(repository: LocalRepository, signal: AbortSignal, onProgress: (progress: HistoryExportProgress) => void): Promise<string | null> {
+import { HISTORY_EXPORT_PART_BYTES, writeHistoryExport, type HistoryExportProgress, type LocalRepository } from '@solveflow/client/local';
+export async function exportHistory(repository: LocalRepository, signal: AbortSignal, onProgress: (progress: HistoryExportProgress) => void, part?: { ids: readonly string[]; index: number; total: number }): Promise<string | null> {
   let directory: Directory;
   try { directory = await Directory.pickDirectoryAsync(); }
   catch (cause) { if (cause instanceof Error && 'code' in cause && cause.code === 'ERR_PICKER_CANCELLED') return null; throw new Error('无法选择导出目录，请重试。'); }
   if (signal.aborted) throw new Error('导出已取消。');
-  const name = `solveflow-history-${new Date().toISOString().replace(/[:.]/g, '-')}.ndjson`;
+  const suffix = part && part.total > 1 ? `-part-${part.index}-of-${part.total}` : '';
+  const name = `solveflow-history-${new Date().toISOString().replace(/[:.]/g, '-')}${suffix}.ndjson`;
   const file = directory.createFile(name, 'application/x-ndjson');
+  const result = await writeNativeHistoryFile(repository, file, signal, onProgress, part);
+  return result === null ? null : name;
+}
+/** Shared by the SAF picker and the isolated Android acceptance app. */
+export async function writeNativeHistoryFile(repository: LocalRepository, file: File, signal: AbortSignal, onProgress: (progress: HistoryExportProgress) => void, part?: { ids: readonly string[]; index: number; total: number }): Promise<string | null> {
   let stage = '读取记录';
   try {
     await writeHistoryExport(repository, async line => {
@@ -20,8 +26,8 @@ export async function exportHistory(repository: LocalRepository, signal: AbortSi
         await new Promise<void>(resolve => setTimeout(resolve, 0));
       }
       stage = '读取记录';
-    }, signal, onProgress);
-    return name;
+    }, signal, onProgress, part?.ids, part ? HISTORY_EXPORT_PART_BYTES : undefined);
+    return file.name;
   } catch (cause) {
     let cleanupFailed = false;
     try { file.delete(); } catch { cleanupFailed = true; }

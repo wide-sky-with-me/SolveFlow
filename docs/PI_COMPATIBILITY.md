@@ -1,5 +1,9 @@
 # Pi / MCP 兼容性记录
 
+## 2026-10-03 设备最终作答与格式修复
+
+核对锁定的 Pi 0.85.1 已安装类型及 `api/openai-completions.js`、`api/openai-responses.js`：两种流式适配均接受 `toolChoice: 'none'` 并写入请求 `tool_choice`。设备 Agent 在既有最终作答阶段和一次格式修复中使用该选项，同时移除可用工具、保留工具历史，仍由 Pi 执行循环与 beforeToolCall 拦截。离线回归检查两种实际序列化请求及后续任务隔离，模型继续索取工具时停止；不增加模型/工具预算。验证和真实复测限制见[可靠性改进](MODEL_RELIABILITY_2026_10_03.md)。
+
 ## 2026-09-21 默认考试类型与 Responses
 
 0.1.38 复用已锁定 Pi 0.85.1 的 `pi-ai/api/openai-responses`，不升级依赖；入口仍只在 `packages/agent/src/pi/`，Agent 循环、工具权限和预算不变。默认思考不发 `none`，开启使用原生 `reasoning.effort`；无状态工具续接只在内存保留加密 reasoning。明确考试类型预加载两份完整受审资源，其他 Skill 保留按需加载。协议、取消、错误映射、格式修复及无工具 Verifier 回归与真实对照结果见[本轮验收](EXAM_PRELOAD_ACCEPTANCE.md)。
@@ -237,6 +241,8 @@ brief 不再输出知识点（knowledgePoints 与 knowledgeDetails 都为空）�
 - [ ] M0评审所有安全前提和漏测项，包括SDK在execute前拒绝参数的工具尝试计数；当前工具执行器内的预算检查覆盖已进入execute的失败，不能据此宣称全部SDK预校验失败均已收费计数。离线测试全绿不等于完整通过。
 
 ## 安装记录
+
+2026-09-28：在已安装 Pi 0.85.1 类型和实现中核对 `prepareNextTurnWithContext`、`beforeToolCall`，用于设备重复工具调用的收束。保留原 Agent 循环，收束后的请求不提供工具，实际执行也受 hook 阻断；Chat Completions 在存在工具历史时序列化 `tools: []`，无工具历史时省略该字段。取消、最终清理与总预算沿用原路径。具体回归与付费对照见 [考试修复验收](EXAM_FIXES_2026_09_28.md)。
 
 默认全局pnpm store曾SQLite打开失败；改用忽略的.runtime/pnpm-store与pnpm-cache。pnpm11普通配置在workspace YAML而非.npmrc。传递安装脚本@google/genai、esbuild、protobufjs显式禁用，已发布产物可运行当前SDK探针。传递依赖node-domexception@1.0.0的deprecated提示已知，不在功能开发中顺手升级。
 
