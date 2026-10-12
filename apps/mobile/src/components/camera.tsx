@@ -23,6 +23,9 @@ export function Camera({
   batchTitle,
   onModeChange,
   onRename,
+  onReview,
+  onDiscard,
+  suspended = false,
   children,
 }: {
   onPhoto: (photo: Photo) => void | Promise<void>;
@@ -36,6 +39,9 @@ export function Camera({
   batchTitle?: string | undefined;
   onModeChange?: ((batch: boolean) => void) | undefined;
   onRename?: () => void;
+  onReview?: (() => void) | undefined;
+  onDiscard?: (() => void) | undefined;
+  suspended?: boolean;
   children?: ReactNode;
 }) {
   const [permission, requestPermission] = useCameraPermissions();
@@ -71,6 +77,7 @@ export function Camera({
   useEffect(() => {
     if (Platform.OS === 'android') setReady(false);
   }, [continuous]);
+  useEffect(() => { if (suspended) setReady(false); }, [suspended]);
 
   async function capture() {
     if (!camera.current || !ready || capturing.current || externalBusy) return;
@@ -119,6 +126,7 @@ export function Camera({
             disabled={busy || externalBusy}
             onPress={onClose}
           />
+          {continuous && onDiscard && <Button title="放弃本批" compact secondary danger disabled={busy || externalBusy} onPress={onDiscard} />}
         </View>
 
         <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
@@ -135,7 +143,7 @@ export function Camera({
         ) : null}
 
         {/* Camera preview or permission prompt */}
-        {permission?.granted && active ? (
+        {permission?.granted && active && !suspended ? (
           <View style={styles.preview}>
             <CameraPreview
               key={`${attempt}:${facing}:${Platform.OS === 'android' ? continuous : ''}`}
@@ -225,6 +233,7 @@ export function Camera({
 
         {/* Keep the shutter width stable so a longer label doesn't wrap the footer and resize the live preview. */}
         <View style={styles.footer}>
+          {continuous && onReview && <Button title="调整批次图片" secondary disabled={busy || externalBusy || !count} onPress={onReview} />}
           <Button
             title="从相册选择"
             secondary
@@ -259,6 +268,8 @@ const styles = StyleSheet.create({
   },
   header: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
     justifyContent: 'space-between',
     alignItems: 'center',
   },

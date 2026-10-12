@@ -15,11 +15,12 @@ import './answer.css';
 import './theme.css';
 import { useDocumentTheme, type DocumentTheme } from './document-theme';
 /** Only validated answer data and a decoded authorized image enter this local document. */
-export default function AnswerDocument({ theme = 'light', payload, onFocus, onCorrect, onReady, onViewOriginal, onRegenerate, onPageSwipe, onRequestSteps, onCancelSteps, onRequestKnowledge, onCancelKnowledge, onHeight, onHistory, onVerify, onShareOriginal, initialReadingState, onReadingState }: {
+export default function AnswerDocument({ theme = 'light', payload, onFocus, onCorrect, onReady, onViewOriginal, onRegenerate, onPageSwipe, onRequestSteps, onCancelSteps, onRequestKnowledge, onCancelKnowledge, onHeight, onHistory, onVerify, onDiagnostics, onShareOriginal, initialReadingState, onReadingState }: {
   initialReadingState?: ReadingState | undefined;
   onReadingState?: ((value: ReadingState) => Promise<void>) | undefined;
   onShareOriginal?: (() => Promise<void>) | undefined;
   onVerify?: (() => Promise<void>) | undefined;
+  onDiagnostics?: (() => Promise<void>) | undefined;
   onHistory?: (() => Promise<void>) | undefined;
   onHeight?: ((height: number) => Promise<void>) | undefined;
   onRequestSteps?: (() => Promise<void>) | undefined; onCancelSteps?: (() => Promise<void>) | undefined;
@@ -56,10 +57,10 @@ export default function AnswerDocument({ theme = 'light', payload, onFocus, onCo
   const candidate = result.candidate; const original = image ?? undefined;
   const feedback = verificationFeedback(result, verificationErrorCode);
   return <ReadingMemory value={readingMemory}><article ref={swipeRoot} className="answer-document">
-    <ProblemStatement onShareOriginal={onShareOriginal} onHistory={showHistory && onHistory ? () => void onHistory() : undefined} problem={candidate.problem} image={original} imageSize={{ width, height }} onViewOriginal={() => void onViewOriginal()} onCorrect={() => void onCorrect()} onRegenerate={showRegenerate ? () => void onRegenerate() : undefined} disabled={disabled} />
+    <ProblemStatement onDiagnostics={onDiagnostics ? () => void onDiagnostics() : undefined} onShareOriginal={onShareOriginal} onHistory={showHistory && onHistory ? () => void onHistory() : undefined} problem={candidate.problem} image={original} imageSize={{ width, height }} onViewOriginal={() => void onViewOriginal()} onCorrect={() => void onCorrect()} onRegenerate={showRegenerate ? () => void onRegenerate() : undefined} disabled={disabled} />
     {result.status === 'completed' ? <>
       {feedback && <section className="unverified-note" aria-label="校验说明"><strong>{feedback.title}</strong><p>{feedback.reason}</p>{feedback.issues.map((issue, i) => <div key={i}><strong>{issue.label}</strong><MathText text={issue.message} /></div>)}<p>{feedback.next}</p></section>}
-      <AnswerContent onVerify={onVerify ? () => void onVerify() : undefined} verificationLabel={verificationPending ? '校验中' : verificationFailed ? '重试校验' : result.verified ? '校验通过' : result.verification ? result.verification.verdict === 'fail' ? '发现问题' : '无法确认' : '校验'} verificationDisabled={disabled || !!verificationPending || result.verified || !!result.verification} hideSteps={!result.candidate.steps.length && !!onRequestSteps} candidate={result.candidate} subject={subjectLabel(candidate.problem.subject)} originalImageUrl={original} disabled={disabled}
+      <AnswerContent verificationNotRequested={!verificationPending && result.verificationStatus === 'not_requested'} onVerify={onVerify ? () => void onVerify() : undefined} verificationLabel={verificationPending ? '校验中' : verificationFailed ? '重试校验' : result.verified ? '校验通过' : result.verification ? result.verification.verdict === 'fail' ? '发现问题' : '无法确认' : '校验'} verificationDisabled={disabled || !!verificationPending || result.verified || !!result.verification} hideSteps={!result.candidate.steps.length && !!onRequestSteps} candidate={result.candidate} subject={subjectLabel(candidate.problem.subject)} originalImageUrl={original} disabled={disabled}
         onAskStep={(step, label) => void onFocus({ kind: 'step', sourceRunId: runId, stepId: step.id }, label)}
         onAskQuestion={value => void onFocus({ kind: 'question', sourceRunId: runId, number: value }, `第${value}题`)} />
       {!result.candidate.steps.length && onRequestSteps && <OnDemandSteps originalImageUrl={original} explanation={explanation} disabled={disabled} onRequest={onRequestSteps} onCancel={onCancelSteps ?? (async () => {})} onFocus={onFocus} />}

@@ -49,7 +49,8 @@ async function openLargeBatch(page: Page, total = 22) {
         const candidate = { schemaVersion: 1, kind: 'answer', problem: { text: `第${position}张：计算 $x+1=3$`, subject: 'math', uncertainties: [] }, answer: '**2**', steps: [{ id: 's1', title: '移项', explanation: '两边减去1，得到 $x=2$。' }], knowledgePoints: ['代数'], citationIds: [], clarificationQuestions: [] };
         const session = { schemaVersion: 1, id, subject: 'math', createdAt, upload: { schemaVersion: 1, id, mimeType: 'image/jpeg', bytes: 1000, width: 600, height: 300, expiresAt: '9999-12-31T00:00:00.000Z', previewUrl: `/api/v1/uploads/${id}/image` }, runs: [{ schemaVersion: 1, id, sessionId: id, createdAt, seq: 1, status: 'completed', message: '', outcome: { schemaVersion: 1, status: 'completed', verified: false, verificationStatus: 'not_requested', verification: null, warning: null, candidate } }] };
         store.put(JSON.stringify({ schemaVersion: 1, session, image, batch }), `record.${id}`);
-        store.put(JSON.stringify({ schemaVersion: 1, id, subject: 'math', createdAt, text: candidate.problem.text, pending: false, batch }), `summary.${id}`);
+        // Seed the current summary format so startup migration is not counted as pager reads.
+        store.put(JSON.stringify({ schemaVersion: 1, id, subject: 'math', createdAt, text: candidate.problem.text, answerState: 'answered', pending: false, batch }), `summary.${id}`);
       }
       tx.oncomplete = () => resolve(); tx.onerror = reject;
     }); db.close();

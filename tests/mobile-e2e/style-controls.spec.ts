@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { SessionViewSchema } from '../../packages/contracts/src/http.js';
-import { modelPass, seedLocalSession } from './local-fixture.js';
+import { configureLocalModel, modelPass, seedLocalSession } from './local-fixture.js';
 
 test('diagnostic touch area, navigation strokes and history action text stay clear in both themes', async ({ page }, testInfo) => {
   const id = '85000000-0000-4000-8000-000000000001'; const now = new Date().toISOString();
@@ -8,8 +8,37 @@ test('diagnostic touch area, navigation strokes and history action text stay cle
     upload: { schemaVersion: 1, id, mimeType: 'image/jpeg', bytes: 100, width: 390, height: 844, expiresAt: '9999-12-31T00:00:00.000Z', previewUrl: `/api/v1/uploads/${id}/image` },
     runs: [{ schemaVersion: 1, id, sessionId: id, status: 'completed', message: '', seq: 1, createdAt: now, outcome: { schemaVersion: 1, status: 'completed', verified: false, verification: null, warning: null, verificationStatus: 'not_requested', candidate: { schemaVersion: 1, kind: 'answer', problem: { text: '求解 x+1=3', subject: 'math', uncertainties: [] }, answer: 'x=2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] } } }] });
   await page.setViewportSize({ width: 390, height: 844 }); await seedLocalSession(page, session, await page.screenshot({ type: 'jpeg' }));
+  await configureLocalModel(page);
   const diagnostic = page.getByRole('button', { name: '查看解题诊断', exact: true });
+  await expect(page.locator('.final-answer').getByText('未校验', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('answer-task-status')).toHaveCount(0);
+  await expect(page.locator('.problem-heading').getByRole('button', { name: '查看解题诊断', exact: true })).toHaveCount(1);
+  const correction = page.locator('.problem-title').getByRole('button', { name: '识别有误？更正题干', exact: true });
+  await expect(correction).toHaveText('更正题干');
+  await expect(page.locator('.problem-statement > button.correction-link')).toHaveCount(0);
+  for (const width of [320, 390, 1280, 1920]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const scheme of ['light', 'dark'] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      for (const button of [correction, diagnostic]) {
+        await expect(button).toBeInViewport({ ratio: 1 });
+        expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+        await expect(button).toHaveCSS('border-top-width', '1px');
+        await expect(button).not.toHaveCSS('border-top-color', 'rgba(0, 0, 0, 0)');
+      }
+      const title = await page.locator('.problem-title h4').boundingBox(); const edit = await correction.boundingBox();
+      expect(Math.abs(title!.y + title!.height / 2 - edit!.y - edit!.height / 2)).toBeLessThan(.5);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.screenshot({ path: testInfo.outputPath(`question-tools-${width}-${scheme}.png`) });
+    }
+  }
+  await correction.click(); await expect(page.getByLabel('更正后的题干', { exact: true })).toHaveValue('求解 x+1=3');
+  await page.getByRole('button', { name: '取消更正', exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
   expect.soft((await diagnostic.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  await diagnostic.click();
+  await expect(page.getByText('诊断详情', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '关闭诊断', exact: true }).click();
   for (const scheme of ['dark', 'light'] as const) {
     await page.emulateMedia({ colorScheme: scheme });
     await expect(page.locator('.final-answer')).toHaveCSS('background-color', scheme === 'dark' ? 'rgb(24, 34, 50)' : 'rgb(255, 255, 255)');
@@ -49,12 +78,13 @@ test('verified and unverified status text remains readable in both themes', asyn
           ...(verified ? {} : { verificationStatus: 'not_requested' }),
           candidate: { schemaVersion: 1, kind: 'answer', problem: { text: '求解 x+1=3', subject: 'math', uncertainties: [] }, answer: 'x=2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] } } }] });
     await seedLocalSession(page, session, image);
-    const status = page.getByRole('button', { name: '查看解题诊断', exact: true }).getByText(verified ? '模型独立校验通过' : '未校验', { exact: true });
+    const answer = page.locator('.final-answer');
+    const status = verified ? answer.getByRole('button', { name: '校验通过', exact: true }) : answer.getByText('未校验', { exact: true });
     for (const colorScheme of ['light', 'dark'] as const) {
       await page.emulateMedia({ colorScheme });
       await expect(page.locator('.answer-document')).toHaveCSS('color', colorScheme === 'light' ? 'rgb(23, 35, 56)' : 'rgb(230, 237, 247)');
       expect(await status.evaluate(node => parseFloat(getComputedStyle(node).fontSize))).toBeGreaterThanOrEqual(13);
-      expect(await status.evaluate(node => {
+      await expect.poll(() => status.evaluate(node => {
         const luminance = (color: string) => {
           const values = color.match(/[\d.]+/g)?.slice(0, 3).map(Number);
           if (!values || values.length !== 3) throw new Error('MISSING_STATUS_COLOR');

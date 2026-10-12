@@ -79,7 +79,7 @@ export function useWorkspaceActions(runtime: Runtime, state: WorkspaceState) {
             await photoData(normalized),
             normalized.width,
             normalized.height,
-            runtime.settings?.exam ?? 'general',
+            runtime.defaultExam,
           );
           setSessionExam(record.exam ?? 'general');
           current = record.session;
@@ -139,7 +139,9 @@ export function useWorkspaceActions(runtime: Runtime, state: WorkspaceState) {
     setBusy(true);
     setError('');
     try {
-      if (id === 'all') {
+      if (id === 'singles') {
+        await runtime.removeSingleHistory();
+      } else if (id === 'all') {
         await runtime.batch.stop();
         await runtime.engine.removeAll();
       } else if (id.startsWith('batch:')) {

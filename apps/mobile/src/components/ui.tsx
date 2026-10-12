@@ -10,6 +10,17 @@ export function Button({ title, onPress, disabled = false, secondary = false, da
 }
 export function Card({ children, style, label }: { children: ReactNode; style?: ViewStyle; label?: string }) { return <View role={label ? "region" : undefined} accessibilityLabel={label} style={[s.card, style]}>{children}</View>; }
 export function Notice({ text, error = false }: { text: string; error?: boolean }) { return <View accessibilityRole={error ? 'alert' : 'text'} accessibilityLiveRegion="polite" style={[s.notice, error && { backgroundColor: '#fff0ee' }]}><Text style={{ color: error ? '#a33229' : colors.muted, lineHeight: 22 }}>{text}</Text></View>; }
+export function MenuLabel({ children }: { children: ReactNode }) {
+  return <Text style={[s.label, { flex: 1, minWidth: 0, lineHeight: 24, includeFontPadding: false }]}>{children}</Text>;
+}
+export function MenuAccessory({ value }: { value?: string | number | undefined }) {
+  return <View style={{ flexDirection: 'row', alignItems: 'center', alignSelf: 'center', flexShrink: 0, gap: 12 }}>
+    {value !== undefined && <Text testID="menu-accessory-value" style={[s.subtitle, { fontSize: 15, lineHeight: 24, includeFontPadding: false, textAlign: 'right' }]}>{value}</Text>}
+    <View testID="menu-chevron" accessible={false} style={{ width: 16, height: 24, alignItems: 'center', justifyContent: 'center' }}>
+      <View style={{ width: 7, height: 7, borderTopWidth: 1.5, borderRightWidth: 1.5, borderColor: colors.muted, transform: [{ rotate: '45deg' }] }} />
+    </View>
+  </View>;
+}
 export const s = StyleSheet.create({
   pageContent: { padding: 20, gap: 16, width: '100%', maxWidth: layout.formWidth, alignSelf: 'center' },
   dialogContainer: { flexGrow: 1, padding: 24, justifyContent: 'center', alignItems: 'center' },

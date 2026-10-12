@@ -12,6 +12,9 @@
 | 生物批次答案与核验问题 | [2026-10-09逐题判断](2026-10-09-biology-batch-answers.md)、[批测](2026-10-09-biology-batch-acceptance.md) |
 | 答题/校验两队列与判错接手 | [2026-10-09队列修复](2026-10-09-independent-queues.md)、[直接核对](2026-10-09-direct-answer-review.md) |
 | 失败题重试、超时和非流式模型对比 | [2026-10-09运行核查](2026-10-09-batch-retry-and-timeouts.md) |
+| 当前服务接通、并发与真实备用接手 | [2026-10-10稳定性实测](2026-10-10-model-service-stability.md) |
+| Web环境模型编辑、配置保存与设置布局 | [2026-10-10设置验收](2026-10-10-web-settings-editor.md)、[整组预设](2026-10-10-web-model-presets.md) |
+| 批次放弃、二次调整与单题误清空 | [2026-10-10批次管理修复](2026-10-10-batch-management.md) |
 | 更正题干时增删图片及历史快照 | [2026-10-09图片编辑](2026-10-09-correction-images.md) |
 | 步骤、知识点、公式与页面布局 | [2026-10-09学习与耗时](2026-10-09-learning-and-latency.md)、[公式](2026-10-09-knowledge-formulas.md)、[计时与历史](2026-10-09-overall-timer-and-history-ui.md) |
 | 原生构建和设备交付 | [2026-10-06 Android安装](2026-10-06-exam-skills-and-android-install.md)、[2026-10-08 iOS模拟器](2026-10-08-ios-simulator.md)、[2026-10-09包构建](2026-10-09-direct-answer-review.md) |

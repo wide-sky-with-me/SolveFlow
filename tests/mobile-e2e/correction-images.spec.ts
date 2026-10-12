@@ -69,7 +69,7 @@ for (const batch of [false, true]) test(`${batch ? 'batch' : 'single'} correctio
   expect(images(calls[0])).toEqual([fixture.extra, added]);
   await expect(page.locator('.original-photo-preview img')).toHaveAttribute('src', fixture.extra);
   if (!batch) await page.getByRole('button', { name: '校验', exact: true }).click();
-  await expect(page.getByText('模型独立校验通过', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '校验通过', exact: true })).toBeVisible();
   expect(calls).toHaveLength(2); expect(images(calls[1])).toEqual([fixture.extra, added]);
   await page.reload(); await expect(page.locator('.final-answer')).toContainText('x=4'); expect(calls).toHaveLength(2);
   await configureLocalModel(page);

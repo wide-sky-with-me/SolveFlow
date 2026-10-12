@@ -40,7 +40,7 @@ for (const action of ['重新尝试', '重试未完成']) test(`failed batch que
     await expect(retry).toBeEnabled(); await retry.click();
     await expect(first.locator('.final-answer')).toContainText('x=2');
     await expect.poll(() => checks).toBe(2); expect(solves).toBe(2);
-    await expect(first.getByText('模型独立校验通过', { exact: true })).toBeVisible();
+    await expect(first.getByRole('button', { name: '校验通过', exact: true })).toBeVisible();
     await expect(page.getByText('后台处理中', { exact: false })).toBeVisible();
     releaseCheck(); await expect(page.getByText('后台处理中', { exact: false })).toHaveCount(0);
     await page.reload(); await expect(first.locator('.final-answer')).toContainText('x=2'); expect(solves).toBe(2); expect(checks).toBe(2);

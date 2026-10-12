@@ -43,13 +43,13 @@ test('paginates summaries, cancels clearing, then atomically removes question da
   await expect(page.locator('.history-entry')).toHaveCount(20);
   await expect(page.locator('.history-ordinal').first()).toHaveText('01');
   await page.getByRole('button', { name: '收起搜索', exact: true }).click();
-  await page.getByRole('button', { name: '清空历史', exact: true }).click();
-  await expect(page.getByText('清空全部 45 道题？', { exact: true })).toBeVisible();
-  const confirm = page.getByRole('button', { name: '确认清空全部历史', exact: true });
+  await page.getByRole('button', { name: '清空单题历史', exact: true }).click();
+  await expect(page.getByText('清空 45 道单题记录？', { exact: true })).toBeVisible();
+  const confirm = page.getByRole('button', { name: '确认清空单题历史', exact: true });
   expect(await confirm.evaluate(node => getComputedStyle(node).backgroundColor)).toBe('rgb(197, 43, 43)');
   expect(await confirm.evaluate(node => getComputedStyle(node.firstElementChild!).color)).toBe('rgb(255, 255, 255)');
   await page.getByRole('button', { name: '保留题目', exact: true }).click(); await expect(page.getByText('45 条记录', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '清空历史', exact: true }).click(); await confirm.click(); await expect(page.getByTestId('empty-history')).toBeVisible();
+  await page.getByRole('button', { name: '清空单题历史', exact: true }).click(); await confirm.click(); await expect(page.getByTestId('empty-history')).toBeVisible();
   await page.getByRole('tab', { name: '当前题目', exact: true }).click();
   await expect(page.getByRole('button', { name: '拍一张', exact: true })).toBeVisible();
   await expect(page.getByText('本地题目不存在。', { exact: true })).toHaveCount(0);
@@ -57,7 +57,7 @@ test('paginates summaries, cancels clearing, then atomically removes question da
   await expect(page.getByRole('button', { name: '拍一张', exact: true })).toBeVisible();
   await page.reload(); await page.getByRole('tab', { name: '历史题目', exact: true }).click(); await expect(page.getByTestId('empty-history')).toBeVisible();
   const remaining = await page.evaluate(async () => { const db = await new Promise<IDBDatabase>(resolve => { const r = indexedDB.open('solveflow-local', 1); r.onsuccess = () => resolve(r.result); }); const keys = await new Promise<IDBValidKey[]>(resolve => { const r = db.transaction('documents').objectStore('documents').getAllKeys(); r.onsuccess = () => resolve(r.result); }); db.close(); return keys; });
-  expect(remaining).toEqual(['test.preference']);
+  expect(remaining).toEqual(['diagnostic.90000000-0000-4000-8000-999999999999', 'test.preference']); // Unknown ownership is preserved by scoped clearing.
 });
 
 test('short diagonal swipe opens actions, right swipe closes them and vertical scrolling never deletes', async ({ page }, info) => {

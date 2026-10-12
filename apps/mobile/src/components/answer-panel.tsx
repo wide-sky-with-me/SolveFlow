@@ -23,6 +23,7 @@ import { documentProps } from '../document-props';
 import { Button, Card, Notice, s } from './ui';
 type Props = Omit<AnswerDocumentPayload, 'schemaVersion'> & {
   onVerify?: (() => Promise<void>) | undefined;
+  onDiagnostics?: (() => Promise<void>) | undefined;
   onHistory?: (() => Promise<void>) | undefined;
   onRequestSteps?: (() => Promise<void>) | undefined; onCancelSteps?: (() => Promise<void>) | undefined;
   onRequestKnowledge?: (() => Promise<void>) | undefined; onCancelKnowledge?: (() => Promise<void>) | undefined;
@@ -69,7 +70,7 @@ export function estimateAnswerHeight(payload: {
 }
 
 /** Loading the persisted answer never submits another model request. */
-export function AnswerPanel({ outcome, image, width, height, runId, number, disabled, showRegenerate, onRegenerate, onFocus, onCorrect, onViewOriginal, onDisplayReady, onPageSwipe, explanation, knowledge, onRequestSteps, onCancelSteps, onRequestKnowledge, onCancelKnowledge, showHistory, onHistory, verificationPending, verificationFailed, verificationErrorCode, onVerify }: Props) {
+export function AnswerPanel({ outcome, image, width, height, runId, number, disabled, showRegenerate, onRegenerate, onFocus, onCorrect, onViewOriginal, onDisplayReady, onPageSwipe, explanation, knowledge, onRequestSteps, onCancelSteps, onRequestKnowledge, onCancelKnowledge, showHistory, onHistory, verificationPending, verificationFailed, verificationErrorCode, onVerify, onDiagnostics }: Props) {
   const { scheme } = useTheme(); const { fontScale } = useWindowDimensions();
   const { share, error: shareError } = useImageShare(image);
   const memory = useContext(PageMemory);
@@ -107,6 +108,7 @@ export function AnswerPanel({ outcome, image, width, height, runId, number, disa
     ...(knowledgeId && knowledgeOutcome !== undefined ? { knowledge: { runId: knowledgeId, outcome: knowledgeOutcome } } : {}),
   }), [outcome, image, width, height, runId, number, disabled, showRegenerate, showHistory, verificationPending, verificationFailed, verificationErrorCode, explanationId, explanationOutcome, explanationPending, knowledgeId, knowledgeOutcome]);
   const verifyAction = useDocumentAction(onVerify); const historyAction = useDocumentAction(onHistory);
+  const diagnosticAction = useDocumentAction(onDiagnostics);
   const stepsAction = useDocumentAction(onRequestSteps); const cancelStepsAction = useDocumentAction(onCancelSteps);
   const knowledgeAction = useDocumentAction(onRequestKnowledge); const cancelKnowledgeAction = useDocumentAction(onCancelKnowledge);
   const swipeAction = useDocumentAction(onPageSwipe); const focusAction = useDocumentAction(onFocus);
@@ -143,11 +145,11 @@ export function AnswerPanel({ outcome, image, width, height, runId, number, disa
     <Notice text="图文解答加载失败，已保留结果。下方先显示文字内容，公式和图示可尝试重新加载。" error />
     <Button title="重新加载解答" secondary onPress={() => { setAttempt(value => value + 1); setMeasured(false); setPainted(false); setNativeTag(null); setState('loading'); }} />
     {(outcome.status === 'completed' || outcome.status === 'needs_clarification') && <>
-      <Card style={{ borderRadius: 16 }}><View style={s.row}><Text style={[s.label, { flex: 1 }]}>题目</Text>{showRegenerate && <Button title="重新解答" icon="refresh" compact secondary disabled={disabled} onPress={() => void onRegenerate()} />}{showHistory && <Button title="历史解答" compact secondary onPress={() => void onHistory?.()} />}</View>{image && <OriginalPhoto uri={image} onPress={() => void onViewOriginal()} />}<Text selectable style={s.subtitle}>{fallbackProblem?.text}</Text>{fallbackProblem?.options?.map(option => <View key={option.label} style={{ flexDirection: 'row', gap: 12, padding: 12 }}><Text style={s.label}>{option.label}</Text><Text selectable style={[s.subtitle, { flex: 1 }]}>{option.text}</Text></View>)}</Card>
+      <Card style={{ borderRadius: 16 }}><View style={s.row}><Text style={[s.label, { flex: 1 }]}>题目</Text>{onDiagnostics && <Button title="诊断详情" compact secondary onPress={() => void onDiagnostics()} />}{showRegenerate && <Button title="重新解答" icon="refresh" compact secondary disabled={disabled} onPress={() => void onRegenerate()} />}{showHistory && <Button title="历史解答" compact secondary onPress={() => void onHistory?.()} />}</View>{image && <OriginalPhoto uri={image} onPress={() => void onViewOriginal()} />}<Text selectable style={s.subtitle}>{fallbackProblem?.text}</Text>{fallbackProblem?.options?.map(option => <View key={option.label} style={{ flexDirection: 'row', gap: 12, padding: 12 }}><Text style={s.label}>{option.label}</Text><Text selectable style={[s.subtitle, { flex: 1 }]}>{option.text}</Text></View>)}</Card>
       {!!fallbackProblem?.uncertainties.length && <Notice text={`识别待确认：${fallbackProblem.uncertainties.join('；')}。请查看原图，并用更正题干补全条件。`} />}
       {feedback && <Card><Text style={s.label}>{feedback.title}</Text><Text selectable>{feedback.reason}</Text>{feedback.issues.map((issue, index) => <Text selectable key={index}>{issue.label}：{issue.message}</Text>)}<Text selectable>{feedback.next}</Text></Card>}
       <Button title="识别有误？更正题干" secondary disabled={disabled} onPress={() => void onCorrect()} />
-      {outcome.status === 'completed' ? <Card style={{ borderRadius: 16 }}><View style={s.row}><Text style={[s.label, { flex: 1 }]}>{fallbackSelection ? `答案：${fallbackSelection.join('、')}` : '答案'}</Text><Button title={verificationPending ? '校验中' : outcome.verified ? '校验通过' : outcome.verification ? outcome.verification.verdict === 'fail' ? '发现问题' : '无法确认' : verificationFailed ? '重试校验' : '校验'} compact secondary disabled={disabled || verificationPending || outcome.verified || !!outcome.verification} onPress={() => void onVerify?.()} /></View><Text selectable>{outcome.candidate.answer}</Text></Card> : outcome.candidate.clarificationQuestions.map(question => <Text selectable key={question}>{question}</Text>)}
+      {outcome.status === 'completed' ? <Card style={{ borderRadius: 16 }}><View style={s.row}><Text style={[s.label, { flex: 1 }]}>{fallbackSelection ? `答案：${fallbackSelection.join('、')}` : '答案'}</Text>{!verificationPending && outcome.verificationStatus === 'not_requested' && <Text style={s.subtitle}>未校验</Text>}<Button title={verificationPending ? '校验中' : outcome.verified ? '校验通过' : outcome.verification ? outcome.verification.verdict === 'fail' ? '发现问题' : '无法确认' : verificationFailed ? '重试校验' : '校验'} compact secondary disabled={disabled || verificationPending || outcome.verified || !!outcome.verification} onPress={() => void onVerify?.()} /></View><Text selectable>{outcome.candidate.answer}</Text></Card> : outcome.candidate.clarificationQuestions.map(question => <Text selectable key={question}>{question}</Text>)}
       {(!!fallbackSteps.length || outcome.status === 'completed') && <Card style={{ borderRadius: 16 }}><Button title={stepsOpen ? "收起详细步骤" : "展开详细步骤"} secondary onPress={() => { setStepsOpen(value => !value); if (!stepsOpen && !fallbackSteps.length && !explanation && !disabled) void onRequestSteps?.(); }} />
       {stepsOpen && <>{stepsPending ? <><Text>正在整理步骤…</Text><Button title="取消" compact secondary onPress={() => void onCancelSteps?.()} /></> : !fallbackSteps.length ? <Button title={explanation ? '重新生成步骤' : '查看详细步骤'} disabled={disabled} secondary onPress={() => void onRequestSteps?.()} /> : fallbackSteps.map((step, index) => <View key={step.id} style={{ gap: 4 }}><Text style={s.label}>{index + 1}. {step.title}</Text><Text selectable>{step.explanation}</Text>{step.latex ? <Text selectable>{step.latex}</Text> : null}</View>)}</>}</Card>}
       {!!outcome.candidate.knowledgePoints.length && <Card style={{ borderRadius: 16 }}><Text style={s.label}>知识点</Text><Text selectable>{outcome.candidate.knowledgePoints.join('、')}</Text></Card>}
@@ -155,6 +157,6 @@ export function AnswerPanel({ outcome, image, width, height, runId, number, disa
   </View>;
   return <View style={{ position: 'relative' }}>
     {!!shareError && <Notice text={shareError} error />}
-    <MemoAnswerDocument initialReadingState={memory?.documents.get(readingKey)} onReadingState={onReadingState} onShareOriginal={shareAction} onVerify={verifyAction} onHistory={historyAction} onHeight={onHeight} onRequestSteps={stepsAction} onCancelSteps={cancelStepsAction} onRequestKnowledge={knowledgeAction} onCancelKnowledge={cancelKnowledgeAction} onPageSwipe={swipeAction} theme={scheme} key={attempt} dom={dom} payload={payload} onFocus={focusAction} onCorrect={correctAction} onReady={ready} onViewOriginal={originalAction} onRegenerate={regenerateAction} />
+    <MemoAnswerDocument initialReadingState={memory?.documents.get(readingKey)} onReadingState={onReadingState} onShareOriginal={shareAction} onDiagnostics={diagnosticAction} onVerify={verifyAction} onHistory={historyAction} onHeight={onHeight} onRequestSteps={stepsAction} onCancelSteps={cancelStepsAction} onRequestKnowledge={knowledgeAction} onCancelKnowledge={cancelKnowledgeAction} onPageSwipe={swipeAction} theme={scheme} key={attempt} dom={dom} payload={payload} onFocus={focusAction} onCorrect={correctAction} onReady={ready} onViewOriginal={originalAction} onRegenerate={regenerateAction} />
   </View>;
 }

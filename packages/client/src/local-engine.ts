@@ -5,7 +5,7 @@
 import { z } from 'zod';
 import { checkHistoryImage } from './history-image.js';
 import {
-  MAX_LOCAL_RECORDS, MAX_LOCAL_DIAGNOSTICS, MAX_LOCAL_AUXILIARY_RUNS, BATCH_VERIFICATION_CONCURRENCY, MAX_PENDING_VERIFICATIONS, LocalConcurrencySchema, LocalMaterialSchema, MAX_MATERIAL_IMAGES, LocalBatchSchema, LocalRecordSchema, LocalDiagnosticSchema,
+  MAX_LOCAL_RECORDS, MAX_LOCAL_DIAGNOSTICS, MAX_LOCAL_AUXILIARY_RUNS, BATCH_VERIFICATION_CONCURRENCY, MAX_PENDING_VERIFICATIONS, LocalConcurrencySchema, LocalMaterialSchema, MAX_MATERIAL_IMAGES, LocalBatchSchema, LocalBatchEditSchema, LocalRecordSchema, LocalDiagnosticSchema,
   type LocalConcurrency, type LocalBatch, type LocalDiagnostic, type LocalRecord, type ExamType, type LocalImageEdit,
 } from '@solveflow/contracts/local';
 import { isAuxiliaryContext, questionThreadHistory, terminal, type RunContext, type RunView } from '@solveflow/contracts/http';
@@ -541,14 +541,33 @@ export class LocalEngine {
   }
 
   async remove(id: string) {
-    return this.deleteRecords(z.uuid().parse(id));
+    const selected = new Set([z.uuid().parse(id)]);
+    return this.deleteRecords(selected, () => this.repository.remove(id));
+  }
+
+  async removeMany(ids: readonly string[]) {
+    const parsed = z.array(z.uuid()).max(MAX_LOCAL_RECORDS).parse(ids);
+    if (!parsed.length) return;
+    const selected = new Set(parsed);
+    return this.deleteRecords(selected, () => this.repository.removeMany([...selected]));
+  }
+
+  async editBatch(value: import('@solveflow/contracts/local').LocalBatchEdit) {
+    if (this.storageBlocked) throw new Error('请先保存或处理未保存的解答，再调整批次。');
+    const edit = LocalBatchEditSchema.parse(value);
+    for (const id of edit.expectedIds) if ((await this.repository.readMetadata(id)).batch?.id !== edit.batchId) throw new Error('批次包含其他题目，请重新打开调整。');
+    const deleted = new Set(edit.expectedIds.filter(id => !edit.orderedIds.includes(id)));
+    return this.deleteRecords(new Set(edit.expectedIds), async () => {
+      if (this.storageBlocked) throw new Error('本批解答未能保存，请先处理保存错误。');
+      await this.repository.editBatch(edit);
+    }, deleted);
   }
 
   async removeAll() {
     return this.deleteRecords();
   }
 
-  private async deleteRecords(id?: string) {
+  private async deleteRecords(ids?: ReadonlySet<string>, mutation?: () => Promise<void>, removed = ids) {
     this.correctionGeneration++;
     if (this.deleting)
       throw new Error('正在删除历史，请稍候。');
@@ -556,14 +575,14 @@ export class LocalEngine {
     try {
       // Finish accepted preparation first; result persistence needs this lock during cancellation.
       await this.lock(async () => {});
-      const targets = this.activeRuns().filter(item => !id || item.run.sessionId === id);
+      const targets = this.activeRuns().filter(item => !ids || ids.has(item.run.sessionId));
       for (const item of targets)
         this.abort(item, 'user');
       await Promise.all(targets.map(item => item.done));
       await this.lock(async () => {
-        await (id ? this.repository.remove(id) : this.repository.removeAll());
+        await (mutation ? mutation() : this.repository.removeAll());
         for (const [runId, { run }] of this.unsaved)
-          if (!id || run.sessionId === id)
+          if (!removed || removed.has(run.sessionId))
             this.unsaved.delete(runId);
         this.storageChanged();
       });

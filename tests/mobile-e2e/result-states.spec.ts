@@ -26,7 +26,7 @@ for (const state of ["unknown", "clarification", "policy", "emergency", "budget"
     if (state === "unknown") {
       await expect(page.getByRole("region", { name: "校验说明", exact: true })).toContainText("校验无法确认");
       await expect(page.getByText("无法确认条件", { exact: true })).toBeVisible();
-      await expect(page.getByText("模型独立校验通过", { exact: true })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "校验通过", exact: true })).toHaveCount(0);
       await expect(page.locator(".answer-document script")).toHaveCount(0);
     } else if (state === "clarification") await expect(page.getByText("请补齐题目右侧的条件。")).toBeVisible();
     else if (state === "policy" || state === "emergency") {

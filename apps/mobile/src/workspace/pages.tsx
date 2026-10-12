@@ -56,7 +56,7 @@ export function CurrentQuestionPage({ runtime, state, actions }: PageProps) {
               <Text testID="current-exam" style={[s.subtitle, { fontSize: 12 }]}>
                 {session
                   ? `本题考试：${EXAM_LABELS[sessionExam]}`
-                  : `新题默认考试：${EXAM_LABELS[runtime.settings?.exam ?? 'general']}`}
+                  : `新题默认考试：${EXAM_LABELS[runtime.defaultExam]}`}
               </Text>
             )}
             {!available && !!source && (
@@ -200,7 +200,7 @@ export function HistoryPage({ runtime, state, actions }: PageProps) {
               viewport
               footer={<View style={s.row}>
                 <Text style={s.subtitle}>{sessions.filter(row => !row.batch).length} 条记录</Text>
-                <Button title="清空历史" compact secondary danger disabled={busy} onPress={() => { setError(''); setConfirmDelete('all'); }} />
+                <Button title="清空单题历史" compact secondary danger disabled={busy} onPress={() => { setError(''); setConfirmDelete('singles'); }} />
               </View>}
               filterKey={historySearch}
               onPageChange={resetHistoryScroll}
@@ -274,8 +274,7 @@ export function ProfilePage({ runtime, state, actions }: PageProps) {
             onExport={() => {
               if (!busy && !runtime.batch.busy && runtime.engine.actives.length === 0) setExportOpen(true);
             }}
-            count={sessions.length}
-            favoriteCount={sessions.filter(item => item.favorite).length}
+            sessions={sessions}
             settingsDisabled={busy || !!activeId || batchBusy || unsavedCount > 0}
             onSettings={() => setSettingsOpen(true)}
             onHelp={() => setHelp(true)}

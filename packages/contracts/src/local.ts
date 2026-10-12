@@ -29,6 +29,9 @@ export type LocalConcurrency = z.infer<typeof LocalConcurrencySchema>;
 export const MAX_LOCAL_DIAGNOSTICS = 128;
 export const LocalBatchSchema = z.strictObject({ id: z.uuid(), title: z.string().trim().min(1).max(100), createdAt: z.iso.datetime(), exam: ExamTypeSchema, position: z.number().int().min(1).max(MAX_BATCH_PHOTOS) });
 export type LocalBatch = z.infer<typeof LocalBatchSchema>;
+/** Ordered selection for an explicit batch edit; omitted IDs are deleted after confirmation. */
+export const LocalBatchEditSchema = z.strictObject({ batchId: z.uuid(), expectedIds: z.array(z.uuid()).min(1).max(MAX_BATCH_PHOTOS), orderedIds: z.array(z.uuid()).max(MAX_BATCH_PHOTOS) }).refine(value => new Set(value.expectedIds).size === value.expectedIds.length && new Set(value.orderedIds).size === value.orderedIds.length && value.orderedIds.every(id => value.expectedIds.includes(id)), '批次调整包含重复或未知题目');
+export type LocalBatchEdit = z.infer<typeof LocalBatchEditSchema>;
 /** A small title override avoids rewriting every photo when a batch is renamed. */
 export const LocalBatchTitleSchema = z.strictObject({ schemaVersion: z.literal(1), title: LocalBatchSchema.shape.title });
 /** Two-level device thinking control: a switch plus optional effort and protocol. */
@@ -68,10 +71,26 @@ export const LocalKeySchema = z.string().trim().min(1).max(2048).regex(/^[\x21-\
 export type LocalModelProfile = z.infer<typeof LocalModelProfileSchema>;
 export type LocalSettings = z.infer<typeof LocalSettingsSchema>;
 /** Local Web bridge grants short-lived role tokens; never contains provider API keys. */
+export const WebModelConfigurationSchema = z.strictObject({ solver: LocalModelProfileSchema, verifier: LocalModelProfileSchema.nullable(), backup: LocalModelProfileSchema.nullable() });
+export const MAX_WEB_MODEL_PRESETS = 8;
+export const WebModelPresetSchema = z.strictObject({ id: z.uuid(), name: z.string().trim().min(1).max(40), models: WebModelConfigurationSchema });
+export type WebModelPreset = z.infer<typeof WebModelPresetSchema>;
 export const WebEnvironmentSchema = z.strictObject({ schemaVersion: z.literal(1), settings: LocalSettingsSchema,
   accessTokens: z.strictObject({ solver: LocalKeySchema, verifier: LocalKeySchema.nullable(), backup: LocalKeySchema.nullable() }),
+  canEditModels: z.boolean().optional(),
+  canManagePresets: z.boolean().optional(),
+  presets: z.array(WebModelPresetSchema).max(MAX_WEB_MODEL_PRESETS).optional(),
 }).refine(value => !!value.settings.verifier === !!value.accessTokens.verifier && !!value.settings.backup === !!value.accessTokens.backup);
 export type WebEnvironment = z.infer<typeof WebEnvironmentSchema>;
+export const WebModelKeysSchema = z.strictObject({ solver: LocalKeySchema.nullable(), verifier: LocalKeySchema.nullable(), backup: LocalKeySchema.nullable() });
+/** Null key updates preserve a trusted same-destination credential; never expose it in bootstrap. */
+export const WebModelUpdateSchema = z.strictObject({ schemaVersion: z.literal(1), models: WebModelConfigurationSchema, keys: WebModelKeysSchema, presetId: z.uuid().optional() });
+export type WebModelUpdate = z.infer<typeof WebModelUpdateSchema>;
+export const WebModelTestSchema = z.strictObject({ schemaVersion: z.literal(1), profile: LocalModelProfileSchema, key: LocalKeySchema.nullable(), presetId: z.uuid().optional(), request: z.unknown() });
+/** Server-only sidecar. It must never enter device persistence, exports or responses. */
+export const WebStoredModelsSchema = WebModelUpdateSchema.omit({ presetId: true }).refine(value => !!value.keys.solver && !!value.models.verifier === !!value.keys.verifier && !!value.models.backup === !!value.keys.backup);
+export const WebModelPresetCreateSchema = z.strictObject({ name: WebModelPresetSchema.shape.name, configuration: WebModelUpdateSchema });
+export const WebStoredPresetsSchema = z.strictObject({ schemaVersion: z.literal(1), presets: z.array(z.strictObject({ id: z.uuid(), name: WebModelPresetSchema.shape.name, configuration: WebStoredModelsSchema })).max(MAX_WEB_MODEL_PRESETS) }).refine(value => new Set(value.presets.map(preset => preset.id)).size === value.presets.length && new Set(value.presets.map(preset => preset.name)).size === value.presets.length);
 export const LocalStudyTimerSchema = z.strictObject({ schemaVersion: z.literal(1), elapsedMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), startedAt: z.iso.datetime().nullable() });
 export type LocalStudyTimer = z.infer<typeof LocalStudyTimerSchema>;
 function checkMaterials(record: { session: { upload: { id: string; bytes: number }; runs: { materialIds?: string[] | undefined; imageIds?: string[] | undefined }[] }; materials?: { id: string; bytes: number }[] | undefined; activeImageIds?: string[] | undefined }, context: z.RefinementCtx) {

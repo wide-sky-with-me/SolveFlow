@@ -20,7 +20,7 @@ for (const complete of [false, true]) {
     await expect(page.getByRole('button', { name: complete ? '校验通过' : '无法确认', exact: true })).toBeVisible();
     if (!complete) {
       await expect(page.getByText('逐题或逐小问核验与候选的题号、原小问标签不完整对应，尚不能确认全部作答正确。', { exact: true })).toBeVisible();
-      await expect(page.getByText('模型独立校验通过', { exact: true })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: '校验通过', exact: true })).toHaveCount(0);
     }
     expect(calls).toBe(2);
     await page.reload();

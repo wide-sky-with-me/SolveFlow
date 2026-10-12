@@ -13,6 +13,7 @@ export const offlineTestPatterns = [
   'tests/unit/ios-scene.test.ts',
   'tests/unit/mobile-web-server.test.ts',
   'tests/unit/web-model-proxy.test.ts',
+  'tests/unit/web-model-settings.test.ts',
 ];
 
 /** Benchmark files also contain correctness guards; the all-browser entry keeps them. */

@@ -20,6 +20,7 @@ export function BatchImport({ photos, onAdd, onClose }: { photos: ImportPhoto[];
   useEffect(() => { alive.current = true; return () => { alive.current = false; stop.current = true; if (!saving.current) initial.current.forEach(row => release(row.photo)); }; }, []);
   function sort(value: PhotoOrder) { setOrder(value); setRows(current => orderPhotos(current, value)); }
   function move(index: number, delta: -1 | 1) { setOrder('manual'); setRows(current => movePhoto(current, index, delta)); }
+  function remove(id: number) { const row = rows.find(row => row.id === id); if (!row || saving.current) return; release(row.photo); setRows(current => current.filter(row => row.id !== id)); }
   async function commit() {
     if (saving.current) return;
     saving.current = true; stop.current = false; setBusy(true); setError('');
@@ -46,10 +47,11 @@ export function BatchImport({ photos, onAdd, onClose }: { photos: ImportPhoto[];
       {rows.map((row, index) => <View key={row.id} testID="import-photo-row" style={[s.card, { flexDirection: 'row', alignItems: 'center', gap: 12 }]}>
         <Image source={{ uri: row.photo.uri }} resizeMode="contain" accessibilityLabel={`待导入图片 ${index + 1}`} style={{ width: 64, height: 64, borderRadius: 8 }} />
         <View style={{ flex: 1, minWidth: 0, gap: 6 }}><Text numberOfLines={2} style={s.label}>{index + 1}. {row.fileName}</Text><Text style={s.subtitle}>{row.timestamp === undefined ? '未提供时间' : `${row.timeSource === 'modified' ? '文件修改' : '文件名时间'} · ${new Date(row.timestamp).toLocaleString('zh-CN')}`}</Text>
-          <View style={s.row}><Button title={`上移第${index + 1}张`} compact secondary disabled={busy || index === 0} onPress={() => move(index, -1)} /><Button title={`下移第${index + 1}张`} compact secondary disabled={busy || index === rows.length - 1} onPress={() => move(index, 1)} /></View>
+          <View style={s.row}><Button title={`上移第${index + 1}张`} compact secondary disabled={busy || index === 0} onPress={() => move(index, -1)} /><Button title={`下移第${index + 1}张`} compact secondary disabled={busy || index === rows.length - 1} onPress={() => move(index, 1)} /><Button title={`移除第${index + 1}张`} compact secondary danger disabled={busy} onPress={() => remove(row.id)} /></View>
         </View>
       </View>)}
       <Button title={busy ? '正在加入批次…' : `导入并解题（${rows.length}张）`} disabled={busy || !rows.length} onPress={() => void commit()} />
+      {!busy && <Button title="取消导入" secondary onPress={onClose} />}
       {busy && <><Button title="停止导入后续图片" secondary onPress={() => { stop.current = true; }} /><Text style={s.subtitle}>停止后，已加入的题目继续解题；未加入的图片保留在此预览中。</Text></>}
     </ScrollView>
   </SafeAreaView></MotionModal>;

@@ -1,6 +1,6 @@
 // Decision: .agents/notes/implemented/architecture/2026-10-09-overall-study-timer.md
 import { KeyboardAvoidingView, Platform } from 'react-native';
-import { useSyncExternalStore } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { clientError } from '@solveflow/client/presentation';
 import { Pressable, Text, View, SafeAreaView } from '../theme/primitives';
 import { Button, Notice, colors, s } from '../components/ui';
@@ -8,6 +8,7 @@ import { PendingSaves } from '../components/pending-saves';
 import { HistoryMaintenance } from '../components/history-maintenance';
 import { HistoryImport } from '../components/history-import';
 import { HistoryExport } from '../components/history-export';
+import { ExamPicker } from '../components/exam-picker';
 import { Settings } from '../components/settings';
 import { ImageViewer } from '../components/image-viewer';
 import { CaptureFlow } from '../components/batch-capture';
@@ -24,6 +25,7 @@ import { styles } from './styles';
 import { getRecentSessionWarning, subscribeRecentSessionWarning } from '../local/recent-session-warning';
 
 export function Workspace({ runtime, onReady }: { runtime: Runtime; onReady: () => void }) {
+  const [examPickerOpen, setExamPickerOpen] = useState(false);
   const state = useWorkspaceState(runtime, onReady);
   const actions = useWorkspaceActions(runtime, state);
   const recentSessionWarning = useSyncExternalStore(subscribeRecentSessionWarning, getRecentSessionWarning, getRecentSessionWarning);
@@ -81,13 +83,16 @@ export function Workspace({ runtime, onReady }: { runtime: Runtime; onReady: () 
 
       <AppNavigation
         tab={appTab}
-        exam={runtime.settings?.exam ?? 'general'}
+        exam={runtime.defaultExam}
+        onExam={() => setExamPickerOpen(true)}
+        examDisabled={busy || !!activeId || batchBusy || unsavedCount > 0}
         onTab={setAppTab}
         onCamera={() => setCamera(true)}
         cameraDisabled={busy || unsavedCount > 0 || (!!activeId && !batchBusy)}
       />
 
       {/* Floating overlays */}
+      {examPickerOpen && <ExamPicker runtime={runtime} onClose={() => setExamPickerOpen(false)} />}
       {maintenanceOpen && <HistoryMaintenance repository={runtime.repository} onChanged={() => { void list(true).catch(cause => setError(clientError(cause))); }} onClose={() => setMaintenanceOpen(false)} onExport={() => { setMaintenanceOpen(false); setExportOpen(true); }} onRestore={id => { setRepairSessionId(id); setMaintenanceOpen(false); setImportOpen(true); }} />}
       {importOpen && <HistoryImport repository={runtime.repository} repairSessionId={repairSessionId} onClose={() => { setImportOpen(false); setRepairSessionId(undefined); void list(true).catch(cause => setError(clientError(cause))); }} />}
       {exportOpen && <HistoryExport repository={runtime.repository} onClose={() => { setExportOpen(false); setIssueCount(runtime.repository.issues.length); }} />}

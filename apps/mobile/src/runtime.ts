@@ -5,12 +5,13 @@ import { fetch } from 'expo/fetch';
 import * as Crypto from 'expo-crypto';
 import { LocalBatchQueue, LocalDataError, LocalEngine, LocalRepository } from '@solveflow/client/local';
 import { solveOnDevice, type LocalCredentials } from '@solveflow/agent/mobile';
-import { LocalSettingsSchema, LocalKeySchema, LocalConcurrencySchema, ExamTypeSchema, type LocalSettings, type WebEnvironment } from '@solveflow/contracts/local';
+import { LocalSettingsSchema, LocalKeySchema, LocalConcurrencySchema, LocalBatchEditSchema, ExamTypeSchema, type LocalSettings, type WebEnvironment, type WebModelUpdate } from '@solveflow/contracts/local';
 import { openDocuments } from './local/documents';
 import { readKey, writeKey } from './local/secrets';
 import { background, onBackgroundExpired } from './local/background';
 import { lockLocalApp } from './local/lock';
-import { loadWebEnvironment, webModelFetch } from './local/web-env';
+import { loadWebEnvironment, webModelFetch, webModelTestFetch, saveWebModelSettings, mutateWebModelPresets } from './local/web-env';
+import type { ModelPresetAction } from './local/model-preset-action';
 let opening: ReturnType<typeof openRuntime> | null = null;
 const settingsEnvelopeSchema = z.strictObject({ settings: LocalSettingsSchema, keySlot: z.enum(['a', 'b']) });
 const webPreferencesSchema = z.strictObject({ exam: ExamTypeSchema, concurrency: LocalConcurrencySchema });
@@ -30,12 +31,14 @@ async function openRuntime() {
     catch { settingsWarning = damagedSettingsMessage; }
   }
   let settings = envelope?.settings ?? null; let slot = envelope?.keySlot ?? '';
+  const savedExam = ExamTypeSchema.safeParse(await documents.get('default-exam'));
+  let defaultExam = savedExam.success ? savedExam.data : 'general' as const;
   let environment: WebEnvironment | null = null;
   try { environment = await loadWebEnvironment(fetch); }
   catch { settingsWarning = '本地 Web 环境配置暂不可用，历史仍可查看；请检查服务后刷新。'; }
   const modelFetch = webModelFetch(environment, fetch);
   if (environment) {
-    const exam = ExamTypeSchema.safeParse(await documents.get('web-environment-exam') ?? settings?.exam ?? 'general');
+    const exam = ExamTypeSchema.safeParse(await documents.get('web-environment-exam') ?? settings?.exam ?? defaultExam);
     let preferences = { exam: exam.success ? exam.data : 'general' as const, concurrency: LocalConcurrencySchema.parse(environment.settings.concurrency ?? {}) };
     const savedPreferences = await documents.get('web-environment-preferences');
     if (savedPreferences !== null) {
@@ -59,6 +62,26 @@ async function openRuntime() {
   }
   let cachedExecutor: ReturnType<typeof executor> | null = null;
   let savingSettings = false;
+  function modelUpdate(value: LocalSettings, credentials: LocalCredentials, presetId?: string): WebModelUpdate {
+    const parsed = LocalSettingsSchema.parse(value);
+    return { schemaVersion: 1, models: { solver: parsed.solver, verifier: parsed.verifier, backup: parsed.backup ?? null }, keys: { solver: credentials.solver || null, verifier: credentials.verifier || null, backup: credentials.backup || null }, ...(presetId ? { presetId } : {}) };
+  }
+  async function adoptEnvironment(next: WebEnvironment) {
+    if (!environment) throw new Error('本地 Web 环境配置不可用。');
+    Object.assign(environment, next);
+    for (const role of ['solver', 'verifier', 'backup'] as const) await writeKey(`environment.${role}`, next.accessTokens[role]);
+    settings = { ...next.settings, exam: settings?.exam ?? defaultExam, concurrency: settings?.concurrency ?? LocalConcurrencySchema.parse({}) }; cachedExecutor = null;
+  }
+  async function changePreset(action: ModelPresetAction) {
+    if (savingSettings || engine.actives.length || batch.busy) throw new Error('请先等待解题结束或取消，再修改配置预设。');
+    if (!environment?.canManagePresets) throw new Error('当前平台不支持配置预设。');
+    savingSettings = true;
+    try {
+      const next = await mutateWebModelPresets(environment, action, fetch);
+      if (action.kind === 'activate') { engine.invalidatePendingCorrections(); await adoptEnvironment(next); }
+      else Object.assign(environment, next);
+    } finally { savingSettings = false; }
+  }
   async function getExecutor() {
     if (savingSettings) throw new Error('正在保存设置，请稍候。');
     const acceptedSettings = settings;
@@ -70,22 +93,52 @@ async function openRuntime() {
   }
   return {
     repository, engine, batch,
-    async newBatch() { const date = new Date(); return { id: Crypto.randomUUID(), title: await repository.nextBatchTitle(date), createdAt: date.toISOString(), exam: settings?.exam ?? 'general' as const }; },
+    async newBatch() { const date = new Date(); return { id: Crypto.randomUUID(), title: await repository.nextBatchTitle(date), createdAt: date.toISOString(), exam: settings?.exam ?? defaultExam }; },
     get settings() { return settings; },
+    get defaultExam() { return settings?.exam ?? defaultExam; },
+    async saveDefaultExam(value: import('@solveflow/contracts/local').ExamType) {
+      if (savingSettings || engine.actives.length || batch.busy) throw new Error('请先结束当前解题，再切换默认考试。');
+      const exam = ExamTypeSchema.parse(value);
+      savingSettings = true;
+      try {
+        if (!settings) { await documents.put('default-exam', exam); defaultExam = exam; return; }
+        const next = { ...settings, exam };
+        // Change only the preference; leave model profiles and credential slots intact.
+        if (environment) await documents.put('web-environment-preferences', JSON.stringify({ exam, concurrency: LocalConcurrencySchema.parse(next.concurrency ?? {}) }));
+        else await documents.put('settings', JSON.stringify({ settings: next, keySlot: slot }));
+        engine.invalidatePendingCorrections();
+        settings = next; cachedExecutor = null;
+      } finally { savingSettings = false; }
+    },
     get settingsWarning() { return settingsWarning; },
     get environmentManaged() { return !!environment; }, modelFetch,
+    get modelSettingsEditable() { return !environment || !!environment.canEditModels; },
+    get canManageModelPresets() { return !!environment?.canManagePresets; },
+    get modelPresets() { return environment?.presets ?? []; },
+    saveModelPreset(name: string, value: LocalSettings, credentials: LocalCredentials, presetId?: string) { return changePreset({ kind: 'create', name, configuration: modelUpdate(value, credentials, presetId) }); },
+    removeModelPreset(id: string) { return changePreset({ kind: 'remove', id }); },
+    activateModelPreset(id: string) { return changePreset({ kind: 'activate', id }); },
+    connectionFetch(role: 'solver' | 'verifier' | 'backup', profile: import('@solveflow/contracts/local').LocalModelProfile, key: string, presetId?: string) { return webModelTestFetch(environment, role, profile, key, fetch, presetId); },
     async credentials(): Promise<LocalCredentials> { return { solver: await readKey(keyName('solver')) ?? '', verifier: await readKey(keyName('verifier')), backup: await readKey(keyName('backup')) }; },
     async configured() { return !!settings && !!await readKey(keyName('solver')) && (!settings.verifier || !!await readKey(keyName('verifier'))) && (!settings.backup || !!await readKey(keyName('backup'))); },
-    async saveSettings(value: LocalSettings, credentials: LocalCredentials) {
+    async saveSettings(value: LocalSettings, credentials: LocalCredentials, presetId?: string) {
       if (savingSettings || engine.actives.length || batch.busy) throw new Error('请先等待解题结束或取消，再修改模型设置。');
       engine.invalidatePendingCorrections();
       savingSettings = true;
       try {
         if (environment) {
           const parsed = LocalSettingsSchema.parse(value);
-          if (JSON.stringify([parsed.solver, parsed.verifier, parsed.backup ?? null]) !== JSON.stringify([settings?.solver, settings?.verifier, settings?.backup ?? null])) throw new Error('模型由本地 .env 管理，请修改文件并重启 Web 服务。');
+          let modelSaved = false;
+          const modelsChanged = JSON.stringify([parsed.solver, parsed.verifier, parsed.backup ?? null]) !== JSON.stringify([environment.settings.solver, environment.settings.verifier, environment.settings.backup ?? null]);
+          if (modelsChanged || credentials.solver || credentials.verifier || credentials.backup || presetId) {
+            if (!environment.canEditModels) throw new Error('模型由本地 .env 管理，请更新 Web 服务后编辑。');
+            const next = await saveWebModelSettings(environment, modelUpdate(parsed, credentials, presetId), fetch);
+            modelSaved = true;
+            await adoptEnvironment(next);
+          }
           // One preference write; environment models/tokens never replace manual settings.
-          await documents.put('web-environment-preferences', JSON.stringify({ exam: parsed.exam ?? 'general', concurrency: LocalConcurrencySchema.parse(parsed.concurrency ?? {}) }));
+          try { await documents.put('web-environment-preferences', JSON.stringify({ exam: parsed.exam ?? 'general', concurrency: LocalConcurrencySchema.parse(parsed.concurrency ?? {}) })); }
+          catch { throw new Error(modelSaved ? '模型配置已保存，但考试或并发偏好保存失败，请重试。' : '考试或并发偏好保存失败，原偏好已保留。'); }
           engine.configureConcurrency(parsed.concurrency);
           settings = parsed; cachedExecutor = null; return;
         }
@@ -110,8 +163,21 @@ async function openRuntime() {
     async enqueueBatch(id: string, retry = false) { return batch.enqueue(id, await getExecutor(), retry); },
     async retryBatch(id: string, runId: string) { return batch.enqueue(id, await getExecutor(), true, undefined, runId); },
     async removeBatch(id: string) {
+      z.uuid().parse(id);
       await batch.stop(id);
-      for (const row of await repository.listHistory()) if (row.batch?.id === id) await engine.remove(row.id);
+      const ids: string[] = [];
+      for (const row of await repository.listHistory()) if (row.batch?.id === id && (await repository.readMetadata(row.id)).batch?.id === id) ids.push(row.id);
+      await engine.removeMany(ids);
+    },
+    async removeSingleHistory() {
+      const ids: string[] = [];
+      for (const row of await repository.listHistory()) if (!row.batch && !(await repository.readMetadata(row.id)).batch) ids.push(row.id);
+      await engine.removeMany(ids);
+    },
+    async editBatch(value: import('@solveflow/contracts/local').LocalBatchEdit) {
+      const edit = LocalBatchEditSchema.parse(value);
+      await batch.stop(edit.batchId);
+      await engine.editBatch(edit);
     },
     async start(id: string, message: string, context: Parameters<LocalEngine['start']>[2], imageEdit?: Parameters<LocalEngine['start']>[4]) {
       if (batch.busy && !isAuxiliaryContext(context?.kind)) throw new Error('请先等待批量任务完成或停止批量解题。');

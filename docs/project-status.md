@@ -1,6 +1,6 @@
 # 发布状态与待办
 
-证据核对日期：2026-10-09。
+证据核对日期：2026-10-10。
 
 当前适合小范围实际试用，尚未达到正式生产发布条件。本页区分源码、产物与实际验收；精确成绩、版本、数据数量与失败日志由对应报告维护，不在此累计各轮样本。
 
@@ -17,7 +17,8 @@
 | 生物与学生资源 | 已用用户题图真实批测并逐题判断；发现关键转录错误仍被PASS放行、正确答案因展示裁片判FAIL及超时。单套题与重拍不能证明泛化准确率 | [最新逐题判断](postmortem/2026-10-09-biology-batch-answers.md)、[最新批测](postmortem/2026-10-09-biology-batch-acceptance.md)、[前轮复核](postmortem/2026-10-06-biology-batch-review.md)、[前轮修复](postmortem/2026-10-06-biology-reliability-fixes.md) |
 | 官网真实评测与后续修复 | 主机生产Agent完成在线、归档和Guide评测；收尾、格式窗口和独立选项比较已修复并定向复测，仍有生物/TARA错误与超时；未代表手机逐卷通过 | [全量](postmortem/2026-10-06-official-exam-suite.md)、[分科分卷](postmortem/2026-10-06-official-exam-suite-by-subject.md)、[问题分析](postmortem/2026-10-06-official-exam-suite-analysis.md)、[后续修复](postmortem/2026-10-07-exam-reliability-repair.md) |
 | 核验覆盖 | 逐题/逐小问覆盖与结构窗口已有回归；有效PASS仍可能与官方不符 | [核验增强](postmortem/2026-10-05-verification-enhancement.md) |
-| Web | 本地3100已交付补图增删、批量失败重试、阶段延长及非流式；三道已授权生物照片完成候选模型比较，仍有正确选项对应FAIL。步骤/知识点生成与缓存已有独立证据；少量实图不代表全科准确率，公网部署未验 | [重试与模型对比](postmortem/2026-10-09-batch-retry-and-timeouts.md)、[图片编辑](postmortem/2026-10-09-correction-images.md)、[学习与耗时](postmortem/2026-10-09-learning-and-latency.md) |
+| 当前模型服务 | 三组当前配置完成真实连接、8路短并发及合成题流程，包含受控判错后的真实备用接手；短测通过不消除旧日志的长尾等待，同一供应商三组不构成跨供应商容灾 | [2026-10-10稳定性](postmortem/2026-10-10-model-service-stability.md) |
+| Web | 本地3100已交付补图增删、失败重试、阶段延长、非流式及可编辑环境模型设置和整组预设；三道已授权生物照片完成候选模型比较，仍有正确选项对应FAIL。步骤/知识点生成与缓存已有独立证据；少量实图不代表全科准确率，公网部署未验 | [重试与模型对比](postmortem/2026-10-09-batch-retry-and-timeouts.md)、[图片编辑](postmortem/2026-10-09-correction-images.md)、[学习与耗时](postmortem/2026-10-09-learning-and-latency.md)、[设置编辑](postmortem/2026-10-10-web-settings-editor.md)、[整组预设](postmortem/2026-10-10-web-model-presets.md) |
 | iOS | 2026-10-08已有原生模拟器验收；10月9日Mac SSH可达但认证失败，后续共享逻辑修复尚未完成新Xcode编译/原生验收。真机签名、联网及发行未验 | [模拟器证据](postmortem/2026-10-08-ios-simulator.md)、[连接限制](postmortem/2026-10-08-exam-flow-review.md)、[后续源码范围](postmortem/2026-10-09-batch-retry-and-timeouts.md) |
 | 工程管理与CI | 文档分层、本地检查和CI配置已建立；远端执行与分支保护未完成 | [管理修正](postmortem/2026-10-04-project-practice.md)，[管理改造](postmortem/2026-10-03-project-management.md) |
 

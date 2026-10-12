@@ -13,6 +13,8 @@ import { Pressable, SafeAreaView, ScrollView, Text, View } from '../theme/primit
 import { CaptureFlow, addBatchPhoto, saveBatchPhoto } from './batch-capture';
 import { BatchImport } from './batch-import';
 import { BatchName } from './batch-name';
+import { BatchEditor } from './batch-editor';
+import { DialogSurface } from './dialog-surface';
 import { QuestionPager } from './question-pager';
 import { BatchQuestion } from './batch-question';
 import { Button, Notice, layout, s } from './ui';
@@ -24,6 +26,7 @@ export function BatchWorkspace({ runtime, batch, available, active = true, jumpG
   useEffect(() => { setSelected(batch.selectedId ?? ''); setActions(false); }, [batch]);
   const [camera, setCamera] = useState(false); const [busy, setBusy] = useState(false); const [queueBusy, setQueueBusy] = useState(runtime.batch.busy); const [error, setError] = useState('');
   const [importPhotos, setImportPhotos] = useState<ImportPhoto[] | null>(null);
+  const [review, setReview] = useState(false); const [discard, setDiscard] = useState(false);
   useEffect(() => { if (!active) setImportPhotos(null); }, [active]);
   const [queueMessage, setQueueMessage] = useState(runtime.batch.message);
   const saving = useRef(false); const selecting = useRef(false); const alive = useRef(true); const revision = useRef(0);
@@ -90,12 +93,23 @@ export function BatchWorkspace({ runtime, batch, available, active = true, jumpG
       if (alive.current) { setBusy(false); await refresh(); }
     }
   }
+  async function discardBatch() {
+    if (saving.current) return; saving.current = true; setBusy(true); setError('');
+    try { await runtime.removeBatch(batch.id); if (alive.current) { setDiscard(false); await refresh(); } }
+    catch (cause) { if (alive.current) setError(clientError(cause)); }
+    finally { saving.current = false; if (alive.current) setBusy(false); }
+  }
   const renderPage = useCallback((page: { key: string }) => <BatchQuestion key={page.key} id={page.key} runtime={runtime} queueBusy={queueBusy} available={available} />, [runtime, queueBusy, available]); const current = pages.some(row => row.key === selected) ? selected : pages[0]?.key ?? '';
   return <View style={{ flex: 1 }} testID="current-batch">
     {importPhotos && <BatchImport photos={importPhotos} onAdd={importPhoto} onClose={() => setImportPhotos(null)} />}
     <View testID="batch-header" style={{ paddingHorizontal: 14, paddingVertical: 6, gap: 4 }}><View style={[s.row, { flexWrap: 'nowrap', gap: 8 }]}>
-      <Pressable accessibilityRole="button" accessibilityLabel="重命名批次" onPress={() => setRename(true)} disabled={busy} style={{ flex: 1, minWidth: 0, minHeight: 44, justifyContent: 'center' }}><Text numberOfLines={1} style={s.label}>{title} <Text style={s.subtitle}>✎</Text></Text><Text style={[s.subtitle, { fontSize: 12 }]}>{pages.length} 张题图{queueBusy ? ' · 后台处理中' : ''}</Text></Pressable>
-      <Pressable accessibilityRole="button" accessibilityLabel="批次操作" accessibilityState={{ expanded: actions }} onPress={() => setActions(value => !value)} style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 24 }}>⋯</Text></Pressable>
+      <View testID="batch-details" style={{ flex: 1, minWidth: 0, alignItems: 'flex-start' }}>
+        <Pressable testID="batch-rename" accessibilityRole="button" accessibilityLabel="重命名批次" onPress={() => setRename(true)} disabled={busy} style={{ flexShrink: 1, minWidth: 0, maxWidth: '100%', minHeight: 44, justifyContent: 'center' }}>
+          <View testID="batch-title-row" style={{ flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0 }}><Text testID="batch-title" numberOfLines={1} style={[s.label, { flexShrink: 1 }]}>{title}</Text><View testID="batch-edit-icon" pointerEvents="none" accessible={false} accessibilityElementsHidden><Text style={s.subtitle}>✎</Text></View></View>
+        </Pressable>
+        <Text testID="batch-photo-count" style={[s.subtitle, { fontSize: 12 }]}>{pages.length} 张题图{queueBusy ? ' · 后台处理中' : ''}</Text>
+      </View>
+      <Pressable testID="batch-more" accessibilityRole="button" accessibilityLabel="批次操作" accessibilityState={{ expanded: actions }} onPress={() => setActions(value => !value)} style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 24 }}>⋯</Text></Pressable>
     </View>
       {actions && (
         <Modal visible={actions} transparent animationType="fade" onRequestClose={() => setActions(false)}>
@@ -110,11 +124,13 @@ export function BatchWorkspace({ runtime, batch, available, active = true, jumpG
                 <ScrollView style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }} contentContainerStyle={{ gap: 8 }} keyboardShouldPersistTaps="handled">
                   <Button title="继续拍摄" disabled={busy || pages.length >= MAX_BATCH_PHOTOS} onPress={() => { setActions(false); setCamera(true); }} />
                   <Button title="添加相册题图" secondary disabled={busy || pages.length >= MAX_BATCH_PHOTOS} onPress={() => { setActions(false); void gallery(); }} />
+                  <Button title="调整批次图片" secondary disabled={busy || !pages.length} onPress={() => { setActions(false); setReview(true); }} />
                   <Button title="继续待解题" secondary disabled={busy || !pages.length} onPress={() => { setActions(false); void resume(); }} />
                   <Button title="重试未完成" secondary disabled={busy || !pages.length} onPress={() => { setActions(false); void resume(true); }} />
                   {queueBusy && (
                     <Button title="停止批量解题" danger disabled={busy} onPress={() => { setActions(false); setBusy(true); void runtime.batch.stop(batch.id).catch(cause => setError(clientError(cause))).finally(() => { setBusy(false); void refresh(); }); }} />
                   )}
+                  <Button title="放弃本批" secondary danger disabled={busy || !pages.length} onPress={() => { setActions(false); setError(''); setDiscard(true); }} />
                 </ScrollView>
               </View>
             </View>
@@ -126,5 +142,11 @@ export function BatchWorkspace({ runtime, batch, available, active = true, jumpG
     {!!pages.length && <QuestionPager states={states} showNavigation jumpGridTrigger={jumpGridTrigger} threads={pages} selected={current} onSelect={setSelected} retainPages scrollPages={false} render={renderPage} />}
     {camera && <CaptureFlow runtime={runtime} initialBatch={{ id: batch.id, createdAt: batch.createdAt, exam: batch.exam, title }} onPhoto={() => {}} onGallery={() => {}} onClose={() => { setCamera(false); void refresh(); }} />}
     {rename && <BatchName title={title} onClose={() => setRename(false)} onSave={async value => { await runtime.repository.renameBatch(batch.id, value); setTitle(value); await refresh(); }} />}
+    {review && <BatchEditor runtime={runtime} batchId={batch.id} onClose={() => setReview(false)} onApplied={() => void refresh()} />}
+    {discard && <Modal transparent animationType="fade" onRequestClose={() => { if (!busy) setDiscard(false); }}><DialogSurface>
+      <Text style={s.title}>放弃整个批次？</Text><Text style={s.subtitle}>本批 {pages.length} 张题图及解答将永久删除，本批任务会停止。其他批次和单题保留。</Text>
+      {!!error && <Notice text={error} error />}
+      <Button title="确认放弃本批" danger disabled={busy} onPress={() => void discardBatch()} /><Button title="保留本批" secondary disabled={busy} onPress={() => setDiscard(false)} />
+    </DialogSurface></Modal>}
   </View>;
 }

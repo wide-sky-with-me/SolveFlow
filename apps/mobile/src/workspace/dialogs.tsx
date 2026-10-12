@@ -87,13 +87,13 @@ export function DeleteModal({
   onClose: () => void;
 }) {
   const title =
-    confirmDelete === 'all'
+    confirmDelete === 'singles' ? `清空 ${sessions.filter(row => !row.batch).length} 道单题记录？` : confirmDelete === 'all'
       ? hasStorageIssues ? '清空本机全部题目，包括无法读取的记录？' : `清空全部 ${sessions.length} 道题？`
       : confirmDelete?.startsWith('batch:')
         ? '删除这一批全部题图与解答？'
         : '删除这道题？';
   const description =
-    confirmDelete === 'all'
+    confirmDelete === 'singles' ? `仅永久删除单题的题图、解答、收藏和诊断，批量记录保留。${hasStorageIssues ? '无法确认分类的损坏记录保留，请在记录维护中处理。' : ''}` : confirmDelete === 'all'
       ? '将永久删除本机全部历史题图、解答、收藏和诊断记录，无法撤销。进行中的任务会取消，模型设置保留。已导出的文件仍保留。'
       : '将从本机永久移除题图、解答和收藏，无法撤销；进行中的任务也会取消。';
   return (
@@ -108,7 +108,7 @@ export function DeleteModal({
           <Text style={s.subtitle}>{description}</Text>
           {error ? <Notice text={error} error /> : null}
           <Button
-            title={confirmDelete === 'all' ? '确认清空全部历史' : '确认删除'}
+            title={confirmDelete === 'singles' ? '确认清空单题历史' : confirmDelete === 'all' ? '确认清空全部历史' : '确认删除'}
             danger
             disabled={busy}
             onPress={onConfirm}

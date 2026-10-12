@@ -399,8 +399,9 @@ const styles = StyleSheet.create({
   track: { flex: 1, height: 44, backgroundColor: '#f5f7fb', borderRadius: 14 },
   axis: { height: 44 },
   axisPage: { flexDirection: 'row', flexShrink: 0, gap: 4, height: 44, alignItems: 'center', paddingHorizontal: 4 },
-  tab: { flex: 1, minWidth: 0, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 0 },
-  selected: { backgroundColor: '#edf3ff', borderRadius: 10, borderLeftWidth: 0 },
+  // Reserve the selection border so flex items do not change width on selection.
+  tab: { flex: 1, minWidth: 0, height: 36, borderWidth: 2, borderColor: 'transparent', borderRadius: 10, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 0 },
+  selected: { backgroundColor: '#edf3ff', borderRadius: 10 },
   tabText: { fontSize: 15, lineHeight: 22, includeFontPadding: false, color: colors.muted, fontVariant: ['tabular-nums'] },
   selectedText: { color: colors.blue, fontWeight: '700' },
   arrow: { width: 40, height: 44, alignItems: 'center', justifyContent: 'center' },

@@ -1,18 +1,18 @@
 # 本地任务生命周期
 
-入口为 [LocalEngine](../../packages/client/src/local-engine.ts)。这里解释顺序和并发；存储格式、备份与失败结果归 [存储文档](storage.md)，模型核验规则归 [解题核心](agent.md)。引擎只做设备业务编排，Pi 继续拥有模型/工具循环。
+入口为 [LocalEngine](../../packages/client/src/local-engine.ts)。说明顺序与并发；存储格式、备份与失败结果归 [存储文档](storage.md)，模型核验规则归 [解题核心](agent.md)。引擎编排设备业务，Pi拥有模型/工具循环。
 
 ## 先分清标识
 
 | 名称 | 含义 |
 | --- | --- |
 | sessionId | 一张主图、同题补充材料及其会话，主图可能包含多个明确题号 |
-| runId | 一次解题、追问或按需请求；重新解题另建 run |
+| runId | 一次请求；重新解题另建 run |
 | sourceRunId | 按需内容或追问所依赖的已保存答案版本 |
 | context.number | 图内题号；不是批量拍摄序号，也不是 run 序号 |
 | seq | 单个 run 的公开更新序号；不能用设备时钟推断提交顺序 |
 
-请求种类和字段定义以 [任务契约](../../packages/contracts/src/http.ts) 为准。
+字段以[任务契约](../../packages/contracts/src/http.ts)为准。
 
 ## 提交与执行
 
@@ -23,7 +23,7 @@
 5. 有效答案候选先在锁内重新读取、保存未验证pending检查点，再发布verifying进度；答案即可查看。批量候选保存后直接释放solver位，暂停本run后台保护，再独立FIFO等待核验执行位；取得位后恢复保护。校验等待不占答题槽。
 6. 结果阶段等待诊断，重新拿锁读取最新会话，只合并本 run。不能用提交时的旧对象覆盖期间新增的其他 run。保存成功才发布终态，最后停止后台保护并释放槽位。
 
-普通会话与辅助任务可以并存，但同题进行中的任务会限制追加会话；辅助重复键为种类、sourceRunId 和题号。批量池与新的普通会话互斥，已完成题目的辅助请求可与批量并存。步骤和知识列表要求源run终结，避免自动修正期间旧讲解关联到新答案；其他题目未完成不阻塞。具体上限由契约拥有，原因见[学习准入](../../.agents/notes/implemented/architecture/2026-10-09-batch-learning-admission.md)。
+普通与辅助任务可并存，同题进行中限制追加会话；辅助重复键为种类、sourceRunId 和题号。批量池与新的普通会话互斥，已完成题目的辅助请求可与批量并存。步骤和知识列表要求源run终结，避免自动修正期间旧讲解关联到新答案；其他题目未完成不阻塞。上限见契约，原因见[学习准入](../../.agents/notes/implemented/architecture/2026-10-09-batch-learning-admission.md)。
 
 批量求解与校验分别控制准入，并发使用设置快照，默认与允许范围由[设备契约](../../packages/contracts/src/local.ts)拥有；批量派发与引擎采用相同设置。整个已接受批次可以等待核验，校验慢不会阻塞后续求解；在批量入口与引擎入口均限制任务总数。等待任务仍保留受限输入，图片内存上界随批次容量增加，不是无限队列。纠错和复核共用同一校验位。取消等待者无需派发模型，停止覆盖已接受的两条队列；重启不重放任务。已保存候选恢复为completed/未验证并附WORKER_LOST，没有候选才恢复失败。取舍见[独立并发决定](../../.agents/notes/implemented/architecture/2026-10-09-independent-batch-concurrency.md)，检查点与材料语义沿用[前一决定](../../.agents/notes/implemented/architecture/2026-10-08-answer-checkpoint-queues.md)。
 
@@ -45,8 +45,12 @@
 
 删除先关闭新提交，排空已接受的准备，再取消相关运行并等待收尾，最后重新拿锁删除数据。等待 `active.done` 时不能持有引擎锁，因为结果保存也要获取它。只有删除成功才清除对应待保存结果。
 
+批次调整先建立排序/移除草稿，取消不写入；确认后停止本批两条队列，等保存收尾，在一个存储事务中更新连续位置并删除被移除题目及其关联数据。保留题图原文和session答案，不重放模型。核对完整成员快照及重复/外来ID；成员变化、保存失败保留原批，未保存解答先处理。见[批次编辑决定](../../.agents/notes/implemented/storage/2026-10-10-scoped-history-and-batch-edit.md)。
+
+“清空单题历史”只删除原记录确认无batch的题目，不影响批次。批次的“放弃本批”只停止并删除指定批次，事务成功后才清除内存结果。未知归属的损坏记录与孤立诊断保留给维护，不执行全库删除。无多记录事务时拒绝执行。
+
 ## 修改时一起读
 
-[引擎回归](../../packages/client/src/local-engine.test.ts) 覆盖排队失败、缓存、并发、图片校验及保存中取消；[存储故障](../../packages/client/src/storage-recovery.test.ts) 覆盖补写失败后重试；[历史回归](../../packages/client/src/local-history.test.ts) 覆盖删除与已接受准备的竞态。只跑正常解题不足以验证这些边界。
+[引擎回归](../../packages/client/src/local-engine.test.ts) 覆盖排队失败、缓存、并发、图片校验及保存中取消；[存储故障](../../packages/client/src/storage-recovery.test.ts) 覆盖补写失败后重试；[历史回归](../../packages/client/src/local-history.test.ts) 覆盖删除与已接受准备的竞态。正常解题不足以验证这些边界。
 
 主动校验判错且已启用备用时，由本轮内存续接创建一版重新解答，旧答案和失败校验均保留；派发前在准备锁内核对原校验终态、最新答案版本及续接代次。取消、删除、新任务、补图或配置变更撤销尚未派发的续接；启动、重载与保存重试不会恢复它。已派发的新解答沿通常取消和持久化路径执行。见[直接核对决策](../../.agents/notes/implemented/agent/2026-10-09-direct-answer-review.md)。

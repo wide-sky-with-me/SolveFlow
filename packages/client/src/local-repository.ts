@@ -1,6 +1,6 @@
 // Decision: .agents/notes/implemented/architecture/2026-10-09-overall-study-timer.md
 import { z } from 'zod';
-import { MAX_LOCAL_RECORDS, ReadableLocalRecordSchema, ReadableStoredLocalRecordSchema, StoredLocalRecordSchema, StoredLocalImageSchema, LocalBatchTitleSchema, LocalRecordSchema, LocalFavoriteSchema, LocalDiagnosticsSchema, LocalHistoryExportLineSchema, type LocalHistoryExportLine, type LocalDiagnostic, type LocalRecord, type LocalRecordMetadata, LocalStudyTimerSchema, type LocalStudyTimer } from '@solveflow/contracts/local';
+import { MAX_LOCAL_RECORDS, LocalBatchEditSchema, type LocalBatchEdit, ReadableLocalRecordSchema, ReadableStoredLocalRecordSchema, StoredLocalRecordSchema, StoredLocalImageSchema, LocalBatchTitleSchema, LocalRecordSchema, LocalFavoriteSchema, LocalDiagnosticsSchema, LocalHistoryExportLineSchema, type LocalHistoryExportLine, type LocalDiagnostic, type LocalRecord, type LocalRecordMetadata, LocalStudyTimerSchema, type LocalStudyTimer } from '@solveflow/contracts/local';
 import { terminal, questionAnswerState, type SessionView } from '@solveflow/contracts/http';
 import { makeSafeAgentError, type SolveOutcome } from '@solveflow/contracts/agent';
 import { LocalHistorySummarySchema, type LocalHistorySummary } from '@solveflow/contracts/local';
@@ -427,27 +427,57 @@ export class LocalRepository {
       this.damaged.delete(key); this.history = null; this.changed();
     });
   }
-  async remove(id: string) { return this.lock(async () => {
-    const parsed = z.uuid().parse(id); const record = await this.readMetadata(parsed);
-    const materials = (await this.documents.keys()).filter(key => key.startsWith(`material.${parsed}.`) || key.startsWith(`study-time.${parsed}.`));
-    const keys = [...materials, `summary.${parsed}`, ...record.session.runs.map(run => `diagnostic.${run.id}`), `record.${parsed}`, `image.${parsed}`, `favorite.${parsed}`];
-    if (record.batch) {
-      let sibling = false;
-      for (const key of await this.documents.keys()) {
-        if (!key.startsWith('record.') || key === `record.${parsed}`) continue;
-        const summary = await this.documents.get(`summary.${key.slice(7)}`);
-        let cached: LocalHistorySummary | null = null;
-        try { const parsed = LocalHistorySummarySchema.safeParse(summary ? JSON.parse(summary) : null); if (parsed.success) cached = { ...parsed.data, favorite: false }; } catch { /* Rebuild from the record when the derived cache is invalid. */ }
-        let siblingBatch;
-        try { siblingBatch = cached ? cached.batch : (await this.readMetadata(key.slice(7))).batch; }
-        catch (cause) { this.noteIssue(cause, key.slice(7)); sibling = true; continue; }
-        if (siblingBatch?.id === record.batch.id) { sibling = true; break; }
-      }
-      if (!sibling) keys.push(`batch-title.${record.batch.id}`);
+  // Decision: .agents/notes/implemented/storage/2026-10-10-scoped-history-and-batch-edit.md
+  private async removalChanges(records: LocalRecordMetadata[], existingKeys: string[]) {
+    const selected = new Set(records.map(record => record.session.id));
+    const keys = new Set<string>();
+    for (const record of records) {
+      const id = record.session.id;
+      for (const key of existingKeys) if (key.startsWith(`material.${id}.`) || key.startsWith(`study-time.${id}.`)) keys.add(key);
+      for (const key of [`summary.${id}`, `record.${id}`, `image.${id}`, `favorite.${id}`, ...record.session.runs.map(run => `diagnostic.${run.id}`)]) keys.add(key);
     }
-    await this.batch(keys.map(key => ({ key, value: null })));
-    for (const key of keys) this.damaged.delete(key);
-    this.history = this.history?.filter(row => row.id !== parsed) ?? null; this.changed();
+    const remainingBatches = new Set<string>(); let unknownSibling = false;
+    if (records.some(record => record.batch)) for (const key of existingKeys) {
+      if (!key.startsWith('record.') || selected.has(key.slice(7))) continue;
+      try { const sibling = await this.loadRecord(key.slice(7), false); if (sibling.batch) remainingBatches.add(sibling.batch.id); }
+      catch (cause) { this.noteIssue(cause, key.slice(7)); unknownSibling = true; }
+    }
+    for (const record of records) if (record.batch && !unknownSibling && !remainingBatches.has(record.batch.id)) keys.add(`batch-title.${record.batch.id}`);
+    return [...keys].map(key => ({ key, value: null }));
+  }
+  async remove(id: string) { return this.removeMany([id]); }
+  async removeMany(ids: readonly string[]) { return this.lock(async () => {
+    const selected = new Set(z.array(z.uuid()).max(MAX_LOCAL_RECORDS).parse(ids)); if (!selected.size) return;
+    if (selected.size > 1 && !this.documents.batch) throw new Error('当前存储不支持批量删除事务。');
+    const records = await Promise.all([...selected].map(id => this.readMetadata(id)));
+    const changes = await this.removalChanges(records, await this.documents.keys());
+    await this.batch(changes);
+    for (const { key } of changes) this.damaged.delete(key);
+    this.history = this.history?.filter(row => !selected.has(row.id)) ?? null; this.changed();
+  }); }
+  /** Reorder metadata and delete the omitted records in one transaction, without re-encoding images. */
+  async editBatch(value: LocalBatchEdit) { return this.lock(async () => {
+    const edit = LocalBatchEditSchema.parse(value);
+    if (!this.documents.batch) throw new Error('当前存储不支持批次调整事务。');
+    const records: LocalRecordMetadata[] = [];
+    for (const id of await this.recordIds({ strict: true })) {
+      try { const record = await this.readMetadata(id); if (record.batch?.id === edit.batchId) records.push(record); }
+      catch (cause) { this.noteIssue(cause, id); throw new Error('存在无法确认归属的记录，请先处理记录维护。'); }
+    }
+    const ids = new Set(records.map(record => record.session.id));
+    if (ids.size !== edit.expectedIds.length || edit.expectedIds.some(id => !ids.has(id))) throw new Error('批次图片已变化，请重新打开调整。');
+    const retained = new Set(edit.orderedIds);
+    const changes: LocalDocumentChange[] = await this.removalChanges(records.filter(record => !retained.has(record.session.id)), await this.documents.keys());
+    for (const [index, id] of edit.orderedIds.entries()) {
+      const record = records.find(record => record.session.id === id); if (!record?.batch) throw new Error('批次题目不存在。');
+      // Legacy v1 keeps its inline original; v2 updates metadata without touching image keys.
+      const original = await this.loadRecord(id, false);
+      const next = { ...original, batch: { ...record.batch, position: index + 1 } };
+      changes.push({ key: `record.${id}`, value: JSON.stringify(next) }, { key: `summary.${id}`, value: JSON.stringify(this.summary(next)) });
+    }
+    await this.batch(changes);
+    for (const { key, value } of changes) if (value === null) this.damaged.delete(key);
+    this.history = null; this.changed();
   }); }
   async removeAll() {
     return this.lock(async () => {

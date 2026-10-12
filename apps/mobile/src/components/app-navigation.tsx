@@ -81,10 +81,10 @@ function CameraItem({ disabled, reduced, onPress }: { disabled: boolean; reduced
   </Pressable>;
 }
 
-export function AppNavigation({ tab, exam = 'general', onTab, onCamera, cameraDisabled }: { tab: AppTab; exam?: ExamType; onTab: (tab: AppTab) => void; onCamera: () => void; cameraDisabled: boolean }) {
+export function AppNavigation({ tab, exam = 'general', onTab, onCamera, cameraDisabled, onExam, examDisabled }: { tab: AppTab; exam?: ExamType; onExam: () => void; examDisabled: boolean; onTab: (tab: AppTab) => void; onCamera: () => void; cameraDisabled: boolean }) {
   const reduced = useReducedMotion();
   return <View testID="app-navigation" style={styles.bar} accessibilityLabel="主导航" role="navigation">
-    <AppBrand exam={exam} />
+    <AppBrand exam={exam} onExam={onExam} examDisabled={examDisabled} />
     <View testID="navigation-items" style={styles.items}>
     <TabItem kind="questions" label="题目" selected={tab === 'questions'} reduced={reduced} onPress={() => onTab('questions')} />
     <CameraItem disabled={cameraDisabled} reduced={reduced} onPress={onCamera} />

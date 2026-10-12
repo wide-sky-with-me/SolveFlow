@@ -109,3 +109,20 @@ test('an existing batch appends confirmed photos and an abandoned save never dis
   const saved = await savedPhotos(page); expect(saved.records.map(row => row.batch?.position)).toEqual([1, 2, 3, 4, 5, 6, 7]);
   expect(saved.records.at(-1)?.session.runs).toHaveLength(0);
 });
+
+test('batch capture previews allow removal and cancel, saved photos allow adjustment, and discarding releases the camera', async ({ page }) => {
+  let calls = 0;
+  await page.route('https://fixture-model.invalid/v1/chat/completions', async route => { calls++; const body = route.request().postDataJSON(); const input = lastModelInput(body); const verifier = typeof input === 'object' && input !== null && 'role' in input && input.role === 'verifier'; await route.fulfill({ contentType: 'text/event-stream', body: modelSse(verifier ? modelPass : { schemaVersion: 1, kind: 'answer', problem: { text: 'x+1=3', subject: 'math', uncertainties: [] }, answer: 'x=2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] }, body) }); });
+  await page.goto('/'); await configureLocalModel(page); await selectBatch(page);
+  await page.getByRole('button', { name: '移除第2张', exact: true }).click(); await expect(page.getByTestId('import-photo-row')).toHaveCount(2);
+  await page.getByRole('button', { name: '取消导入', exact: true }).click(); expect((await savedPhotos(page)).records).toHaveLength(0); expect(calls).toBe(0);
+  await selectFiles(page, '从相册选择'); await page.getByRole('button', { name: '移除第2张', exact: true }).click(); await page.getByRole('button', { name: '导入并解题（2张）', exact: true }).click(); await expect.poll(() => calls).toBe(4);
+  await page.getByRole('button', { name: '调整批次图片', exact: true }).click(); await expect(page.getByTestId('batch-edit-row')).toHaveCount(2); await page.getByRole('button', { name: '取消调整', exact: true }).click();
+  await expect(page.getByRole('button', { name: '拍摄', exact: true })).toBeEnabled();
+  const stream = await page.locator('video').evaluateHandle(node => node instanceof HTMLVideoElement ? node.srcObject : null);
+  await page.getByRole('button', { name: '放弃本批', exact: true }).click();
+  expect(await stream.evaluate(value => value instanceof MediaStream && value.getTracks().every(track => track.readyState === 'ended'))).toBe(true);
+  await page.getByRole('button', { name: '保留本批', exact: true }).click(); expect((await savedPhotos(page)).records).toHaveLength(2);
+  await page.getByRole('button', { name: '放弃本批', exact: true }).click(); await page.getByRole('button', { name: '确认放弃本批', exact: true }).click();
+  await expect.poll(async () => (await savedPhotos(page)).records.length).toBe(0); await expect(page.getByRole('button', { name: '拍一张', exact: true })).toBeVisible(); expect(calls).toBe(4); await stream.dispose();
+});

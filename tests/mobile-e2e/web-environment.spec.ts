@@ -23,7 +23,7 @@ test('environment role requests survive token rotation without reload and reload
   await page.goto('/'); await chooseSyntheticPhoto(page);
   activeTokens = { solver: 'rotated-solver-token', verifier: 'rotated-verifier-token', backup: 'rotated-backup-token' };
   await page.getByRole('button', { name: '开始解题', exact: true }).click();
-  await expect(page.getByText('模型独立校验通过', { exact: true })).toBeVisible(); expect(calls).toEqual(['solver', 'solver', 'backup', 'verifier']); expect(localRejections).toBe(1); expect(external).toBe(0);
+  await expect(page.getByRole('button', { name: '校验通过', exact: true })).toBeVisible(); expect(calls).toEqual(['solver', 'solver', 'backup', 'verifier']); expect(localRejections).toBe(1); expect(external).toBe(0);
   await page.getByRole('tab', { name: '我的', exact: true }).click(); await page.getByRole('button', { name: '设置', exact: true }).click();
   await expect(page.getByLabel('解题模型引用名', { exact: true })).not.toBeEditable(); await expect(page.getByLabel('解题API Key', { exact: true })).toHaveCount(0);
   await expect(page.getByLabel('答题并发', { exact: true })).toHaveValue('8'); await expect(page.getByLabel('校验并发', { exact: true })).toHaveValue('8');
