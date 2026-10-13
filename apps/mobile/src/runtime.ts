@@ -4,7 +4,8 @@ import { z } from 'zod';
 import { fetch } from 'expo/fetch';
 import * as Crypto from 'expo-crypto';
 import { LocalBatchQueue, LocalDataError, LocalEngine, LocalRepository } from '@solveflow/client/local';
-import { solveOnDevice, type LocalCredentials } from '@solveflow/agent/mobile';
+import { solveOnDevice, analyzeBatchPrintQuestion, type LocalCredentials } from '@solveflow/agent/mobile';
+import { AgentErrorCodeSchema, makeSafeAgentError } from '@solveflow/contracts/agent';
 import { LocalSettingsSchema, LocalKeySchema, LocalConcurrencySchema, LocalBatchEditSchema, ExamTypeSchema, type LocalSettings, type WebEnvironment, type WebModelUpdate } from '@solveflow/contracts/local';
 import { openDocuments } from './local/documents';
 import { readKey, writeKey } from './local/secrets';
@@ -62,6 +63,7 @@ async function openRuntime() {
   }
   let cachedExecutor: ReturnType<typeof executor> | null = null;
   let savingSettings = false;
+  let printAnalysisActive = false;
   function modelUpdate(value: LocalSettings, credentials: LocalCredentials, presetId?: string): WebModelUpdate {
     const parsed = LocalSettingsSchema.parse(value);
     return { schemaVersion: 1, models: { solver: parsed.solver, verifier: parsed.verifier, backup: parsed.backup ?? null }, keys: { solver: credentials.solver || null, verifier: credentials.verifier || null, backup: credentials.backup || null }, ...(presetId ? { presetId } : {}) };
@@ -73,7 +75,7 @@ async function openRuntime() {
     settings = { ...next.settings, exam: settings?.exam ?? defaultExam, concurrency: settings?.concurrency ?? LocalConcurrencySchema.parse({}) }; cachedExecutor = null;
   }
   async function changePreset(action: ModelPresetAction) {
-    if (savingSettings || engine.actives.length || batch.busy) throw new Error('请先等待解题结束或取消，再修改配置预设。');
+    if (savingSettings || printAnalysisActive || engine.actives.length || batch.busy) throw new Error('请先等待解题结束或取消，再修改配置预设。');
     if (!environment?.canManagePresets) throw new Error('当前平台不支持配置预设。');
     savingSettings = true;
     try {
@@ -84,20 +86,36 @@ async function openRuntime() {
   }
   async function getExecutor() {
     if (savingSettings) throw new Error('正在保存设置，请稍候。');
+    if (printAnalysisActive) throw new Error('正在识别导出题目，请先等待或取消。');
     const acceptedSettings = settings;
     cachedExecutor ??= executor().catch(err => { cachedExecutor = null; throw err; });
     const execute = await cachedExecutor;
     if (savingSettings) throw new Error('正在保存设置，请稍候。');
+    if (printAnalysisActive) throw new Error('正在识别导出题目，请先等待或取消。');
     if (settings !== acceptedSettings) throw new Error('设置已变更，请重新开始本次解题。');
     return execute;
   }
   return {
     repository, engine, batch,
+    async analyzePrintLayout(input: import('@solveflow/contracts/local').BatchPrintLayoutInput, signal: AbortSignal) {
+      if (savingSettings || printAnalysisActive || engine.actives.length || batch.busy) throw new Error('请先结束当前任务，再识别导出题目。');
+      if (!settings) throw new Error('请先在设置中配置模型服务，或手动整理导出题图。');
+      printAnalysisActive = true;
+      try {
+        const snapshot = settings;
+        const credentials: LocalCredentials = { solver: await readKey(keyName('solver')) ?? '', verifier: null };
+        if (signal.aborted) throw new Error('导出识别已取消。');
+        return await analyzeBatchPrintQuestion(input, snapshot, credentials, modelFetch, signal);
+      } catch (cause) {
+        const code = AgentErrorCodeSchema.safeParse(cause instanceof Error ? cause.message : null);
+        throw new Error(signal.aborted ? '导出已取消。' : code.success ? makeSafeAgentError(code.data, 'print-layout').message : '题目图片识别失败，请检查模型配置或手动整理。');
+      } finally { printAnalysisActive = false; }
+    },
     async newBatch() { const date = new Date(); return { id: Crypto.randomUUID(), title: await repository.nextBatchTitle(date), createdAt: date.toISOString(), exam: settings?.exam ?? defaultExam }; },
     get settings() { return settings; },
     get defaultExam() { return settings?.exam ?? defaultExam; },
     async saveDefaultExam(value: import('@solveflow/contracts/local').ExamType) {
-      if (savingSettings || engine.actives.length || batch.busy) throw new Error('请先结束当前解题，再切换默认考试。');
+      if (savingSettings || printAnalysisActive || engine.actives.length || batch.busy) throw new Error('请先结束当前解题，再切换默认考试。');
       const exam = ExamTypeSchema.parse(value);
       savingSettings = true;
       try {
@@ -122,7 +140,7 @@ async function openRuntime() {
     async credentials(): Promise<LocalCredentials> { return { solver: await readKey(keyName('solver')) ?? '', verifier: await readKey(keyName('verifier')), backup: await readKey(keyName('backup')) }; },
     async configured() { return !!settings && !!await readKey(keyName('solver')) && (!settings.verifier || !!await readKey(keyName('verifier'))) && (!settings.backup || !!await readKey(keyName('backup'))); },
     async saveSettings(value: LocalSettings, credentials: LocalCredentials, presetId?: string) {
-      if (savingSettings || engine.actives.length || batch.busy) throw new Error('请先等待解题结束或取消，再修改模型设置。');
+      if (savingSettings || printAnalysisActive || engine.actives.length || batch.busy) throw new Error('请先等待解题结束或取消，再修改模型设置。');
       engine.invalidatePendingCorrections();
       savingSettings = true;
       try {
@@ -152,7 +170,7 @@ async function openRuntime() {
         if (oldSlot) { await writeKey(`${oldSlot}.solver`, null); await writeKey(`${oldSlot}.verifier`, null); await writeKey(`${oldSlot}.backup`, null); }
       } finally { savingSettings = false; }
     },
-    async clearKeys() { if (environment) throw new Error('模型凭据由本地 .env 管理，请在文件中清除并重启服务。'); if (engine.actives.length || batch.busy) throw new Error('请先结束当前解题。'); engine.invalidatePendingCorrections(); cachedExecutor = null; await writeKey(keyName('solver'), null); await writeKey(keyName('verifier'), null); await writeKey(keyName('backup'), null); },
+    async clearKeys() { if (environment) throw new Error('模型凭据由本地 .env 管理，请在文件中清除并重启服务。'); if (printAnalysisActive || engine.actives.length || batch.busy) throw new Error('请先结束当前解题。'); engine.invalidatePendingCorrections(); cachedExecutor = null; await writeKey(keyName('solver'), null); await writeKey(keyName('verifier'), null); await writeKey(keyName('backup'), null); },
     async continueWithMaterials(id: string, context: Parameters<LocalEngine['start']>[2]) {
       if (!context || context.kind !== 'regenerate') throw new Error('请选择要补充解答的题目。');
       const message = '请结合原题图和本轮全部补图，从头重新解答本题；补图已经提供所需细节，请实际检查，不沿用旧的缺图判断。';

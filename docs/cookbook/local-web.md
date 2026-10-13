@@ -10,7 +10,7 @@
 | 使用构建产物 | `pnpm build:web`后`pnpm start` | 未启用环境桥接时仍为手工设置 |
 | 本地复用`.env` | 同上，显式启用`WEB_ENV_ENABLED=true` | 固定角色由Node代理，真实密钥不进入浏览器 |
 
-`pnpm dev`的Expo入口不使用Node环境桥接。`pnpm start`固定监听`http://127.0.0.1:3100`，只提供`apps/mobile/dist`中的已有产物，不自动构建或请求模型；开发地址以实际输出为准。
+`pnpm dev`的Expo入口不使用Node环境桥接。`pnpm start`默认监听`http://127.0.0.1:3100`，提供`apps/mobile/dist`中的已有产物，不自动构建或请求模型；开发地址以实际输出为准。
 
 ## 构建与启动
 
@@ -21,6 +21,16 @@ pnpm start
 ```
 
 依赖未变且已经安装时可跳过安装。成功导出不是APK或iOS原生编译；启动后应能打开页面、进入设置及查看历史。页面加载成功不代表模型连接或真实答题通过。
+
+并行验证分支时可指定其他端口及隔离构建目录，保留原服务与产物：
+
+```sh
+pnpm build:shared
+pnpm --filter @solveflow/mobile build:web --output-dir ../../.runtime/pdf-question-only/web
+SOLVEFLOW_WEB_PORT=3102 SOLVEFLOW_WEB_DIR=.runtime/pdf-question-only/web pnpm start
+```
+
+端口只接受1024–65535的整数，服务仍绑定回环地址。环境参数由启动进程传入，构建目录相对当前工作目录解析；模型桥接沿用根`.env`及本机配置。不同端口是不同浏览器来源，IndexedDB历史与图示缓存独立；需要已有题目时，在旧端口备份，再到新端口导入，不自动复制或清空数据。
 
 ## 环境配置
 

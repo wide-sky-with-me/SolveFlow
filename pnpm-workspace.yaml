@@ -16,6 +16,7 @@ overrides:
 # Transitive lifecycle scripts stay disabled pending explicit review.
 allowBuilds:
   "@google/genai": false
+  core-js: false
   esbuild: false
   protobufjs: false
   sharp: false

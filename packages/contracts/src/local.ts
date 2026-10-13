@@ -141,6 +141,19 @@ export const LocalHistorySummarySchema = z.strictObject({
 });
 export type LocalHistorySummary = z.infer<typeof LocalHistorySummarySchema> & { favorite: boolean };
 
+/** A local reading export; never includes settings, credentials or diagnostics. */
+export const MAX_BATCH_PRINT_BYTES = 128 * 1024 * 1024;
+export const BatchPrintSnapshotSchema = z.strictObject({ schemaVersion: z.literal(1), batch: LocalBatchSchema.omit({ position: true }), exportedAt: z.iso.datetime(), records: z.array(LocalRecordSchema).min(1).max(MAX_BATCH_PHOTOS) }).superRefine((value, context) => {
+  const ids = new Set<string>(); const positions = new Set<number>();
+  for (const record of value.records) {
+    if (record.batch?.id !== value.batch.id || ids.has(record.session.id) || positions.has(record.batch.position)) context.addIssue({ code: 'custom', message: '导出题目归属或编号不一致。' });
+    ids.add(record.session.id); if (record.batch) positions.add(record.batch.position);
+  }
+});
+export type BatchPrintSnapshot = z.infer<typeof BatchPrintSnapshotSchema>;
+export const PrintImageAdjustmentSchema = z.strictObject({ rotation: z.number().min(-15).max(15), crop: z.strictObject({ left: z.number().min(0).max(1), top: z.number().min(0).max(1), right: z.number().min(0).max(1), bottom: z.number().min(0).max(1) }).refine(value => value.right - value.left >= .05 && value.bottom - value.top >= .05, '裁切范围过小。'), enhance: z.boolean() });
+export type PrintImageAdjustment = z.infer<typeof PrintImageAdjustmentSchema>;
+
 /** Separate metadata avoids an in-flight solver overwriting a new bookmark. */
 export const LocalFavoriteSchema = z.strictObject({ schemaVersion: z.literal(1), favorite: z.literal(true) });
 
@@ -177,3 +190,5 @@ export const LocalHistoryExportLineSchema = z.discriminatedUnion('kind', [
   z.strictObject({ schemaVersion: z.literal(1), kind: z.literal('complete'), count: z.number().int().min(0).max(MAX_LOCAL_RECORDS) }),
 ]);
 export type LocalHistoryExportLine = z.infer<typeof LocalHistoryExportLineSchema>;
+export { MAX_BATCH_PRINT_LAYOUT_SOURCES, BatchPrintLayoutInputSchema, BatchPrintLayoutSchema, PrintLayoutRegionSchema, parseBatchPrintLayout, type BatchPrintLayoutInput, type BatchPrintLayout, type PrintLayoutRegion, type PrintLayoutQuestion } from './batch-print-layout.js';
+export * from './batch-print-variants.js';

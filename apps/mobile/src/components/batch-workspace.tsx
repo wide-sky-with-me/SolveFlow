@@ -14,6 +14,7 @@ import { CaptureFlow, addBatchPhoto, saveBatchPhoto } from './batch-capture';
 import { BatchImport } from './batch-import';
 import { BatchName } from './batch-name';
 import { BatchEditor } from './batch-editor';
+import { BatchPdfExport, batchPdfAvailable } from './batch-pdf-export';
 import { DialogSurface } from './dialog-surface';
 import { QuestionPager } from './question-pager';
 import { BatchQuestion } from './batch-question';
@@ -27,6 +28,7 @@ export function BatchWorkspace({ runtime, batch, available, active = true, jumpG
   const [camera, setCamera] = useState(false); const [busy, setBusy] = useState(false); const [queueBusy, setQueueBusy] = useState(runtime.batch.busy); const [error, setError] = useState('');
   const [importPhotos, setImportPhotos] = useState<ImportPhoto[] | null>(null);
   const [review, setReview] = useState(false); const [discard, setDiscard] = useState(false);
+  const [pdfExport, setPdfExport] = useState(false);
   useEffect(() => { if (!active) setImportPhotos(null); }, [active]);
   const [queueMessage, setQueueMessage] = useState(runtime.batch.message);
   const saving = useRef(false); const selecting = useRef(false); const alive = useRef(true); const revision = useRef(0);
@@ -125,6 +127,7 @@ export function BatchWorkspace({ runtime, batch, available, active = true, jumpG
                   <Button title="继续拍摄" disabled={busy || pages.length >= MAX_BATCH_PHOTOS} onPress={() => { setActions(false); setCamera(true); }} />
                   <Button title="添加相册题图" secondary disabled={busy || pages.length >= MAX_BATCH_PHOTOS} onPress={() => { setActions(false); void gallery(); }} />
                   <Button title="调整批次图片" secondary disabled={busy || !pages.length} onPress={() => { setActions(false); setReview(true); }} />
+                  {batchPdfAvailable && <Button title="导出本批 PDF" secondary disabled={busy || queueBusy || !pages.length || runtime.engine.actives.length > 0} onPress={() => { setActions(false); setPdfExport(true); }} />}
                   <Button title="继续待解题" secondary disabled={busy || !pages.length} onPress={() => { setActions(false); void resume(); }} />
                   <Button title="重试未完成" secondary disabled={busy || !pages.length} onPress={() => { setActions(false); void resume(true); }} />
                   {queueBusy && (
@@ -143,6 +146,7 @@ export function BatchWorkspace({ runtime, batch, available, active = true, jumpG
     {camera && <CaptureFlow runtime={runtime} initialBatch={{ id: batch.id, createdAt: batch.createdAt, exam: batch.exam, title }} onPhoto={() => {}} onGallery={() => {}} onClose={() => { setCamera(false); void refresh(); }} />}
     {rename && <BatchName title={title} onClose={() => setRename(false)} onSave={async value => { await runtime.repository.renameBatch(batch.id, value); setTitle(value); await refresh(); }} />}
     {review && <BatchEditor runtime={runtime} batchId={batch.id} onClose={() => setReview(false)} onApplied={() => void refresh()} />}
+    {pdfExport && <BatchPdfExport runtime={runtime} batchId={batch.id} onClose={() => setPdfExport(false)} />}
     {discard && <Modal transparent animationType="fade" onRequestClose={() => { if (!busy) setDiscard(false); }}><DialogSurface>
       <Text style={s.title}>放弃整个批次？</Text><Text style={s.subtitle}>本批 {pages.length} 张题图及解答将永久删除，本批任务会停止。其他批次和单题保留。</Text>
       {!!error && <Notice text={error} error />}
