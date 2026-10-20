@@ -2,7 +2,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 const storage = vi.hoisted(() => ({ open: vi.fn(), expired: vi.fn() }));
 vi.mock('expo/fetch', () => ({ fetch: vi.fn() }));
 vi.mock('expo-crypto', () => ({ randomUUID: vi.fn() }));
-vi.mock('@solveflow/agent/mobile', () => ({ solveOnDevice: vi.fn() }));
+vi.mock('@solveflow/agent/mobile', () => ({ solveOnDevice: vi.fn(), analyzeBatchPrintQuestion: vi.fn() }));
 vi.mock('./local/documents', () => ({ openDocuments: storage.open }));
 vi.mock('./local/secrets', () => ({ readKey: vi.fn(), writeKey: vi.fn() }));
 vi.mock('./local/lock', () => ({ lockLocalApp: vi.fn() }));
@@ -19,6 +19,25 @@ it('retries runtime initialization after storage failure and shares one successf
   const runtime = await retry;
   expect(await createRuntime()).toBe(runtime); expect(storage.open).toHaveBeenCalledTimes(2);
   expect(storage.expired).toHaveBeenCalledOnce();
+});
+
+it('holds model configuration during print-image analysis and releases the lock on cancellation without writing question data', async () => {
+  const { runtime, data, settings } = await configuredRuntime(); const before = [...data]; const adapter = await import('@solveflow/agent/mobile');
+  let entered = false;
+  vi.mocked(adapter.analyzeBatchPrintQuestion).mockImplementation(async (_input, _settings, _credentials, _fetch, signal) => {
+    entered = true; await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('CANCELLED')), { once: true })); throw new Error('unreachable');
+  });
+  const controller = new AbortController();
+  const operation = expect(runtime.analyzePrintLayout({ questions: [{ key: 'one', problem: { text: 'Synthetic text.', subject: 'math', uncertainties: [] } }], sources: [{ id: '94000000-0000-4000-8000-000000000001', image: 'data:image/jpeg;base64,AQID' }] }, controller.signal)).rejects.toThrow('取消');
+  await expect.poll(() => entered).toBe(true);
+  try {
+    await expect(runtime.saveSettings(settings, { solver: 'synthetic-old', verifier: null })).rejects.toThrow('等待解题结束');
+    await expect(runtime.saveDefaultExam('act')).rejects.toThrow('结束当前解题');
+    await expect(runtime.enqueueBatch('not-dispatched')).rejects.toThrow('正在识别导出题目');
+    await expect(runtime.clearKeys()).rejects.toThrow('结束当前解题');
+  } finally { controller.abort(); await operation; }
+  expect([...data]).toEqual(before);
+  await runtime.saveSettings(settings, { solver: 'synthetic-old', verifier: null });
 });
 
 const profile = { provider: 'fixture', baseURL: 'https://fixture.invalid/v1', model: 'fixture', api: 'openai-completions' as const, contextWindow: 32768, maxTokens: 8192, maxTokensField: 'max_tokens' as const };

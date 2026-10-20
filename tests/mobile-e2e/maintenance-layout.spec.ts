@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { configureLocalModel } from './local-fixture.js';
+import { LocalHistorySummarySchema } from '../../packages/contracts/src/local.js';
 test.use({ reducedMotion: 'reduce' });
 test('legacy errors stay readable and genuine damage has compact aligned maintenance actions', async ({ page }, info) => {
   let modelRequests = 0;
@@ -43,8 +44,21 @@ test('legacy errors stay readable and genuine damage has compact aligned mainten
   await page.getByRole('tab', { name: '跳转第3题', exact: true }).click(); await expect(page.getByLabel('批量待解题原图', { exact: true })).toBeVisible();
   const after = await page.evaluate(async entries => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => { const r = indexedDB.open('solveflow-local', 1); r.onsuccess = () => resolve(r.result); r.onerror = reject; });
-    const actual = await Promise.all(entries.map(([key]) => new Promise<[string, unknown]>((resolve, reject) => { const r = db.transaction('documents', 'readonly').objectStore('documents').get(key!); r.onsuccess = () => resolve([key!, r.result]); r.onerror = reject; })));
+    const keys = [...entries.map(([key]) => key), 'image.79000000-0000-4000-8000-000000000002'];
+    const actual = await Promise.all(keys.map(key => new Promise<[string, unknown]>((resolve, reject) => { const r = db.transaction('documents', 'readonly').objectStore('documents').get(key); r.onsuccess = () => resolve([key, r.result]); r.onerror = reject; })));
     db.close(); return actual;
   }, before);
-  expect(after).toEqual(before); expect(modelRequests).toBe(0);
+  // Summaries are derived caches: old entries gain only the explicit answer state.
+  expect(after.filter(([key]) => !key.startsWith('summary.') && key !== 'image.79000000-0000-4000-8000-000000000002')).toEqual(before.filter(([key]) => !key.startsWith('summary.')));
+  expect(after.find(([key]) => key === 'image.79000000-0000-4000-8000-000000000002')).toEqual(['image.79000000-0000-4000-8000-000000000002', undefined]);
+  const summaries = after.filter(([key]) => key.startsWith('summary.'));
+  expect(summaries).toHaveLength(3);
+  for (const [key, raw] of summaries) {
+    expect(typeof raw).toBe('string'); if (typeof raw !== 'string') throw new Error('MISSING_SUMMARY');
+    const previous = before.find(([originalKey]) => originalKey === key); if (!previous) throw new Error('MISSING_ORIGINAL_SUMMARY');
+    const legacy = LocalHistorySummarySchema.parse(JSON.parse(previous[1]));
+    expect(legacy.answerState).toBeUndefined();
+    expect(LocalHistorySummarySchema.parse(JSON.parse(raw))).toEqual({ ...legacy, answerState: legacy.batch?.position === 1 ? 'failed' : 'unanswered' });
+  }
+  await expect(notice).toContainText('1 处本地记录需要处理'); expect(modelRequests).toBe(0);
 });

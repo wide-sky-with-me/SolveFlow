@@ -1,0 +1,552 @@
+import { describe, expect, it, vi } from 'vitest';
+import { ExportTaskSchema, MAX_EXPORT_TASK_RECORDS, type ExportTask, type ExportTaskMetadata } from '@solveflow/contracts/local';
+import { ExportTaskFailure, LocalExportTasks, type ExportArtifact, type ExportTaskSnapshot, type LocalExportTaskStore } from './local-export-tasks.js';
+
+function id(value: number): string { return `00000000-0000-4000-8000-${value.toString(16).padStart(12, '0')}`; }
+const metadata: ExportTaskMetadata = { batchId: id(1), title: 'Synthetic export', mode: 'answers', layout: 'saved', copies: 1, questionCount: 2 };
+const artifact: ExportArtifact = { name: 'export.pdf', mimeType: 'application/pdf', data: new Uint8Array([1, 2, 3]) };
+const time = '2026-10-14T00:00:00.000Z';
+function task(value: number, patch: Partial<ExportTask> = {}): ExportTask {
+  return ExportTaskSchema.parse({ ...metadata, parentId: null, schemaVersion: 1, id: id(value), createdAt: time, startedAt: null, finishedAt: null, status: 'queued', progress: '', error: null, file: null, ...patch });
+}
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+interface Hooks {
+  beforeSave?: (value: ExportTask) => Promise<void>;
+  afterSave?: (value: ExportTask) => Promise<void>;
+  beforeFile?: (key: string, value: ExportArtifact) => Promise<void>;
+  afterFile?: (key: string, value: ExportArtifact) => Promise<void>;
+  beforeRemoveFile?: (key: string) => Promise<void>;
+  beforeRemove?: (key: string) => Promise<void>;
+}
+function setup(initial: ExportTask[] = [], now: () => Date = () => new Date(time)) {
+  const records = new Map(initial.map(value => [value.id, value]));
+  const files = new Map<string, ExportArtifact>();
+  const hooks: Hooks = {};
+  const events: string[] = [];
+  const store: LocalExportTaskStore = {
+    list: vi.fn(async () => [...records.values()]),
+    async save(value) {
+      await hooks.beforeSave?.(value); records.set(value.id, structuredClone(value)); events.push(`save:${value.status}`); await hooks.afterSave?.(value);
+    },
+    async remove(key) { await hooks.beforeRemoveFile?.(key); await hooks.beforeRemove?.(key); records.delete(key); files.delete(key); events.push('remove'); },
+    writeFile: vi.fn(async (key, value) => {
+      await hooks.beforeFile?.(key, value); files.set(key, { ...value, data: value.data.slice() }); events.push('file'); await hooks.afterFile?.(key, value);
+    }),
+    readFile: vi.fn(async key => files.get(key) ?? null),
+    async removeFile(key) { await hooks.beforeRemoveFile?.(key); files.delete(key); events.push('removeFile'); },
+  };
+  let sequence = 1000;
+  const settled: ExportTaskSnapshot[] = [];
+  const queue = new LocalExportTasks({ store, uuid: () => id(sequence++), now, onSettled: value => { settled.push(value); events.push(`notify:${value.status}`); } });
+  return { queue, store, records, files, hooks, settled, events };
+}
+function status(queue: LocalExportTasks, key: string) { return queue.getSnapshot().find(value => value.id === key)?.status; }
+
+describe('local export queue', () => {
+  it('skips admission entirely when the caller already cancelled', async () => {
+    const { queue, events } = setup(); await queue.initialize(); const controller = new AbortController(); const reason = new Error('USER_CANCELLED');
+    controller.abort(reason); const runner = vi.fn(async () => artifact);
+    await expect(queue.enqueue(metadata, runner, controller.signal)).rejects.toBe(reason);
+    expect(events).toEqual([]); expect(queue.getSnapshot()).toHaveLength(0); expect(runner).not.toHaveBeenCalled();
+  });
+
+  it.each(['beforeSave', 'afterSave'] as const)('owns cancellation while the first queued write is held at %s', async hook => {
+    const { queue, hooks, records, files, events, settled } = setup(); await queue.initialize();
+    const entered = deferred<void>(); const release = deferred<void>(); const controller = new AbortController(); const reason = new Error('USER_CANCELLED');
+    hooks[hook] = async value => { if (value.status === 'queued') { entered.resolve(); await release.promise; } };
+    const runner = vi.fn(async () => artifact); let finished = false;
+    const outcome = queue.enqueue(metadata, runner, controller.signal).then(() => null, error => error).finally(() => { finished = true; });
+    await entered.promise; controller.abort(reason); await Promise.resolve(); await Promise.resolve();
+    expect(finished).toBe(false); expect(runner).not.toHaveBeenCalled(); expect(queue.getSnapshot()).toHaveLength(0);
+    release.resolve(); expect(await outcome).toBe(reason); await queue.waitForIdle();
+    expect([...records.values()].map(value => value.status)).toEqual(['cancelled']); expect(files.size).toBe(0);
+    expect(events).not.toContain('save:running'); expect(runner).not.toHaveBeenCalled(); expect(settled.map(value => value.status)).toEqual(['cancelled']);
+    delete hooks[hook]; const next = await queue.enqueue(metadata, runner); await queue.waitForIdle();
+    expect(status(queue, next.id)).toBe('succeeded'); expect(runner).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks cancellation again after waiting for the I/O lock without releasing it early', async () => {
+    const { queue, hooks, records } = setup(); await queue.initialize(); const entered = deferred<void>(); const release = deferred<void>();
+    hooks.beforeSave = async value => { if (value.status === 'queued') { entered.resolve(); await release.promise; } };
+    const first = queue.enqueue(metadata, async () => artifact); await entered.promise;
+    const controller = new AbortController(); const reason = new Error('LOCK_WAIT_CANCELLED'); const runner = vi.fn(async () => artifact);
+    const outcome = queue.enqueue(metadata, runner, controller.signal).then(() => null, error => error); controller.abort(reason);
+    expect(records.size).toBe(0); release.resolve(); await first; expect(await outcome).toBe(reason); await queue.waitForIdle();
+    expect(records.size).toBe(1); expect(runner).not.toHaveBeenCalled();
+  });
+
+  it.each(['beforeSave', 'afterSave'] as const)('retains cancelled metadata when the initial write fails at %s, then retries only storage', async hook => {
+    const { queue, hooks, records, files, settled } = setup(); await queue.initialize();
+    const entered = deferred<void>(); const release = deferred<void>(); const controller = new AbortController(); const reason = new Error('USER_CANCELLED');
+    hooks[hook] = async value => { if (value.status === 'queued') { entered.resolve(); await release.promise; throw new Error('PRIVATE_STORAGE_FAILURE'); } };
+    const runner = vi.fn(async () => artifact); const outcome = queue.enqueue(metadata, runner, controller.signal).then(() => null, error => error);
+    await entered.promise; controller.abort(reason); release.resolve(); expect(await outcome).toBe(reason); await queue.waitForIdle();
+    const key = queue.pendingSaveIds[0]; if (!key) throw new Error('PENDING_CANCEL_MISSING');
+    expect(status(queue, key)).toBe('cancelled'); expect(queue.storageBlocked).toBe(true); expect(runner).not.toHaveBeenCalled(); expect(settled).toEqual([]);
+    delete hooks[hook]; await queue.retrySave(key); await queue.waitForIdle();
+    expect(records.get(key)?.status).toBe('cancelled'); expect(files.size).toBe(0); expect(queue.storageBlocked).toBe(false); expect(runner).not.toHaveBeenCalled();
+  });
+
+  it.each(['beforeSave', 'afterSave'] as const)('retains cancellation when the compensating terminal write fails at %s', async hook => {
+    const { queue, hooks, records, files, settled } = setup(); await queue.initialize();
+    const entered = deferred<void>(); const release = deferred<void>(); const controller = new AbortController(); const reason = new Error('USER_CANCELLED');
+    hooks.beforeSave = async value => { if (value.status === 'queued') { entered.resolve(); await release.promise; } };
+    const first = hooks[hook]; hooks[hook] = async value => { await first?.(value); if (value.status === 'cancelled') throw new Error('CANCEL_SAVE_FAILED'); };
+    const runner = vi.fn(async () => artifact); const outcome = queue.enqueue(metadata, runner, controller.signal).then(() => null, error => error);
+    await entered.promise; controller.abort(reason); release.resolve(); expect(await outcome).toBe(reason); await queue.waitForIdle();
+    const key = queue.pendingSaveIds[0]; if (!key) throw new Error('PENDING_CANCEL_MISSING');
+    expect(status(queue, key)).toBe('cancelled'); expect(runner).not.toHaveBeenCalled(); expect(settled).toEqual([]);
+    delete hooks.beforeSave; delete hooks.afterSave; await queue.retrySave(key);
+    expect(records.get(key)?.status).toBe('cancelled'); expect(files.size).toBe(0); expect(queue.storageBlocked).toBe(false); expect(runner).not.toHaveBeenCalled();
+    expect(settled.map(value => value.status)).toEqual(['cancelled']);
+  });
+
+  it.each(['synchronous', 'microtask'])('honours %s cancellation during queued publication before pumping', async phase => {
+    const { queue, records, files } = setup(); await queue.initialize(); const controller = new AbortController(); const reason = new Error('PUBLICATION_CANCELLED');
+    queue.subscribe(() => { if (queue.getSnapshot().some(value => value.status === 'queued')) { if (phase === 'synchronous') controller.abort(reason); else queueMicrotask(() => controller.abort(reason)); } });
+    const runner = vi.fn(async () => artifact); const outcome = queue.enqueue(metadata, runner, controller.signal).then(() => null, error => error);
+    expect(await outcome).toBe(reason); await queue.waitForIdle(); expect(runner).not.toHaveBeenCalled();
+    expect([...records.values()].map(value => value.status)).toEqual(['cancelled']); expect(files.size).toBe(0);
+  });
+
+  it('preserves late cancellation while interrupting other waiting work after an initial write fails', async () => {
+    const { queue, hooks, records } = setup(); await queue.initialize(); const active = deferred<ExportArtifact>();
+    await queue.enqueue(metadata, async () => active.promise); const waitingRunner = vi.fn(async () => artifact); const waiting = await queue.enqueue(metadata, waitingRunner);
+    const entered = deferred<void>(); const release = deferred<void>(); const controller = new AbortController(); const reason = new Error('LATE_CANCELLED');
+    hooks.beforeSave = async value => { if (value.status === 'queued') throw new Error('INITIAL_SAVE_FAILED'); if (value.id === waiting.id && value.status === 'interrupted') { entered.resolve(); await release.promise; } };
+    const runner = vi.fn(async () => artifact); const outcome = queue.enqueue(metadata, runner, controller.signal).then(() => null, error => error);
+    await entered.promise; controller.abort(reason); release.resolve(); expect(await outcome).toBe(reason);
+    const key = queue.pendingSaveIds[0]; if (!key) throw new Error('PENDING_CANCEL_MISSING'); expect(status(queue, key)).toBe('cancelled');
+    delete hooks.beforeSave; active.resolve(artifact); await queue.waitForIdle(); await queue.retrySave(key);
+    expect(records.get(key)?.status).toBe('cancelled'); expect(runner).not.toHaveBeenCalled(); expect(waitingRunner).not.toHaveBeenCalled();
+  });
+
+  it('keeps the optional signal scoped to admission, not an accepted execution lifetime', async () => {
+    const { queue } = setup(); await queue.initialize(); const controller = new AbortController(); const entered = deferred<AbortSignal>(); const release = deferred<ExportArtifact>();
+    const accepted = await queue.enqueue(metadata, async signal => { entered.resolve(signal); return release.promise; }, controller.signal);
+    const executionSignal = await entered.promise; controller.abort(new Error('AFTER_ACCEPTANCE'));
+    expect(executionSignal.aborted).toBe(false); release.resolve(artifact); await queue.waitForIdle(); expect(status(queue, accepted.id)).toBe('succeeded');
+  });
+
+  it('cancels only the admitting task without interrupting unrelated active or queued work', async () => {
+    const { queue, hooks } = setup(); await queue.initialize(); const active = deferred<ExportArtifact>();
+    const first = await queue.enqueue(metadata, async () => active.promise); const waitingRunner = vi.fn(async () => artifact); const waiting = await queue.enqueue(metadata, waitingRunner);
+    const entered = deferred<void>(); const release = deferred<void>(); const controller = new AbortController(); const reason = new Error('ONLY_THIS_ADMISSION');
+    hooks.beforeSave = async value => { if (value.status === 'queued') { entered.resolve(); await release.promise; } };
+    const cancelledRunner = vi.fn(async () => artifact); const outcome = queue.enqueue(metadata, cancelledRunner, controller.signal).then(() => null, error => error);
+    await entered.promise; controller.abort(reason); release.resolve(); expect(await outcome).toBe(reason);
+    expect(status(queue, first.id)).toBe('running'); expect(status(queue, waiting.id)).toBe('queued'); expect(waitingRunner).not.toHaveBeenCalled();
+    delete hooks.beforeSave; active.resolve(artifact); await queue.waitForIdle(); expect(status(queue, waiting.id)).toBe('succeeded');
+    expect(waitingRunner).toHaveBeenCalledTimes(1); expect(cancelledRunner).not.toHaveBeenCalled();
+  });
+
+  it.each(['synchronous', 'microtask'])('does not dispatch a runner cancelled by %s running publication', async phase => {
+    const { queue, records, files, settled, events } = setup(); await queue.initialize(); let cancellation: Promise<void> | undefined; let requested = false;
+    queue.subscribe(() => { const running = queue.getSnapshot().find(value => value.status === 'running'); if (running && !requested) { requested = true; const cancel = () => { cancellation = queue.cancel(running.id); }; if (phase === 'synchronous') cancel(); else queueMicrotask(cancel); } });
+    const runner = vi.fn(async () => artifact); const timeout = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const accepted = await queue.enqueue(metadata, runner); await queue.waitForIdle(); await cancellation;
+      expect(requested).toBe(true); expect(runner).not.toHaveBeenCalled(); expect(timeout).not.toHaveBeenCalled();
+      expect(records.get(accepted.id)?.status).toBe('cancelled'); expect(files.size).toBe(0); expect(events).not.toContain('file'); expect(settled.map(value => value.status)).toEqual(['cancelled']);
+      const next = await queue.enqueue(metadata, runner); await queue.waitForIdle(); expect(status(queue, next.id)).toBe('succeeded'); expect(runner).toHaveBeenCalledTimes(1);
+    } finally { timeout.mockRestore(); }
+  });
+
+  it.each(['synchronous', 'microtask'].flatMap(phase => (['beforeSave', 'afterSave'] as const).map(hook => ({ phase, hook }))))('keeps $phase pre-dispatch cancellation through a failed $hook terminal write', async ({ phase, hook }) => {
+    let tick = 0; const { queue, hooks, records, files, settled } = setup([], () => new Date(Date.parse(time) + tick++)); await queue.initialize(); const entered = deferred<void>(); const release = deferred<void>(); const attempts: ExportTask[] = [];
+    hooks[hook] = async value => { if (value.status === 'cancelled') { attempts.push(structuredClone(value)); entered.resolve(); await release.promise; throw new Error('CANCEL_STORAGE_FAILURE'); } };
+    let requested = false; let cancellation: Promise<void> | undefined;
+    queue.subscribe(() => { const running = queue.getSnapshot().find(value => value.status === 'running'); if (running && !requested) { requested = true; const cancel = () => { cancellation = queue.cancel(running.id); }; if (phase === 'synchronous') cancel(); else queueMicrotask(cancel); } });
+    const runner = vi.fn(async () => artifact); const accepted = await queue.enqueue(metadata, runner);
+    await entered.promise; const duringWrite = { calls: runner.mock.calls.length, files: files.size, notifications: settled.length };
+    release.resolve(); await cancellation; await queue.waitForIdle(); expect(duringWrite).toEqual({ calls: 0, files: 0, notifications: 0 }); expect(status(queue, accepted.id)).toBe('cancelled'); expect(queue.pendingSaveIds).toEqual([accepted.id]); expect(runner).not.toHaveBeenCalled();
+    const attempted = attempts[0]; if (!attempted) throw new Error('CANCEL_ATTEMPT_MISSING');
+    delete hooks[hook]; await queue.retrySave(accepted.id); expect(records.get(accepted.id)).toEqual(attempted); expect(queue.storageBlocked).toBe(false); expect(runner).not.toHaveBeenCalled(); expect(settled).toEqual([attempted]);
+  });
+
+  it.each(['synchronous', 'microtask'])('skips a promoted runner cancelled by %s publication while the queue continues', async phase => {
+    const { queue, files } = setup(); await queue.initialize(); const active = deferred<ExportArtifact>(); const first = await queue.enqueue(metadata, async () => active.promise);
+    const runner = vi.fn(async () => artifact); const waiting = await queue.enqueue(metadata, runner); let requested = false; let cancellation: Promise<void> | undefined;
+    queue.subscribe(() => { if (status(queue, waiting.id) === 'running' && !requested) { requested = true; const cancel = () => { cancellation = queue.cancel(waiting.id); }; if (phase === 'synchronous') cancel(); else queueMicrotask(cancel); } });
+    active.resolve(artifact); await queue.waitForIdle(); await cancellation; expect(requested).toBe(true); expect(runner).not.toHaveBeenCalled();
+    expect(status(queue, first.id)).toBe('succeeded'); expect(status(queue, waiting.id)).toBe('cancelled'); expect(files.has(waiting.id)).toBe(false);
+    const next = await queue.enqueue(metadata, runner); await queue.waitForIdle(); expect(status(queue, next.id)).toBe('succeeded'); expect(runner).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['synchronous', 'microtask'].flatMap(phase => [false, true].map(storageFault => ({ phase, storageFault }))))('owns $phase promoted cancellation until its write settles (fault: $storageFault)', async ({ phase, storageFault }) => {
+    const { queue, hooks, records } = setup(); await queue.initialize(); const active = deferred<ExportArtifact>(); const first = await queue.enqueue(metadata, async () => active.promise);
+    const runner = vi.fn(async () => artifact); const waiting = await queue.enqueue(metadata, runner); const successor = vi.fn(async () => artifact); const next = await queue.enqueue(metadata, successor);
+    const entered = deferred<void>(); const release = deferred<void>(); let requested = false; let cancellation: Promise<void> | undefined; let idle = false;
+    hooks.beforeSave = async value => { if (value.id === waiting.id && value.status === 'cancelled') { entered.resolve(); await release.promise; if (storageFault) throw new Error('CANCEL_SAVE_FAILURE'); } };
+    queue.subscribe(() => { if (status(queue, waiting.id) === 'running' && !requested) { requested = true; const cancel = () => { cancellation = queue.cancel(waiting.id); }; if (phase === 'synchronous') cancel(); else queueMicrotask(cancel); } });
+    const done = queue.waitForIdle().then(() => { idle = true; }); active.resolve(artifact); await entered.promise;
+    const duringWrite = { idle, successor: status(queue, next.id), calls: successor.mock.calls.length, cancelledCalls: runner.mock.calls.length };
+    release.resolve(); await cancellation; await done; expect(duringWrite).toEqual({ idle: false, successor: 'queued', calls: 0, cancelledCalls: 0 }); expect(status(queue, first.id)).toBe('succeeded');
+    expect(status(queue, waiting.id)).toBe('cancelled'); expect(status(queue, next.id)).toBe(storageFault ? 'interrupted' : 'succeeded'); expect(successor).toHaveBeenCalledTimes(storageFault ? 0 : 1);
+    if (storageFault) { expect(queue.pendingSaveIds).toEqual([waiting.id]); delete hooks.beforeSave; await queue.retrySave(waiting.id); expect(records.get(waiting.id)?.status).toBe('cancelled'); expect(successor).not.toHaveBeenCalled(); }
+    expect(queue.storageBlocked).toBe(false); expect(runner).not.toHaveBeenCalled();
+  });
+
+  it.each(['beforeSave', 'afterSave'] as const)('preserves an advancing-clock timeout terminal across a failed %s acknowledgement', async hook => {
+    vi.useFakeTimers(); const { store, hooks, records, files, settled } = setup(); let tick = 0; const gate = deferred<ExportArtifact>(); const attempts: ExportTask[] = [];
+    const queue = new LocalExportTasks({ store, uuid: () => id(1000), now: () => new Date(Date.parse(time) + tick++), timeoutMs: 10, onSettled: value => settled.push(value) });
+    try {
+      await queue.initialize(); hooks[hook] = async value => { if (value.status === 'failed') { attempts.push(structuredClone(value)); throw new Error('TIMEOUT_SAVE_FAILURE'); } };
+      const runner = vi.fn(async () => gate.promise); const accepted = await queue.enqueue(metadata, runner); await vi.advanceTimersByTimeAsync(10);
+      expect(status(queue, accepted.id)).toBe('failed'); expect(queue.pendingSaveIds).toEqual([accepted.id]); expect(files.size).toBe(0); expect(settled).toEqual([]);
+      const attempted = attempts[0]; if (!attempted) throw new Error('TIMEOUT_ATTEMPT_MISSING'); delete hooks[hook]; await queue.retrySave(accepted.id);
+      expect(records.get(accepted.id)).toEqual(attempted); expect(settled).toEqual([attempted]); expect(queue.storageBlocked).toBe(false); expect(runner).toHaveBeenCalledTimes(1);
+    } finally { gate.resolve(artifact); await queue.waitForIdle(); vi.useRealTimers(); }
+  });
+
+  it('requires initialization and accepts no runner for persisted history', async () => {
+    const { queue } = setup();
+    await expect(queue.enqueue(metadata, async () => artifact)).rejects.toThrow('初始化');
+    await expect(queue.cancel(id(5))).rejects.toThrow('初始化');
+    await expect(queue.readFile(id(5))).rejects.toThrow('初始化');
+  });
+
+  it.each(['第2题尚待整理，请查看原图。', '', 'x'.repeat(501)])('bounds explicitly classified validation messages without leaving the task running (%s)', async message => {
+    const { queue } = setup(); await queue.initialize();
+    const accepted = await queue.enqueue(metadata, async () => { throw new ExportTaskFailure(message); }); await queue.waitForIdle();
+    const result = queue.getSnapshot().find(item => item.id === accepted.id);
+    expect(result?.status).toBe('failed'); expect(result?.error).toBe(message && message.length <= 500 ? message : '导出失败，请检查内容后重新提交。');
+  });
+
+  it('preserves both the successful record and its file if atomic deletion fails', async () => {
+    const { queue, hooks, records, files } = setup(); await queue.initialize();
+    const accepted = await queue.enqueue(metadata, async () => artifact); await queue.waitForIdle();
+    hooks.beforeRemove = async () => { throw new Error('DELETE_FAILED'); };
+    await expect(queue.remove(accepted.id)).rejects.toThrow('DELETE_FAILED');
+    expect(records.get(accepted.id)?.status).toBe('succeeded'); expect(files.get(accepted.id)).toEqual(artifact);
+    expect(await queue.readFile(accepted.id)).toEqual(artifact); expect(status(queue, accepted.id)).toBe('succeeded');
+  });
+
+  it('recovers queued and running as interrupted, preserves all terminal records and never loads history files', async () => {
+    const initial = [task(2), task(3, { status: 'running', startedAt: time }), task(4, { status: 'succeeded', startedAt: time, finishedAt: time, file: { name: artifact.name, mimeType: artifact.mimeType, bytes: 3 } }), task(5, { status: 'failed', finishedAt: time, error: 'Failed' }), task(6, { status: 'cancelled', finishedAt: time })];
+    const { queue, store, records, files, settled } = setup(initial);
+    files.set(id(3), artifact); files.set(id(4), artifact);
+    await Promise.all([queue.initialize(), queue.initialize()]); await queue.initialize(); await queue.waitForIdle();
+    expect(store.list).toHaveBeenCalledTimes(1); expect(store.readFile).not.toHaveBeenCalled();
+    expect(status(queue, id(2))).toBe('interrupted'); expect(status(queue, id(3))).toBe('interrupted');
+    expect(records.get(id(4))).toEqual(initial[2]); expect(records.get(id(5))).toEqual(initial[3]); expect(records.get(id(6))).toEqual(initial[4]);
+    expect(files.has(id(3))).toBe(false); expect(files.has(id(4))).toBe(true); expect(settled).toEqual([]);
+    await expect(queue.retrySave(id(3))).rejects.toThrow('没有待保存');
+  });
+
+  it('preserves corrupt records instead of repairing or deleting them', async () => {
+    const { queue, store, records } = setup([task(2)]);
+    store.list = async () => [task(2), { ...task(3), secret: 'untrusted' }];
+    await expect(queue.initialize()).rejects.toThrow();
+    expect(records.get(id(2))?.status).toBe('queued'); expect(queue.getSnapshot()).toHaveLength(0);
+  });
+
+  it('recovers an initialization I/O failure through save-only retry without notifications', async () => {
+    const { queue, hooks, records, settled } = setup([task(2, { status: 'running', startedAt: time })]);
+    hooks.beforeSave = async () => { throw new Error('disk full with private details'); };
+    await expect(queue.initialize()).rejects.toThrow('保存');
+    expect(status(queue, id(2))).toBe('interrupted'); expect(queue.pendingSaveIds).toEqual([id(2)]);
+    await expect(queue.enqueue(metadata, async () => artifact)).rejects.toThrow('保存');
+    delete hooks.beforeSave; await queue.retrySave(id(2));
+    expect(records.get(id(2))?.status).toBe('interrupted'); expect(queue.storageBlocked).toBe(false); expect(settled).toHaveLength(0);
+  });
+
+  it('serializes execution and notifies only after file and success metadata are durable', async () => {
+    const { queue, files, records, events } = setup(); await queue.initialize();
+    const gate = deferred<ExportArtifact>(); const second = vi.fn(async () => artifact); const observer = vi.fn((value: ExportTaskSnapshot) => {
+      expect(records.get(value.id)?.status).toBe('succeeded'); expect(files.has(value.id)).toBe(true);
+    });
+    queue.onSettled(observer);
+    const firstTask = await queue.enqueue(metadata, async (_signal, progress) => { progress('Rendering'); return gate.promise; });
+    const secondTask = await queue.enqueue(metadata, second);
+    await expect.poll(() => queue.getSnapshot().find(value => value.id === firstTask.id)?.progress).toBe('Rendering');
+    expect(second).not.toHaveBeenCalled(); expect(status(queue, secondTask.id)).toBe('queued');
+    gate.resolve(artifact); await queue.waitForIdle();
+    expect(second).toHaveBeenCalledTimes(1); expect(observer).toHaveBeenCalledTimes(2);
+    expect(events.slice(events.indexOf('file'), events.indexOf('file') + 3)).toEqual(['file', 'save:succeeded', 'notify:succeeded']);
+    expect(await queue.readFile(firstTask.id)).toEqual(artifact);
+  });
+
+  it('publishes stable, deeply immutable snapshots and supports unsubscribe', async () => {
+    const { queue } = setup(); await queue.initialize();
+    const empty = queue.getSnapshot(); expect(queue.getSnapshot()).toBe(empty);
+    const observer = vi.fn(); const unsubscribe = queue.subscribe(observer);
+    const accepted = await queue.enqueue(metadata, async () => artifact); await queue.waitForIdle();
+    const current = queue.getSnapshot(); const row = current.find(value => value.id === accepted.id)!;
+    expect(current).not.toBe(empty); expect(empty).toHaveLength(0);
+    expect(Object.isFrozen(current)).toBe(true); expect(Object.isFrozen(row)).toBe(true); expect(Object.isFrozen(row.file)).toBe(true);
+    expect(() => Object.assign(row, { status: 'running' })).toThrow(); expect(() => Object.assign(row.file!, { bytes: 10 })).toThrow();
+    unsubscribe(); const count = observer.mock.calls.length; await queue.remove(row.id); expect(observer).toHaveBeenCalledTimes(count);
+  });
+
+  it('bounds queued runners at three even during simultaneous enqueues', async () => {
+    const { queue } = setup(); await queue.initialize(); const gate = deferred<ExportArtifact>();
+    const first = await queue.enqueue(metadata, async () => gate.promise);
+    const results = await Promise.allSettled(Array.from({ length: 4 }, () => queue.enqueue(metadata, async () => artifact)));
+    expect(results.filter(value => value.status === 'fulfilled')).toHaveLength(3);
+    expect(results.filter(value => value.status === 'rejected')).toHaveLength(1);
+    expect(queue.getSnapshot()).toHaveLength(4);
+    gate.resolve(artifact); await queue.waitForIdle(); expect(status(queue, first.id)).toBe('succeeded');
+  });
+
+  it('cancels queued tasks repeatedly without running them or duplicating notifications', async () => {
+    const { queue, settled } = setup(); await queue.initialize(); const gate = deferred<ExportArtifact>();
+    await queue.enqueue(metadata, async () => gate.promise); const runner = vi.fn(async () => artifact);
+    const waiting = await queue.enqueue(metadata, runner);
+    await Promise.all([queue.cancel(waiting.id), queue.cancel(waiting.id)]); await queue.cancel(waiting.id);
+    expect(status(queue, waiting.id)).toBe('cancelled'); expect(runner).not.toHaveBeenCalled();
+    expect(settled.filter(value => value.id === waiting.id)).toHaveLength(1);
+    gate.resolve(artifact); await queue.waitForIdle(); expect(runner).not.toHaveBeenCalled();
+  });
+
+  it('keeps the execution slot until an aborted runner settles and suppresses late progress and output', async () => {
+    const { queue, files, settled, store } = setup(); await queue.initialize(); const gate = deferred<ExportArtifact>();
+    let signal: AbortSignal | undefined; let progress = (_value: string) => {};
+    const first = await queue.enqueue(metadata, async (value, update) => { signal = value; progress = update; return gate.promise; });
+    await expect.poll(() => signal !== undefined).toBe(true);
+    const second = vi.fn(async () => artifact); await queue.enqueue(metadata, second);
+    await queue.cancel(first.id); await queue.cancel(first.id); progress('late update');
+    expect(signal?.aborted).toBe(true); expect(second).not.toHaveBeenCalled(); expect(status(queue, first.id)).toBe('cancelled');
+    gate.resolve(artifact); await queue.waitForIdle();
+    expect(files.has(first.id)).toBe(false); expect(store.writeFile).toHaveBeenCalledTimes(1);
+    expect(settled.filter(value => value.id === first.id).map(value => value.status)).toEqual(['cancelled']);
+  });
+
+  it('wins cancellation during file persistence and removes the late file', async () => {
+    const { queue, hooks, files, settled } = setup(); await queue.initialize();
+    const fileStarted = deferred<void>(); const release = deferred<void>();
+    hooks.afterFile = async () => { fileStarted.resolve(); await release.promise; };
+    const accepted = await queue.enqueue(metadata, async () => artifact); await fileStarted.promise;
+    const cancellation = queue.cancel(accepted.id); release.resolve(); await cancellation; await queue.waitForIdle();
+    expect(status(queue, accepted.id)).toBe('cancelled'); expect(files.has(accepted.id)).toBe(false);
+    expect(settled.map(value => value.status)).toEqual(['cancelled']);
+  });
+
+  it('wins cancellation after success committed but before the metadata promise returns', async () => {
+    const { queue, hooks, files, settled, records } = setup(); await queue.initialize();
+    const committed = deferred<void>(); const release = deferred<void>(); const observed: string[] = [];
+    queue.subscribe(() => { observed.push(...queue.getSnapshot().map(value => value.status)); });
+    hooks.afterSave = async value => { if (value.status === 'succeeded') { committed.resolve(); await release.promise; } };
+    const accepted = await queue.enqueue(metadata, async () => artifact); await committed.promise;
+    const cancellation = queue.cancel(accepted.id); release.resolve(); await cancellation; await queue.waitForIdle();
+    expect(records.get(accepted.id)?.status).toBe('cancelled'); expect(files.has(accepted.id)).toBe(false);
+    expect(observed).not.toContain('succeeded'); expect(settled.map(value => value.status)).toEqual(['cancelled']);
+  });
+
+  it('retains a cancelled correction when its earlier success was committed and saving cancellation fails', async () => {
+    const { queue, hooks, records, files, settled } = setup(); await queue.initialize();
+    const committed = deferred<void>(); const release = deferred<void>();
+    hooks.afterSave = async value => { if (value.status === 'succeeded') { committed.resolve(); await release.promise; } };
+    hooks.beforeSave = async value => { if (value.status === 'cancelled') throw new Error('full'); };
+    const runner = vi.fn(async () => artifact); const accepted = await queue.enqueue(metadata, runner); await committed.promise;
+    const cancellation = queue.cancel(accepted.id); release.resolve(); await cancellation; await queue.waitForIdle();
+    expect(status(queue, accepted.id)).toBe('cancelled'); expect(records.get(accepted.id)?.status).toBe('succeeded');
+    expect(files.has(accepted.id)).toBe(false); expect(settled).toHaveLength(0); expect(queue.pendingSaveIds).toEqual([accepted.id]);
+    delete hooks.beforeSave; delete hooks.afterSave; await queue.retrySave(accepted.id);
+    expect(records.get(accepted.id)?.status).toBe('cancelled'); expect(runner).toHaveBeenCalledTimes(1); expect(settled.map(value => value.status)).toEqual(['cancelled']);
+  });
+
+  it('does not execute a runner if saving its running transition fails', async () => {
+    const { queue, hooks, settled } = setup(); await queue.initialize();
+    hooks.beforeSave = async value => { if (value.status === 'running') throw new Error('full'); };
+    const runner = vi.fn(async () => artifact); const accepted = await queue.enqueue(metadata, runner); await queue.waitForIdle();
+    expect(runner).not.toHaveBeenCalled(); expect(status(queue, accepted.id)).toBe('failed'); expect(queue.pendingSaveIds).toEqual([accepted.id]); expect(settled).toHaveLength(0);
+    delete hooks.beforeSave; await queue.retrySave(accepted.id); expect(runner).not.toHaveBeenCalled(); expect(status(queue, accepted.id)).toBe('failed');
+  });
+
+  it('retains a partially written file and retries persistence only, using owned artifact bytes', async () => {
+    const { queue, hooks, files, settled, store } = setup(); await queue.initialize(); let fail = true;
+    hooks.afterFile = async () => { if (fail) throw new Error('disk full with secret text'); };
+    const source: ExportArtifact = { ...artifact, data: artifact.data.slice() }; const runner = vi.fn(async () => source);
+    const accepted = await queue.enqueue(metadata, runner); await queue.waitForIdle(); source.data[0] = 99;
+    expect(status(queue, accepted.id)).toBe('running'); expect(queue.storageBlocked).toBe(true); expect(queue.pendingSaveIds).toEqual([accepted.id]); expect(settled).toHaveLength(0);
+    expect(queue.getSnapshot()[0]?.error).not.toContain('secret'); await expect(queue.enqueue(metadata, async () => artifact)).rejects.toThrow('保存');
+    await expect(queue.retrySave(accepted.id)).rejects.toThrow('保存'); fail = false; await queue.retrySave(accepted.id);
+    expect(status(queue, accepted.id)).toBe('succeeded'); expect(files.get(accepted.id)?.data).toEqual(artifact.data);
+    expect(runner).toHaveBeenCalledTimes(1); expect(store.writeFile).toHaveBeenCalledTimes(3); expect(settled.map(value => value.status)).toEqual(['succeeded']);
+  });
+
+  it('interrupts queued work when success metadata saving fails and never starts it during save retry', async () => {
+    const { queue, hooks, records, settled } = setup(); await queue.initialize(); const gate = deferred<ExportArtifact>();
+    const runner = vi.fn(async () => gate.promise); const accepted = await queue.enqueue(metadata, runner);
+    const waitingRunner = vi.fn(async () => artifact); const waiting = await queue.enqueue(metadata, waitingRunner);
+    hooks.beforeSave = async value => { if (value.status === 'succeeded') throw new Error('full'); };
+    gate.resolve(artifact); await queue.waitForIdle();
+    expect(status(queue, accepted.id)).toBe('running'); expect(status(queue, waiting.id)).toBe('interrupted'); expect(waitingRunner).not.toHaveBeenCalled();
+    expect(settled.map(value => value.status)).toEqual(['interrupted']);
+    delete hooks.beforeSave; await queue.retrySave(accepted.id); await queue.waitForIdle();
+    expect(records.get(accepted.id)?.status).toBe('succeeded'); expect(waitingRunner).not.toHaveBeenCalled(); expect(runner).toHaveBeenCalledTimes(1);
+    const retried = await queue.enqueue({ ...metadata, parentId: waiting.id }, waitingRunner); await queue.waitForIdle();
+    expect(status(queue, waiting.id)).toBe('interrupted'); expect(status(queue, retried.id)).toBe('succeeded');
+  });
+
+  it('bounds all failed writes to one artifact and four metadata records', async () => {
+    const { queue, hooks } = setup(); await queue.initialize(); const gate = deferred<ExportArtifact>();
+    const accepted = await queue.enqueue(metadata, async () => gate.promise);
+    const waitingRunner = vi.fn(async () => artifact);
+    for (let index = 0; index < 3; index++) await queue.enqueue(metadata, waitingRunner);
+    hooks.beforeSave = async () => { throw new Error('full'); }; gate.resolve(artifact); await queue.waitForIdle();
+    expect(queue.pendingSaveIds).toHaveLength(4); expect(waitingRunner).not.toHaveBeenCalled();
+    delete hooks.beforeSave;
+    for (const key of [...queue.pendingSaveIds]) await queue.retrySave(key);
+    expect(queue.storageBlocked).toBe(false); expect(status(queue, accepted.id)).toBe('succeeded'); expect(waitingRunner).not.toHaveBeenCalled();
+  });
+
+  it('cancels a buffered result instead of reviving it as success', async () => {
+    const { queue, hooks, files, settled } = setup(); await queue.initialize();
+    hooks.beforeSave = async value => { if (value.status === 'succeeded') throw new Error('full'); };
+    const runner = vi.fn(async () => artifact); const accepted = await queue.enqueue(metadata, runner); await queue.waitForIdle();
+    await queue.cancel(accepted.id); expect(status(queue, accepted.id)).toBe('cancelled'); expect(files.has(accepted.id)).toBe(false);
+    await expect(queue.retrySave(accepted.id)).rejects.toThrow('没有待保存');
+    expect(runner).toHaveBeenCalledTimes(1); expect(settled.map(value => value.status)).toEqual(['cancelled']);
+  });
+
+  it('keeps runner failures terminal and requires an explicit new enqueue with parent metadata', async () => {
+    const { queue, settled } = setup(); await queue.initialize(); let lateProgress = (_value: string) => {};
+    const failed = await queue.enqueue(metadata, async (_signal, progress) => { lateProgress = progress; throw new Error('private model details'); }); await queue.waitForIdle();
+    expect(status(queue, failed.id)).toBe('failed'); lateProgress('late'); await queue.cancel(failed.id);
+    expect(status(queue, failed.id)).toBe('failed'); expect(queue.getSnapshot()[0]?.error).not.toContain('private');
+    await expect(queue.retrySave(failed.id)).rejects.toThrow('没有待保存');
+    const retried = await queue.enqueue({ ...metadata, parentId: failed.id }, async () => artifact); await queue.waitForIdle();
+    expect(retried.id).not.toBe(failed.id); expect(status(queue, failed.id)).toBe('failed'); expect(settled.map(value => value.status)).toEqual(['failed', 'succeeded']);
+  });
+
+  it('supports removing a cancelled active task without resurrecting it when the runner returns', async () => {
+    const { queue, records, files } = setup(); await queue.initialize(); const gate = deferred<ExportArtifact>(); let started = false;
+    const accepted = await queue.enqueue(metadata, async () => { started = true; return gate.promise; }); await expect.poll(() => started).toBe(true);
+    await expect(queue.remove(accepted.id)).rejects.toThrow('先取消');
+    await queue.cancel(accepted.id); await queue.remove(accepted.id); gate.resolve(artifact); await queue.waitForIdle();
+    expect(records.has(accepted.id)).toBe(false); expect(files.has(accepted.id)).toBe(false); expect(queue.getSnapshot()).toHaveLength(0);
+  });
+
+  it('retains terminal pending metadata when deletion fails, and releases it only after deletion succeeds', async () => {
+    const { queue, hooks, records } = setup(); await queue.initialize();
+    hooks.beforeSave = async value => { if (value.status === 'failed') throw new Error('full'); };
+    const accepted = await queue.enqueue(metadata, async () => { throw new Error('runner failed'); }); await queue.waitForIdle();
+    hooks.beforeRemove = async () => { throw new Error('remove failed'); };
+    await expect(queue.remove(accepted.id)).rejects.toThrow('remove failed'); expect(queue.pendingSaveIds).toEqual([accepted.id]); expect(records.has(accepted.id)).toBe(true);
+    delete hooks.beforeRemove; await queue.remove(accepted.id); expect(queue.pendingSaveIds).toHaveLength(0); expect(records.has(accepted.id)).toBe(false);
+  });
+
+  it('rejects empty, oversized-name, or invalid artifact output without writing it', async () => {
+    const { queue, store } = setup(); await queue.initialize();
+    for (const output of [{ ...artifact, data: new Uint8Array() }, { ...artifact, name: '../bad.pdf' }]) {
+      const accepted = await queue.enqueue(metadata, async () => output); await queue.waitForIdle(); expect(status(queue, accepted.id)).toBe('failed');
+    }
+    expect(store.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('checks download metadata and returns a detached byte copy', async () => {
+    const { queue, files } = setup(); await queue.initialize(); const accepted = await queue.enqueue(metadata, async () => artifact); await queue.waitForIdle();
+    const downloaded = await queue.readFile(accepted.id); downloaded!.data[0] = 99;
+    expect(files.get(accepted.id)?.data[0]).toBe(1); files.set(accepted.id, { ...artifact, name: 'other.pdf' });
+    await expect(queue.readFile(accepted.id)).rejects.toThrow('不一致'); files.delete(accepted.id); expect(await queue.readFile(accepted.id)).toBeNull();
+  });
+
+  it('isolates notification errors from task success and exposes the callback failure', async () => {
+    const { queue } = setup(); await queue.initialize(); queue.onSettled(() => { throw new Error('notification failed'); });
+    const accepted = await queue.enqueue(metadata, async () => artifact); await queue.waitForIdle();
+    expect(status(queue, accepted.id)).toBe('succeeded'); expect(queue.notificationError).toContain('通知');
+  });
+
+  it('never expires successful records and requires explicit management at the record limit', async () => {
+    const initial = Array.from({ length: MAX_EXPORT_TASK_RECORDS }, (_value, index) => task(index + 2, { status: 'succeeded', startedAt: time, finishedAt: time, file: { name: artifact.name, mimeType: artifact.mimeType, bytes: 3 } }));
+    const { queue, records } = setup(initial); await queue.initialize();
+    expect(queue.getSnapshot()).toHaveLength(MAX_EXPORT_TASK_RECORDS);
+    await expect(queue.enqueue(metadata, async () => artifact)).rejects.toThrow('记录已满'); expect(records.size).toBe(MAX_EXPORT_TASK_RECORDS);
+    await queue.remove(id(2)); await queue.enqueue(metadata, async () => artifact); await queue.waitForIdle(); expect(records.size).toBe(MAX_EXPORT_TASK_RECORDS);
+  });
+  it('cancels while the start transition is being saved and never invokes the runner', async () => {
+    const { queue, hooks, settled } = setup(); await queue.initialize();
+    const saving = deferred<void>(); const release = deferred<void>();
+    hooks.beforeSave = async value => { if (value.status === 'running') { saving.resolve(); await release.promise; } };
+    const runner = vi.fn(async () => artifact); const accepted = await queue.enqueue(metadata, runner); await saving.promise;
+    const cancellation = queue.cancel(accepted.id); release.resolve(); await cancellation; await queue.waitForIdle();
+    expect(runner).not.toHaveBeenCalled(); expect(status(queue, accepted.id)).toBe('cancelled'); expect(settled.map(value => value.status)).toEqual(['cancelled']);
+  });
+
+  it('keeps a failed initial write recoverable without accepting or executing its runner', async () => {
+    const { queue, hooks, records } = setup(); await queue.initialize();
+    hooks.beforeSave = async () => { throw new Error('full'); }; const runner = vi.fn(async () => artifact);
+    await expect(queue.enqueue(metadata, runner)).rejects.toThrow('保存');
+    const key = queue.pendingSaveIds[0]!; expect(records.has(key)).toBe(false); expect(status(queue, key)).toBe('interrupted');
+    delete hooks.beforeSave; await queue.retrySave(key); expect(records.get(key)?.status).toBe('interrupted'); expect(runner).not.toHaveBeenCalled();
+  });
+
+  it('preserves pending output instead of overwriting a refreshed interrupted terminal', async () => {
+    const { queue, hooks, records } = setup(); await queue.initialize();
+    hooks.beforeSave = async value => { if (value.status === 'succeeded') throw new Error('full'); };
+    const runner = vi.fn(async () => artifact); const accepted = await queue.enqueue(metadata, runner); await queue.waitForIdle();
+    const old = records.get(accepted.id)!; records.set(accepted.id, { ...old, status: 'interrupted', finishedAt: time, error: 'Reloaded' });
+    delete hooks.beforeSave; await expect(queue.retrySave(accepted.id)).rejects.toThrow('其他终态');
+    expect(records.get(accepted.id)?.status).toBe('interrupted'); expect(queue.pendingSaveIds).toEqual([accepted.id]); expect(runner).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a pending result when a different instance already deleted its record', async () => {
+    const { queue, hooks, records } = setup(); await queue.initialize();
+    hooks.beforeSave = async value => { if (value.status === 'succeeded') throw new Error('full'); };
+    const accepted = await queue.enqueue(metadata, async () => artifact); await queue.waitForIdle(); records.delete(accepted.id);
+    delete hooks.beforeSave; await expect(queue.retrySave(accepted.id)).rejects.toThrow('已被删除');
+    expect(records.has(accepted.id)).toBe(false); expect(queue.pendingSaveIds).toEqual([accepted.id]);
+  });
+
+  it('aborts at a bounded deadline but retains the slot until the timed-out runner settles', async () => {
+    vi.useFakeTimers();
+    try {
+      const { store, files } = setup(); const settled: ExportTaskSnapshot[] = [];
+      const queue = new LocalExportTasks({ store, uuid: (() => { let next = 1000; return () => id(next++); })(), now: () => new Date(time), timeoutMs: 10, onSettled: value => settled.push(value) });
+      await queue.initialize(); const gate = deferred<ExportArtifact>(); let signal: AbortSignal | undefined;
+      const accepted = await queue.enqueue(metadata, async value => { signal = value; return gate.promise; }); await vi.advanceTimersByTimeAsync(0);
+      const second = vi.fn(async () => artifact); await queue.enqueue(metadata, second);
+      await vi.advanceTimersByTimeAsync(10); expect(signal?.aborted).toBe(true); expect(status(queue, accepted.id)).toBe('failed'); expect(second).not.toHaveBeenCalled();
+      gate.resolve(artifact); await queue.waitForIdle(); expect(files.has(accepted.id)).toBe(false); expect(settled.filter(value => value.id === accepted.id).map(value => value.status)).toEqual(['failed']);
+      expect(second).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('preserves cancellation over a later timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const { store, settled } = setup(); const queue = new LocalExportTasks({ store, uuid: () => id(1000), now: () => new Date(time), timeoutMs: 10, onSettled: value => settled.push(value) });
+      await queue.initialize(); const gate = deferred<ExportArtifact>(); const accepted = await queue.enqueue(metadata, async () => gate.promise); await vi.advanceTimersByTimeAsync(0);
+      await queue.cancel(accepted.id); await vi.advanceTimersByTimeAsync(10); gate.resolve(artifact); await queue.waitForIdle();
+      expect(status(queue, accepted.id)).toBe('cancelled'); expect(settled.map(value => value.status)).toEqual(['cancelled']);
+    } finally { vi.useRealTimers(); }
+  });
+  it('does not overwrite a different successful artifact with the same task status', async () => {
+    const { queue, hooks, records } = setup(); await queue.initialize();
+    hooks.beforeSave = async value => { if (value.status === 'succeeded') throw new Error('full'); };
+    const accepted = await queue.enqueue(metadata, async () => artifact); await queue.waitForIdle();
+    const old = records.get(accepted.id)!;
+    records.set(accepted.id, { ...old, status: 'succeeded', finishedAt: time, file: { name: 'different.pdf', mimeType: 'application/pdf', bytes: 3 } });
+    delete hooks.beforeSave; await expect(queue.retrySave(accepted.id)).rejects.toThrow('其他终态');
+    expect(records.get(accepted.id)?.file?.name).toBe('different.pdf'); expect(queue.pendingSaveIds).toEqual([accepted.id]);
+  });
+
+  it('permits save-only retry when the failed response followed an already committed identical success', async () => {
+    const { queue, hooks, settled } = setup(); await queue.initialize();
+    hooks.afterSave = async value => { if (value.status === 'succeeded') throw new Error('response lost'); };
+    const runner = vi.fn(async () => artifact); const accepted = await queue.enqueue(metadata, runner); await queue.waitForIdle();
+    expect(status(queue, accepted.id)).toBe('running'); expect(settled).toHaveLength(0);
+    delete hooks.afterSave; await queue.retrySave(accepted.id);
+    expect(status(queue, accepted.id)).toBe('succeeded'); expect(runner).toHaveBeenCalledTimes(1); expect(settled.map(value => value.status)).toEqual(['succeeded']);
+  });
+
+  it('keeps metadata when file deletion itself fails', async () => {
+    const { queue, hooks, records, files } = setup(); await queue.initialize(); const accepted = await queue.enqueue(metadata, async () => artifact); await queue.waitForIdle();
+    hooks.beforeRemoveFile = async () => { throw new Error('file removal failed'); };
+    await expect(queue.remove(accepted.id)).rejects.toThrow('file removal failed');
+    expect(records.has(accepted.id)).toBe(true); expect(files.has(accepted.id)).toBe(true); expect(status(queue, accepted.id)).toBe('succeeded');
+    delete hooks.beforeRemoveFile; await queue.remove(accepted.id); expect(records.has(accepted.id)).toBe(false); expect(files.has(accepted.id)).toBe(false);
+  });
+
+  it('recovers the maximum four accepted tasks even if the active start write was interrupted', async () => {
+    const { queue, records } = setup([task(2), task(3), task(4), task(5)]); await queue.initialize();
+    expect([...records.values()].map(value => value.status)).toEqual(['interrupted', 'interrupted', 'interrupted', 'interrupted']); expect(queue.pendingSaveIds).toHaveLength(0);
+  });
+});

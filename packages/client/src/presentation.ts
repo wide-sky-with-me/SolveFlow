@@ -5,3 +5,4 @@ export * from './image-crop.js';
 export * from './tex-edit.js';
 export { verificationFeedback } from './verification-feedback.js';
 export { ClientError, clientError } from './errors.js';
+export * from './batch-print-variants.js';

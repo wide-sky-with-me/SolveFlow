@@ -9,8 +9,11 @@ import { QuestionReader } from '../components/question-reader';
 import { EmptyState } from '../components/empty-state';
 import { HistoryToolbar } from '../components/history-toolbar';
 import { BatchHistory } from '../components/batch-history';
+import { BatchPdfExport, batchPdfAvailable } from '../components/batch-pdf-export';
+import { useState } from 'react';
 import { HistoryPanel } from '../components/history-panel';
 import { Profile } from '../components/profile';
+import { ExportRecordsEntry } from '../components/export-records';
 import type { Runtime } from '../runtime';
 import type { WorkspaceState } from './use-workspace-state';
 import type { WorkspaceActions } from './use-workspace-actions';
@@ -157,6 +160,7 @@ export function CurrentQuestionPage({ runtime, state, actions }: PageProps) {
 }
 
 export function HistoryPage({ runtime, state, actions }: PageProps) {
+  const [exportBatchId, setExportBatchId] = useState<string | null>(null);
   const {
     appTab, tab, historyMounted, sessions, session,
     error, setError, busy, setCamera, setBatchView,
@@ -187,6 +191,7 @@ export function HistoryPage({ runtime, state, actions }: PageProps) {
             onOpen={setBatchView}
             onRename={async (id, title) => { await runtime.repository.renameBatch(id, title); await list(); }}
             onRemove={id => setConfirmDelete(`batch:${id}`)}
+            onExport={batchPdfAvailable ? setExportBatchId : undefined}
           />
         </ScrollView>
         <View style={{ flex: 1, minHeight: 0, display: historyKind === 'single' ? 'flex' : 'none' }}>
@@ -219,6 +224,7 @@ export function HistoryPage({ runtime, state, actions }: PageProps) {
           )}
         </View>
       </View>
+      {exportBatchId && <BatchPdfExport runtime={runtime} batchId={exportBatchId} onClose={() => setExportBatchId(null)} />}
     </View>
   );
 }
@@ -287,6 +293,7 @@ export function ProfilePage({ runtime, state, actions }: PageProps) {
               void list(true).catch(cause => setError(clientError(cause)));
             }}
           />
+          <ExportRecordsEntry runtime={runtime} />
         </ScrollView>
       )}
     </View>

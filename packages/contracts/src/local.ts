@@ -1,3 +1,4 @@
+export * from './export-task.js';
 // Decision: .agents/notes/implemented/agent/2026-10-09-direct-answer-review.md
 // Decision: .agents/notes/implemented/architecture/2026-10-09-batch-learning-admission.md
 import { z } from 'zod';
@@ -8,6 +9,7 @@ import { SessionViewSchema, MAX_CONVERSATION_RUNS, MAX_AUXILIARY_RUNS } from './
 import { ExamTypeSchema } from './exam.js';
 import { LocalMaterialSchema, LocalImageDataSchema, MaterialInfoSchema, QuestionImageIdsSchema, MAX_MATERIAL_IMAGES, MAX_QUESTION_IMAGE_BYTES, MAX_STORED_MATERIAL_IMAGES, MAX_STORED_IMAGE_BYTES } from './material.js';
 export { LocalMaterialSchema, MAX_MATERIAL_IMAGES, MAX_QUESTION_IMAGE_BYTES, type LocalMaterial } from './material.js';
+export { LocalMaterialImageSchema, LocalMaterialImagesSchema, type LocalMaterialImage } from './material.js';
 export { LocalImageEditSchema, QuestionImageIdsSchema, MAX_STORED_MATERIAL_IMAGES, MAX_STORED_IMAGE_BYTES, type LocalImageEdit } from './material.js';
 export { ExamTypeSchema, EXAM_LABELS, EXAM_DESCRIPTIONS, type ExamType } from './exam.js';
 export const MAX_LOCAL_RECORDS = 500;
@@ -141,6 +143,78 @@ export const LocalHistorySummarySchema = z.strictObject({
 });
 export type LocalHistorySummary = z.infer<typeof LocalHistorySummarySchema> & { favorite: boolean };
 
+/** A local reading export; never includes settings, credentials or diagnostics. */
+export const MAX_BATCH_PRINT_BYTES = 128 * 1024 * 1024;
+export const MAX_BATCH_PRINT_PAGES = 300;
+const batchPrintHeader = { schemaVersion: z.literal(1), batch: LocalBatchSchema.omit({ position: true }), exportedAt: z.iso.datetime() };
+const batchPrintRecords = <T extends z.ZodType>(record: T) => z.array(record).min(1).max(MAX_BATCH_PHOTOS);
+function checkBatchPrintOwnership(value: { batch: { id: string }; records: Pick<LocalRecord, 'session' | 'batch'>[] }, fail: () => void) {
+  const ids = new Set<string>(); const positions = new Set<number>();
+  for (const record of value.records) {
+    if (record.batch?.id !== value.batch.id || ids.has(record.session.id) || positions.has(record.batch.position)) fail();
+    ids.add(record.session.id); if (record.batch) positions.add(record.batch.position);
+  }
+}
+export const BatchPrintSnapshotSchema = z.strictObject({ ...batchPrintHeader, records: batchPrintRecords(LocalRecordSchema) }).superRefine((value, context) => {
+  checkBatchPrintOwnership(value, () => context.addIssue({ code: 'custom', message: '导出题目归属或编号不一致。' }));
+});
+export type BatchPrintSnapshot = z.infer<typeof BatchPrintSnapshotSchema>;
+const CapturedBatchPrintEnvelopeSchema = z.strictObject({ ...batchPrintHeader, records: batchPrintRecords(z.unknown()) });
+
+// Decision: .agents/notes/implemented/storage/2026-10-19-pdf-captured-validation.md
+/** The caller exclusively owns this isolated input until completion; unknown data is still fully validated. */
+export async function parseCapturedBatchPrintSnapshot(input: unknown, beforeRecord: () => Promise<void>): Promise<BatchPrintSnapshot> {
+  const envelope = CapturedBatchPrintEnvelopeSchema.safeParse(input);
+  if (!envelope.success) return BatchPrintSnapshotSchema.parse(input);
+  const records: LocalRecord[] = [];
+  for (const record of envelope.data.records) {
+    await beforeRecord();
+    const parsed = LocalRecordSchema.safeParse(record);
+    // Preserve the original complete issue set, paths and ordering on invalid input.
+    if (!parsed.success) return BatchPrintSnapshotSchema.parse(input);
+    records.push(parsed.data);
+  }
+  const snapshot = { ...envelope.data, records };
+  let invalidOwnership = false;
+  checkBatchPrintOwnership(snapshot, () => { invalidOwnership = true; });
+  if (invalidOwnership) return BatchPrintSnapshotSchema.parse(input);
+  return snapshot;
+}
+// Decision: .agents/notes/implemented/storage/2026-10-19-pdf-preflight-validation.md
+function collectedValidationView(input: unknown): { supported: true; value: unknown } | { supported: false } {
+  const unsupported = Symbol(); const copies = new WeakMap<object, object>(); const visiting = new WeakSet<object>();
+  let containers = 0; let properties = 0;
+  function copy(value: unknown, depth: number): unknown {
+    if (value === null || ['undefined', 'string', 'number', 'boolean'].includes(typeof value)) return value;
+    if (typeof value !== 'object' || visiting.has(value)) throw unsupported;
+    if (copies.has(value)) return copies.get(value);
+    if (depth > 64 || ++containers > 10000) throw unsupported;
+    const array = Array.isArray(value); const prototype = Object.getPrototypeOf(value);
+    if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) throw unsupported;
+    const keys = Reflect.ownKeys(value); properties += keys.length;
+    if (properties > 100000 || array && keys.length !== value.length + 1) throw unsupported;
+    const result: object = array ? new Array<unknown>(value.length) : Object.create(prototype);
+    copies.set(value, result); visiting.add(value);
+    for (const key of keys) {
+      if (array && key === 'length') continue;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (typeof key !== 'string' || !descriptor || !('value' in descriptor) || !descriptor.enumerable) throw unsupported;
+      if (array && (!Number.isInteger(Number(key)) || String(Number(key)) !== key || Number(key) < 0 || Number(key) >= value.length)) throw unsupported;
+      Object.defineProperty(result, key, { value: copy(descriptor.value, depth + 1), enumerable: true, configurable: true, writable: true });
+    }
+    visiting.delete(value); return result;
+  }
+  // A declined view selects the original validator, never a new acceptance or product limit.
+  try { return { supported: true, value: copy(input, 0) }; } catch { return { supported: false }; }
+}
+/** Only for schema-produced inert plain data, not arbitrary Proxy/getter inputs. Still fully validates unknown. */
+export async function parseCollectedBatchPrintSnapshot(input: unknown, beforeRecord: () => Promise<void>): Promise<BatchPrintSnapshot> {
+  const view = collectedValidationView(input);
+  return view.supported ? parseCapturedBatchPrintSnapshot(view.value, beforeRecord) : BatchPrintSnapshotSchema.parse(input);
+}
+export * from './print-image-adjustment.js';
+export * from './prepared-print-layout.js';
+
 /** Separate metadata avoids an in-flight solver overwriting a new bookmark. */
 export const LocalFavoriteSchema = z.strictObject({ schemaVersion: z.literal(1), favorite: z.literal(true) });
 
@@ -177,3 +251,5 @@ export const LocalHistoryExportLineSchema = z.discriminatedUnion('kind', [
   z.strictObject({ schemaVersion: z.literal(1), kind: z.literal('complete'), count: z.number().int().min(0).max(MAX_LOCAL_RECORDS) }),
 ]);
 export type LocalHistoryExportLine = z.infer<typeof LocalHistoryExportLineSchema>;
+export { MAX_BATCH_PRINT_LAYOUT_SOURCES, BatchPrintLayoutInputSchema, BatchPrintLayoutSchema, PrintLayoutRefinementSchema, PrintLayoutRegionSchema, parseBatchPrintLayout, normalizeGeneratedBatchPrintLayout, type BatchPrintLayoutInput, type BatchPrintLayout, type PrintLayoutRefinement, type PrintLayoutRegion, type PrintLayoutQuestion } from './batch-print-layout.js';
+export * from './batch-print-variants.js';

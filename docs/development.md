@@ -15,7 +15,7 @@
 
 `build:shared` 生成受审学生资源并构建设备依赖的共享包；`dev` / `mobile:dev` 和根移动开发入口先执行它。`build:server` 只构建 API 及其依赖，不生成移动资源；`build:workspace` 构建全部非移动工作区并生成学生资源，供全量类型、测试和构建使用；同时启动 API 与 Expo 的 `server:dev` / `dev:demo` 也使用它。
 
-`build:web` 导出 Web，`build:mobile` 导出三端 JS/Hermes 并检查包内资源；`build` 保留完整工作区与三端导出检查。这些命令不安装 APK、不启动服务或调用模型。
+`build:web` 导出 Web，`build:mobile` 导出三端 JS/Hermes 并检查包内资源；`build` 保留完整工作区与三端导出检查。这些命令不安装 APK、不启动服务或调用模型。`package:web` 重建 Web 后生成独立容器发布目录；`test:web-container` 验证离线入口，操作见[Docker 指南](cookbook/docker-web.md)，不会自动部署或调用上游模型。
 
 ## 变更与验证
 

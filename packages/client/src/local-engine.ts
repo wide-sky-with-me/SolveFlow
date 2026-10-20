@@ -5,7 +5,7 @@
 import { z } from 'zod';
 import { checkHistoryImage } from './history-image.js';
 import {
-  MAX_LOCAL_RECORDS, MAX_LOCAL_DIAGNOSTICS, MAX_LOCAL_AUXILIARY_RUNS, BATCH_VERIFICATION_CONCURRENCY, MAX_PENDING_VERIFICATIONS, LocalConcurrencySchema, LocalMaterialSchema, MAX_MATERIAL_IMAGES, LocalBatchSchema, LocalBatchEditSchema, LocalRecordSchema, LocalDiagnosticSchema,
+  MAX_LOCAL_RECORDS, MAX_LOCAL_DIAGNOSTICS, MAX_LOCAL_AUXILIARY_RUNS, BATCH_VERIFICATION_CONCURRENCY, MAX_PENDING_VERIFICATIONS, LocalConcurrencySchema, LocalMaterialSchema, LocalMaterialImageSchema, LocalMaterialImagesSchema, MAX_MATERIAL_IMAGES, LocalBatchSchema, LocalBatchEditSchema, LocalRecordSchema, LocalDiagnosticSchema,
   type LocalConcurrency, type LocalBatch, type LocalDiagnostic, type LocalRecord, type ExamType, type LocalImageEdit,
 } from '@solveflow/contracts/local';
 import { isAuxiliaryContext, questionThreadHistory, terminal, type RunContext, type RunView } from '@solveflow/contracts/http';
@@ -189,19 +189,43 @@ export class LocalEngine {
 
   /** Save material only; adding evidence never dispatches a paid request. */
   async addMaterial(id: string, image: string, width: number, height: number): Promise<LocalRecord> {
+    return this.addMaterials(id, [{ image, width, height }]);
+  }
+
+  /** One transaction owns all selected materials; a failed batch never saves a prefix. */
+  // Decision: .agents/notes/implemented/storage/2026-10-13-multi-material-import.md
+  async addMaterials(id: string, input: unknown): Promise<LocalRecord> {
+    const images = LocalMaterialImagesSchema.parse(input);
     this.correctionGeneration++;
     if (this.deleting) throw new Error('正在删除历史，请稍候。');
     return this.lock(async () => {
       if (this.storageBlocked || this.actives.some(run => run.sessionId === id)) throw new Error('请先结束本题解题并保存结果，再补充材料。');
       const record = await this.repository.read(id);
-      if (currentImageIds(record).length >= MAX_MATERIAL_IMAGES + 1) throw new Error(`最多使用${MAX_MATERIAL_IMAGES + 1}张同题图片。`);
-      const encoded = image.slice(image.indexOf(',') + 1);
-      const material = LocalMaterialSchema.parse({ id: this.uuid(), image, width, height, bytes: atob(encoded).length });
-      checkHistoryImage(image, material);
-      if (record.activeImageIds) record.activeImageIds = [...record.activeImageIds, material.id];
-      record.materials = [...(record.materials ?? []), material];
-      await this.repository.save(record);
-      return record;
+      const ids = currentImageIds(record);
+      if (ids.length + images.length > MAX_MATERIAL_IMAGES + 1) throw new Error(`最多使用${MAX_MATERIAL_IMAGES + 1}张同题图片。`);
+      const additions = images.map(value => {
+        const material = LocalMaterialSchema.parse({ ...value, id: this.uuid(), bytes: atob(value.image.slice(value.image.indexOf(',') + 1)).length });
+        checkHistoryImage(value.image, material); return material;
+      });
+      const next = applyImageEdit(record, { imageIds: [...ids, ...additions.map(item => item.id)], additions });
+      await this.repository.save(next);
+      return next;
+    });
+  }
+
+  /** Replace the current selection with new pixels; older runs keep the immutable source material. */
+  async replaceMaterial(id: string, materialId: string, image: string, width: number, height: number): Promise<LocalRecord> {
+    const value = LocalMaterialImageSchema.parse({ image, width, height });
+    this.correctionGeneration++;
+    if (this.deleting) throw new Error('正在删除历史，请稍候。');
+    return this.lock(async () => {
+      if (this.storageBlocked || this.actives.some(run => run.sessionId === id)) throw new Error('请先结束本题解题并保存结果，再编辑材料。');
+      const record = await this.repository.read(id); const ids = currentImageIds(record);
+      if (!ids.includes(materialId) || !record.materials?.some(item => item.id === materialId)) throw new Error('待编辑的补图已变化，请重新打开。');
+      const material = LocalMaterialSchema.parse({ ...value, id: this.uuid(), bytes: atob(image.slice(image.indexOf(',') + 1)).length });
+      const next = applyImageEdit(record, { imageIds: ids.map(key => key === materialId ? material.id : key), additions: [material] });
+      await this.repository.save(next);
+      return next;
     });
   }
 

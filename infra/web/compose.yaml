@@ -1,0 +1,36 @@
+name: solveflow-web
+services:
+  web:
+    image: solveflow-web:${SOLVEFLOW_RELEASE:-local}
+    build:
+      context: .
+    restart: unless-stopped
+    init: true
+    user: "${SOLVEFLOW_UID:-1000}:${SOLVEFLOW_GID:-1000}"
+    ports:
+      - "127.0.0.1:${SOLVEFLOW_WEB_PORT:-3130}:${SOLVEFLOW_WEB_PORT:-3130}"
+    environment:
+      NODE_ENV: production
+      SOLVEFLOW_WEB_PORT: "${SOLVEFLOW_WEB_PORT:-3130}"
+      SOLVEFLOW_WEB_DIR: /opt/solveflow/web
+      SOLVEFLOW_WEB_STATE_DIR: /var/lib/solveflow
+      SOLVEFLOW_WEB_PUBLIC_ORIGIN: "${SOLVEFLOW_WEB_PUBLIC_ORIGIN:-}"
+    volumes:
+      - type: bind
+        source: ./state
+        target: /var/lib/solveflow
+        bind:
+          create_host_path: false
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

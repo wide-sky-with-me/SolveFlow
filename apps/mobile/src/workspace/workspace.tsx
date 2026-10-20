@@ -5,6 +5,7 @@ import { clientError } from '@solveflow/client/presentation';
 import { Pressable, Text, View, SafeAreaView } from '../theme/primitives';
 import { Button, Notice, colors, s } from '../components/ui';
 import { PendingSaves } from '../components/pending-saves';
+import { ExportRecordsHost } from '../components/export-records';
 import { HistoryMaintenance } from '../components/history-maintenance';
 import { HistoryImport } from '../components/history-import';
 import { HistoryExport } from '../components/history-export';
@@ -91,6 +92,7 @@ export function Workspace({ runtime, onReady }: { runtime: Runtime; onReady: () 
         cameraDisabled={busy || unsavedCount > 0 || (!!activeId && !batchBusy)}
       />
 
+      <ExportRecordsHost runtime={runtime} />
       {/* Floating overlays */}
       {examPickerOpen && <ExamPicker runtime={runtime} onClose={() => setExamPickerOpen(false)} />}
       {maintenanceOpen && <HistoryMaintenance repository={runtime.repository} onChanged={() => { void list(true).catch(cause => setError(clientError(cause))); }} onClose={() => setMaintenanceOpen(false)} onExport={() => { setMaintenanceOpen(false); setExportOpen(true); }} onRestore={id => { setRepairSessionId(id); setMaintenanceOpen(false); setImportOpen(true); }} />}
