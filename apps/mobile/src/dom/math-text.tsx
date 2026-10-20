@@ -5,10 +5,10 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { normalizeMathDelimiters } from '@solveflow/client/presentation';
 
-function Formula({ latex, inline = false }: { latex: string; inline?: boolean }) {
+function Formula({ latex, inline = false, inlineDisplayStyle = false }: { latex: string; inline?: boolean; inlineDisplayStyle?: boolean }) {
   if (latex.length > 2000) return <span>公式过长，暂不显示。</span>;
   let html: string;
-  try { html = renderFormula(latex, inline); }
+  try { html = renderFormula(inline && inlineDisplayStyle ? `\\displaystyle ${latex}` : latex, inline); }
   catch { return <code className="math-fallback">{latex}</code>; }
   return inline ? <span className="math-inline" dangerouslySetInnerHTML={{ __html: html }} />
     : <DisplayFormula html={html} />;
@@ -23,8 +23,9 @@ function DisplayFormula({ html }: { html: string }) {
     if (!outer || !inner) return;
     let lastWidth = -1; let disposed = false;
     const measure = (force = false) => {
+      if (disposed) return;
       const width = outer.clientWidth - 4;
-      if (disposed || width <= 0 || (!force && width === lastWidth)) return;
+      if (width <= 0 || (!force && width === lastWidth)) return;
       lastWidth = width; inner.style.fontSize = '1em';
       const natural = inner.getBoundingClientRect().width;
       inner.style.fontSize = `${Math.max(.82, Math.min(1, width / Math.max(1, natural)))}em`;
@@ -37,7 +38,7 @@ function DisplayFormula({ html }: { html: string }) {
   return <div className="formula-shell"><div ref={viewport} className="math-block" tabIndex={0} aria-label="公式，可横向滚动"><div ref={content} className="formula-content" dangerouslySetInnerHTML={{ __html: html }} /></div>{overflow && <span className="formula-hint">左右滑动查看完整公式</span>}</div>;
 }
 export function MathBlock({ latex }: { latex: string }) { return <Formula latex={latex} />; }
-export const MathText = memo(function MathText({ text, originalImageUrl, inlineMathCode = false }: { text: string; originalImageUrl?: string | undefined; inlineMathCode?: boolean | undefined }) {
+export const MathText = memo(function MathText({ text, originalImageUrl, inlineMathCode = false, inlineDisplayStyle = false }: { text: string; originalImageUrl?: string | undefined; inlineMathCode?: boolean | undefined; inlineDisplayStyle?: boolean | undefined }) {
   const image = originalImageUrl && originalImageUrl.length <= 6 * 1024 * 1024 && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(originalImageUrl) ? originalImageUrl : undefined;
   // Stable component identities preserve loaded images and formula scroll state
   // when the enclosing answer reports a new height or verification status.
@@ -46,10 +47,10 @@ export const MathText = memo(function MathText({ text, originalImageUrl, inlineM
       img: ({ src, alt }) => src === image && image ? <img className="answer-image" src={image} alt={alt || "原题图片"} loading="lazy" /> : <span className="image-unavailable">{alt || "图片"}（无可用的授权图片）</span>,
       pre: ({ children }) => <div className="answer-code">{children}</div>,
       code: ({ className, children }) => /(?:^|\s)math-(?:inline|display)(?:\s|$)/.test(className ?? "")
-        ? <Formula latex={String(children).replace(/\n$/, "")} inline={className?.includes("math-inline") ?? false} />
+        ? <Formula latex={String(children).replace(/\n$/, "")} inline={className?.includes("math-inline") ?? false} inlineDisplayStyle={inlineDisplayStyle} />
         : <code className={className}>{children}</code>,
       table: ({ children }) => <div className="answer-table-scroll" tabIndex={0} aria-label="表格，可横向滚动"><table>{children}</table></div>,
-    }), [image]);
+    }), [image, inlineDisplayStyle]);
   return <div className="answer-markdown"><Markdown skipHtml remarkPlugins={[remarkGfm, remarkMath]}
     urlTransform={(url, key) => key === "src" && url === "attachment:original" && image ? image : ""}
     components={components}>{normalizeMathDelimiters(text, { inlineMathCode })}</Markdown></div>;

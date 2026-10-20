@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { useTheme } from '../theme/provider';
 import { themeColors } from '../theme/palette';
@@ -12,13 +12,16 @@ export function PdfPicker({ label, value, options, onChange, disabled = false }:
     setPosition({ left: Math.max(8, Math.min(rect.left, innerWidth - rect.width - 8)), width: rect.width, maxHeight: Math.min(height, Math.max(below, rect.top - 12)), ...(below >= height || below >= rect.top ? { top: rect.bottom + 6 } : { bottom: innerHeight - rect.top + 6 }) });
   }
   function show() { positionMenu(); setOpen(true); }
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
     const dismiss = (event: PointerEvent) => { if (event.target instanceof Node && !trigger.current?.contains(event.target) && !menu.current?.contains(event.target)) setOpen(false); };
     let frame = 0;
-    const hide = () => setOpen(false); const scroll = (event: Event) => { if (event.target instanceof Node && menu.current?.contains(event.target)) return; cancelAnimationFrame(frame); frame = requestAnimationFrame(positionMenu); };
+    const width = innerWidth; const height = innerHeight;
+    // 打开前已排队的 resize 事件应保留刚打开的菜单。
+    const hide = () => { if (innerWidth !== width || innerHeight !== height) setOpen(false); };
+    const scroll = (event: Event) => { if (event.target instanceof Node && menu.current?.contains(event.target)) return; cancelAnimationFrame(frame); frame = requestAnimationFrame(positionMenu); };
     document.addEventListener('pointerdown', dismiss); window.addEventListener('resize', hide); window.addEventListener('scroll', scroll, true);
-    const selected = menu.current?.querySelector<HTMLButtonElement>('[aria-selected="true"]') ?? menu.current?.querySelector<HTMLButtonElement>('button:not(:disabled)'); selected?.focus({ preventScroll: true });
+    const selected = menu.current?.querySelector<HTMLButtonElement>('[aria-selected="true"]') ?? menu.current?.querySelector<HTMLButtonElement>('button:not(:disabled)'); selected?.focus();
     return () => { cancelAnimationFrame(frame); document.removeEventListener('pointerdown', dismiss); window.removeEventListener('resize', hide); window.removeEventListener('scroll', scroll, true); };
   }, [open]);
   useEffect(() => { if (disabled) setOpen(false); }, [disabled]);

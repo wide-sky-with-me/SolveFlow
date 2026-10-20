@@ -93,7 +93,7 @@ it('uses an unanswered response as a real wrong answer for non-choice questions 
   expect(() => planBatchPrintCopies(red, [{ correct: 3, incorrect: 0 }])).toThrow('参照');
   expect(planBatchPrintCopies(red, [{ correct: 3, incorrect: 0 }], [{ key: red[0]!.key, referenceAnswer: 'x=2' }])[0]?.answers[0]?.answer).toBe('x=2');
 });
-it('rejects choice changes with incomplete labels or no valid alternative and sanitizes copy filenames', () => {
+it('rejects incomplete labels, uses the other binary option for an explicit reference, and sanitizes copy filenames', () => {
   const source = snapshot(false, true, 1); const run = source.records[0]!.session.runs[0]!;
   if (run.outcome?.status !== 'completed') throw new Error('Fixture missing completed answer');
   run.outcome.candidate.problem.options = [{ label: 'A', text: '1' }]; run.outcome.candidate.problem.optionsComplete = false; run.outcome.candidate.problem.uncertainties = ['Missing options'];
@@ -101,16 +101,17 @@ it('rejects choice changes with incomplete labels or no valid alternative and sa
   expect(() => planBatchPrintCopies(questionsForBatchPrint(source), [{ correct: 0, incorrect: 1 }])).toThrow('可调整');
   run.outcome.candidate.problem.options = [{ label: 'A', text: '1' }, { label: 'B', text: '2' }]; delete run.outcome.candidate.problem.optionsComplete; run.outcome.candidate.selectedOptions = ['A'];
   const pair = questionsForBatchPrint(source);
-  expect(() => planBatchPrintCopies(pair, [{ correct: 0, incorrect: 1 }], [{ key: pair[0]!.key, referenceOptions: ['B'] }])).toThrow('可调整');
+  const binary = planBatchPrintCopies(pair, [{ correct: 0, incorrect: 1 }], [{ key: pair[0]!.key, referenceOptions: ['B'] }])[0]!;
+  expect(binary.answers[0]?.selectedOptions).toEqual(['A']); expect(binary.incorrect).toBe(1);
   const copy = planBatchPrintCopies(questionsForBatchPrint(snapshot()), [{ correct: 3, incorrect: 0 }])[0]!;
-  expect(batchPrintFilename('Maths:/1', copy)).toBe('Maths__1_总3_对3_错0.pdf');
-  expect(batchPrintFilename('Maths:/1', copy, { multiple: true })).toBe('Maths__1_总3_对3_错0_01.pdf');
+  expect(batchPrintFilename('Maths:/1', copy)).toBe('Maths__1_作答_第01份_3题_对3_错0.pdf');
+  expect(batchPrintFilename('Maths:/1', copy, { multiple: true })).toBe('Maths__1_作答_第01份_3题_对3_错0.pdf');
   const long = batchPrintFilename('数学试卷'.repeat(25), copy, { multiple: true });
-  expect(new TextEncoder().encode(long).byteLength).toBeLessThanOrEqual(240); expect(long).toMatch(/_总3_对3_错0_01\.pdf$/);
+  expect(new TextEncoder().encode(long).byteLength).toBeLessThanOrEqual(240); expect(long).toMatch(/_作答_第01份_3题_对3_错0\.pdf$/);
 });
 it('names question-only files without answer statistics and bounds total and filename bytes', () => {
-  expect(batchQuestionFilename('Maths:/1', 27)).toBe('Maths__1_总27_纯题目.pdf');
+  expect(batchQuestionFilename('Maths:/1', 27)).toBe('Maths__1_题目_27题.pdf');
   const long = batchQuestionFilename('数学试卷'.repeat(25), 400);
-  expect(new TextEncoder().encode(long).byteLength).toBeLessThanOrEqual(240); expect(long).toMatch(/_总400_纯题目\.pdf$/);
+  expect(new TextEncoder().encode(long).byteLength).toBeLessThanOrEqual(240); expect(long).toMatch(/_题目_400题\.pdf$/);
   for (const total of [0, -1, 1.5, 401, Infinity, NaN]) expect(() => batchQuestionFilename('Maths', total)).toThrow('题目数量');
 });

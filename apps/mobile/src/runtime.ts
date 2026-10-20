@@ -6,7 +6,7 @@ import * as Crypto from 'expo-crypto';
 import { LocalBatchQueue, LocalDataError, LocalEngine, LocalRepository } from '@solveflow/client/local';
 import { solveOnDevice, analyzeBatchPrintQuestion, type LocalCredentials } from '@solveflow/agent/mobile';
 import { AgentErrorCodeSchema, makeSafeAgentError } from '@solveflow/contracts/agent';
-import { LocalSettingsSchema, LocalKeySchema, LocalConcurrencySchema, LocalBatchEditSchema, ExamTypeSchema, type LocalSettings, type WebEnvironment, type WebModelUpdate } from '@solveflow/contracts/local';
+import { LocalSettingsSchema, LocalKeySchema, LocalConcurrencySchema, LocalBatchEditSchema, LocalDiagnosticSchema, ExamTypeSchema, type LocalSettings, type WebEnvironment, type WebModelUpdate } from '@solveflow/contracts/local';
 import { openDocuments } from './local/documents';
 import { readKey, writeKey } from './local/secrets';
 import { background, onBackgroundExpired } from './local/background';
@@ -97,18 +97,34 @@ async function openRuntime() {
   }
   return {
     repository, engine, batch,
-    async analyzePrintLayout(input: import('@solveflow/contracts/local').BatchPrintLayoutInput, signal: AbortSignal) {
+    async analyzePrintLayout(input: import('@solveflow/contracts/local').BatchPrintLayoutInput, signal: AbortSignal, progress?: (detail: string) => void, refinement?: import('@solveflow/contracts/local').PrintLayoutRefinement) {
       if (savingSettings || printAnalysisActive || engine.actives.length || batch.busy) throw new Error('请先结束当前任务，再识别导出题目。');
       if (!settings) throw new Error('请先在设置中配置模型服务，或手动整理导出题图。');
       printAnalysisActive = true;
+      let attempts = 0; let failureDetail = '';
       try {
-        const snapshot = settings;
-        const credentials: LocalCredentials = { solver: await readKey(keyName('solver')) ?? '', verifier: null };
+        const profile = refinement ? settings.verifier : settings.solver;
+        if (!profile) throw new Error('请先配置校验模型，再精修图示。');
+        const snapshot = refinement ? { ...settings, solver: profile } : settings;
+        const credentials: LocalCredentials = { solver: await readKey(keyName(refinement ? 'verifier' : 'solver')) ?? '', verifier: null };
         if (signal.aborted) throw new Error('导出识别已取消。');
-        return await analyzeBatchPrintQuestion(input, snapshot, credentials, modelFetch, signal);
+        return await analyzeBatchPrintQuestion(input, snapshot, credentials, modelFetch, signal, {
+          retryInvalidFormat: true, retryInvalidOwnership: true, retryTransientErrors: true, maxAttempts: 3,
+          ...(refinement ? { refinement } : {}),
+          onDiagnostic: entry => {
+            attempts = entry.attempt;
+            console.info(JSON.stringify({ type: 'print.layout', ...entry }));
+            const labels = { json: 'JSON 格式错误', schema: '字段校验失败', ownership: '题目或图源不匹配', network: '连接异常', 'rate-limit': '服务限流', 'output-limit': '输出超限', 'stop-reason': '模型结束异常', truncated: '输出截断' };
+            if (entry.reason) { const paths = entry.issues?.map(issue => issue.path).filter(Boolean).slice(0, 2).join('、'); failureDetail = `${labels[entry.reason]}${paths ? `：${paths}` : ''}`; }
+            if (entry.status === 'request') progress?.(`第 ${entry.attempt} / ${entry.maxAttempts} 次尝试`);
+            if (entry.status === 'retry') progress?.(`${entry.reason ? labels[entry.reason] : '响应无效'}，${(entry.retryDelayMs ?? 0) / 1000} 秒后重试 · 已尝试 ${entry.attempt} / ${entry.maxAttempts}`);
+          }
+        });
       } catch (cause) {
         const code = AgentErrorCodeSchema.safeParse(cause instanceof Error ? cause.message : null);
-        throw new Error(signal.aborted ? '导出已取消。' : code.success ? makeSafeAgentError(code.data, 'print-layout').message : '题目图片识别失败，请检查模型配置或手动整理。');
+        const reason = LocalDiagnosticSchema.shape.reason.safeParse(cause instanceof Error && 'reason' in cause ? cause.reason : null);
+        const message = signal.aborted ? '导出已取消。' : code.success && code.data === 'MODEL_OUTPUT_INVALID' ? reason.success && reason.data === 'truncated' ? `题目整理输出被模型截断，未保存不完整结果；请提高${refinement ? '校验模型' : '主模型'}输出上限后重试。` : '题目整理返回了无效内容；已保存的题目和答案仍可按保存内容导出。' : code.success ? makeSafeAgentError(code.data, 'print-layout').message : '题目图片整理失败，请检查模型配置或手动整理。';
+        throw new Error(`${message}${!signal.aborted && attempts > 1 ? `（已尝试 ${attempts} 次${failureDetail ? `，${failureDetail}` : ''}）` : ''}`);
       } finally { printAnalysisActive = false; }
     },
     async newBatch() { const date = new Date(); return { id: Crypto.randomUUID(), title: await repository.nextBatchTitle(date), createdAt: date.toISOString(), exam: settings?.exam ?? defaultExam }; },

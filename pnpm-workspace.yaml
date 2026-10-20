@@ -12,6 +12,13 @@ overrides:
   "fast-uri@>=3.0.0 <3.1.8": 3.1.8
   "ip-address@>=10.0.0 <10.7.1": 10.7.1
   "brace-expansion@>=5.0.0 <5.0.12": 5.0.12
+  # Decision: .agents/notes/implemented/security/2026-10-20-premerge-dependencies.md
+  "proxy-addr@>=1.1.0 <2.0.8": 2.0.8
+  "shell-quote@>=1.8.4 <1.11.0": 1.11.0
+  "source-map-js@>=1.0.0 <1.2.2": 1.2.2
+  "sharp@>=0.35.0 <0.35.5": 0.35.5
+  "@modelcontextprotocol/sdk@>=1.12.0 <1.31.0": 1.31.0
+  "micromark-extension-math@3.1.0>katex": 0.18.7
 # Published artifacts suffice for the current offline probes.
 # Transitive lifecycle scripts stay disabled pending explicit review.
 allowBuilds:
@@ -22,3 +29,4 @@ allowBuilds:
   sharp: false
 patchedDependencies:
   expo-camera@57.0.5: patches/expo-camera@57.0.5.patch
+  html2canvas@1.4.1: patches/html2canvas@1.4.1.patch

@@ -12,7 +12,7 @@
 
 [作答规划](../../../../packages/client/src/batch-print-variants.ts)按用户指定的计数规则处理原红警告，保留源候选与 verified。变化必须对应实际选项/作答，减少原错误需人工参照；有界枚举不同错题组合，无合法调整则拒绝。
 
-[导出界面](../../../../apps/mobile/src/components/batch-pdf-export.web.tsx)逐份预览，取消设置不应用草稿；[下载适配](../../../../apps/mobile/src/local/download-batch-pdfs.web.ts)每份按实际绘制DOM分页，本地生成全部文件后单次下载PDF或ZIP。[共享打印frame](../../../../apps/mobile/src/local/print-batch.web.ts)复用可信样式、图片/字体加载、长公式拟合及清理；DOM逐份创建，避免堆积多份base64副本。
+[导出界面](../../../../apps/mobile/src/components/batch-pdf-export.web.tsx)逐份预览，取消设置不应用草稿；[下载适配](../../../../apps/mobile/src/local/download-batch-pdfs.web.ts)每份按实际绘制DOM分页，本地生成全部文件后单次下载PDF或ZIP。[共享打印frame](../../../../apps/mobile/src/local/print-batch.web.ts)复用可信样式、图片/字体加载、长公式拟合及清理；DOM逐份创建，避免堆积多份base64副本。专用单题页范围由[单页绘制决定](2026-10-15-pdf-page-render-scope.md)细化，原始记录续页仍适用本决定。
 
 依赖采用 `html2canvas@1.4.1`、`jspdf@4.2.1`、`fflate@0.8.3`，均MIT；用途分别为浏览器页图、PDF容器、ZIP。html2canvas成熟但版本较旧、CSS/字体测量有限，必须用实际克隆DOM分页；jsPDF由yWorks维护，fflate提供有界可终止打包。均在Web下载时动态加载，原生路径不引入。Metro额外下载chunk约202KB、420KB、173KB，另有共享及purify chunk；独立压缩适配及传递依赖gzip约367KB。core-js转移安装脚本显式禁用，未扩大生命周期执行许可。官方依据：[jsPDF](https://github.com/parallax/jsPDF)、[html2canvas](https://html2canvas.hertzen.com/configuration)、[fflate](https://github.com/101arrowz/fflate)。
 

@@ -1,11 +1,11 @@
 import { z } from 'zod';
-import { BatchPrintLayoutSchema, PrintImageAdjustmentSchema, type BatchPrintLayoutInput, type BatchPrintLayout } from '@solveflow/contracts/local';
+import { BatchPrintLayoutSchema, PrintImageAdjustmentSchema, PreparedPrintRecordSchema, type PreparedPrintRecord, type BatchPrintLayoutInput, type BatchPrintLayout } from '@solveflow/contracts/local';
 import type { PrintImages } from '../dom/batch-print-document';
 import type { ReviewPrintSource } from './batch-print-presentation.web';
 
 // Decision: .agents/notes/implemented/storage/2026-10-13-print-layout-cache.md
-const CACHE_REVISION = 'print-layout-3';
-const MAX_CACHE_BYTES = 64 * 1024 * 1024; const MAX_ENTRIES = 128; const MAX_AGE = 7 * 24 * 60 * 60 * 1000;
+const CACHE_REVISION = 'print-layout-4';
+const MAX_CACHE_BYTES = 256 * 1024 * 1024; const MAX_ENTRIES = 512; const MAX_AGE = 7 * 24 * 60 * 60 * 1000;
 const CacheSchema = z.strictObject({
   schemaVersion: z.literal(1), proposal: BatchPrintLayoutSchema,
   images: z.record(z.string().max(256), z.string().max(6 * 1024 * 1024).regex(/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/)),
@@ -60,15 +60,39 @@ export function cachePrintLayout(proposal: BatchPrintLayout, images: PrintImages
   return CacheSchema.parse({ schemaVersion: 1, proposal, images: Object.fromEntries(Object.entries(images).filter(([key]) => keys.has(key))), sources: sources.filter(source => source.region), adjustments: Object.fromEntries(Object.entries(adjustments).filter(([key]) => keys.has(key))) });
 }
 export async function writePrintLayoutCache(key: string, value: CachedPrintLayout, signal: AbortSignal): Promise<void> {
-  const checked = CacheSchema.parse(value); const bytes = new TextEncoder().encode(JSON.stringify(checked)).byteLength;
+  await writeCacheEntry(key, CacheSchema.parse(value), signal);
+}
+async function writeCacheEntry(key: string, checked: unknown, signal: AbortSignal): Promise<void> {
+  const bytes = new TextEncoder().encode(JSON.stringify(checked)).byteLength;
   if (bytes > MAX_CACHE_BYTES) throw new Error('本题整理结果超过缓存容量。');
   return transaction(signal, 'readwrite', (tx, result) => {
-    const metadata = tx.objectStore('metadata'); const entries = tx.objectStore('entries'); const request = metadata.getAll();
+    const metadata = tx.objectStore('metadata'); const entries = tx.objectStore('entries'); const request = metadata.getAll(undefined, MAX_ENTRIES + 1);
     request.onsuccess = () => {
-      const rows = MetadataSchema.parse(request.result).filter(row => row.key !== key).sort((a, b) => a.usedAt - b.usedAt);
-      let total = rows.reduce((sum, row) => sum + row.bytes, 0) + bytes;
-      while (rows.length >= MAX_ENTRIES || total > MAX_CACHE_BYTES || rows[0] && Date.now() - rows[0].usedAt > MAX_AGE) { const row = rows.shift(); if (!row) break; total -= row.bytes; entries.delete(row.key); metadata.delete(row.key); }
-      entries.put(checked, key); metadata.put({ key, bytes, usedAt: Date.now() }); result(undefined);
+      try {
+        const rows = MetadataSchema.parse(request.result).filter(row => row.key !== key).sort((a, b) => a.usedAt - b.usedAt);
+        let total = rows.reduce((sum, row) => sum + row.bytes, 0) + bytes;
+        while (rows.length >= MAX_ENTRIES || total > MAX_CACHE_BYTES) { const row = rows.shift(); if (!row) break; total -= row.bytes; entries.delete(row.key); metadata.delete(row.key); }
+        entries.put(checked, key); metadata.put({ key, bytes, usedAt: Date.now() }); result(undefined);
+      } catch { tx.abort(); }
     };
   });
+}
+
+// Prepared documents do not expire by age; only explicit edits, resource limits or browser storage eviction invalidate them.
+export async function preparedPrintCacheKey(input: BatchPrintLayoutInput): Promise<string> {
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ questions: input.questions, sources: input.sources })));
+  return `prepared-paper-1-sharpen-1:${Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')}`;
+}
+export async function readPreparedPrintCache(key: string, signal: AbortSignal): Promise<PreparedPrintRecord | null> {
+  return transaction(signal, 'readwrite', (tx, result) => {
+    const entries = tx.objectStore('entries'); const metadata = tx.objectStore('metadata'); const request = entries.get(key); const info = metadata.get(key);
+    info.onsuccess = () => {
+      const meta = MetadataSchema.element.safeParse(info.result); const cached = PreparedPrintRecordSchema.safeParse(request.result);
+      if (!meta.success || !cached.success) { result(null); return; }
+      metadata.put({ ...meta.data, usedAt: Date.now() }); result(cached.data);
+    };
+  });
+}
+export async function writePreparedPrintCache(key: string, value: PreparedPrintRecord, signal: AbortSignal): Promise<void> {
+  await writeCacheEntry(key, PreparedPrintRecordSchema.parse(value), signal);
 }

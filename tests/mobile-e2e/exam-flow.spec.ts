@@ -61,14 +61,27 @@ test('after clarification, supplement explicitly regenerates with original and n
   });
   await page.goto('/'); await configureLocalModel(page); await chooseSyntheticPhoto(page);
   await page.getByRole('button', { name: '开始解题', exact: true }).click(); await expect(page.getByText('请补充右侧数值。', { exact: true })).toBeVisible();
+  const originalImage = await page.locator('.original-photo-preview img').getAttribute('src');
   await page.getByRole('button', { name: '同题材料 / 补图', exact: true }).click();
   const buffer = await page.screenshot({ type: 'jpeg' }); const chooser = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: '从相册补图', exact: true }).click(); await (await chooser).setFiles({ name: 'detail.jpg', mimeType: 'image/jpeg', buffer });
   await page.getByRole('button', { name: '使用这张题图', exact: true }).click();
-  await expect(page.getByRole('button', { name: '查看材料 1', exact: true })).toBeVisible(); expect(bodies).toHaveLength(1);
-  await page.getByRole('button', { name: '使用原图和全部补图重新解答', exact: true }).click();
-  await expect(page.getByText(answer.answer, { exact: true }).first()).toBeVisible(); expect(bodies).toHaveLength(2);
+  const material = page.getByRole('button', { name: '查看材料 1', exact: true });
+  await expect(material).toBeVisible(); expect(bodies).toHaveLength(1);
+  const supplementImage = await material.locator('img').getAttribute('src');
+  await page.getByRole('button', { name: '使用当前图片重新解答', exact: true }).click();
+  await expect(page.locator('.final-answer')).toContainText(answer.answer); expect(bodies).toHaveLength(2);
   expect(lastModelInput(bodies[1])).toMatchObject({ materialOrder: [expect.any(String)], focus: { kind: 'regenerate' } });
   expect(JSON.stringify(bodies[1]).match(/"type":"image_url"/g)).toHaveLength(2);
+  const images = (body: unknown) => {
+    if (!body || typeof body !== 'object' || !('messages' in body) || !Array.isArray(body.messages)) throw new Error('INVALID_MODEL_REQUEST');
+    return body.messages.flatMap((message: unknown) => {
+      if (!message || typeof message !== 'object' || !('content' in message) || !Array.isArray(message.content)) return [];
+      return message.content.flatMap((part: unknown) => part && typeof part === 'object' && 'type' in part && part.type === 'image_url' && 'image_url' in part && part.image_url && typeof part.image_url === 'object' && 'url' in part.image_url ? [part.image_url.url] : []);
+    });
+  };
+  expect(originalImage).toEqual(expect.any(String)); expect(supplementImage).toEqual(expect.any(String));
+  expect(images(bodies[0])).toEqual([originalImage]);
+  expect(images(bodies[1])).toEqual([originalImage, supplementImage]);
   await page.reload(); await expect(page.getByText(answer.answer, { exact: true }).first()).toBeVisible(); expect(bodies).toHaveLength(2);
 });

@@ -57,10 +57,13 @@ test("renders model formulas, tables, authorized images and diagrams safely at 3
   await expect(page.getByText("左右滑动查看完整公式")).toBeVisible();
   expect(edges.start).toBeGreaterThanOrEqual(edges.left);
   expect(edges.end).toBeLessThanOrEqual(edges.right + 1);
-  await page.locator(".step-details").getByRole("button", { name: "放大图示" }).click();
-  expect(await page.locator(".step-details .figure-viewport").evaluate(node => node.scrollWidth > node.clientWidth)).toBe(true);
+  const figure = page.locator('.step-details figure.answer-figure').filter({ has: page.getByRole('region', { name: '位置与时间，可放大并横向滚动', exact: true }) });
+  await expect(figure).toHaveCount(1);
+  await figure.getByRole('button', { name: '放大图示', exact: true }).click();
+  expect(await figure.locator('.figure-viewport').evaluate(node => node.scrollWidth > node.clientWidth)).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.getByRole("button", { name: "适应宽度" }).click();
+  await figure.getByRole('button', { name: '适应宽度', exact: true }).click();
+  await expect(figure.getByRole('button', { name: '放大图示', exact: true })).toHaveAttribute('aria-pressed', 'false');
   await page.screenshot({ path: `.runtime/screenshots/${testInfo.project.name}-rich-answer.png`, fullPage: true });
   expect(dialogs).toBe(0); expect(externalRequests).toBe(0);
 });

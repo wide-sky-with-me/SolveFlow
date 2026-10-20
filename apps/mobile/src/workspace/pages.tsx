@@ -13,6 +13,7 @@ import { BatchPdfExport, batchPdfAvailable } from '../components/batch-pdf-expor
 import { useState } from 'react';
 import { HistoryPanel } from '../components/history-panel';
 import { Profile } from '../components/profile';
+import { ExportRecordsEntry } from '../components/export-records';
 import type { Runtime } from '../runtime';
 import type { WorkspaceState } from './use-workspace-state';
 import type { WorkspaceActions } from './use-workspace-actions';
@@ -292,6 +293,7 @@ export function ProfilePage({ runtime, state, actions }: PageProps) {
               void list(true).catch(cause => setError(clientError(cause)));
             }}
           />
+          <ExportRecordsEntry runtime={runtime} />
         </ScrollView>
       )}
     </View>

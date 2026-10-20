@@ -118,7 +118,7 @@
 .answer-document .answer-verification-state { padding:3px 9px; border-radius:999px; background:var(--sf-warning-bg); color:var(--sf-warning); font-size:13px; line-height:22px; white-space:nowrap; }
 .answer-document .verify-button { min-height:44px; padding:8px 12px; font-size:13px; }
 .answer-document .verify-button:disabled { opacity:1; }
-.answer-document .final-answer .verify-button { background:transparent; border-color:var(--sf-line); font-size:14px; font-weight:500; }
+.answer-document .final-answer .verify-button { background:transparent; border-color:var(--sf-line); font-size:13px; font-weight:500; }
 .answer-document .answer-explanation { max-width:76ch; line-height:1.95; }
 .answer-document .answer-explanation .answer-markdown>p { margin:0 0 16px; }
 .answer-document .answer-explanation .answer-markdown>p:last-child { margin-bottom:0; }

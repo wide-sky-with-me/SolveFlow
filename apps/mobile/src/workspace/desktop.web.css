@@ -169,3 +169,6 @@ body:has([data-testid='desktop-brand'][data-theme='dark']) { --navigation-focus:
   [data-testid='navigation-items'] > [role='tab']:hover { background: var(--desktop-soft); }
   [data-testid='profile-menu'] > [role='button']:not([aria-disabled='true']):hover { background: var(--desktop-hero); }
 }
+
+/* Leave room for focus rings and fractional scroll rounding at every viewport. */
+[data-testid='question-reading-scroll'] { scroll-padding-block: 8px; }

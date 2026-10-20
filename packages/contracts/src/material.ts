@@ -10,6 +10,10 @@ export const MaterialIdsSchema = z.array(z.uuid()).max(MAX_MATERIAL_IMAGES).refi
 export const MaterialInfoSchema = z.strictObject({ id: z.uuid(), width: z.number().int().positive().max(2048), height: z.number().int().positive().max(2048), bytes: z.number().int().positive().max(4 * 1024 * 1024) });
 export const LocalImageDataSchema = z.string().max(5_592_432).regex(/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/);
 export const LocalMaterialSchema = MaterialInfoSchema.extend({ image: LocalImageDataSchema });
+/** Normalized pixels supplied for an explicit local material save. IDs and bytes are owned by the engine. */
+export const LocalMaterialImageSchema = z.strictObject({ image: LocalImageDataSchema, width: MaterialInfoSchema.shape.width, height: MaterialInfoSchema.shape.height });
+export const LocalMaterialImagesSchema = z.array(LocalMaterialImageSchema).min(1).max(MAX_MATERIAL_IMAGES);
+export type LocalMaterialImage = z.infer<typeof LocalMaterialImageSchema>;
 /** A local correction draft, never a model input or a persisted run context. */
 export const LocalImageEditSchema = z.strictObject({ imageIds: QuestionImageIdsSchema, additions: z.array(LocalMaterialSchema).max(MAX_MATERIAL_IMAGES + 1) });
 export type LocalImageEdit = z.infer<typeof LocalImageEditSchema>;

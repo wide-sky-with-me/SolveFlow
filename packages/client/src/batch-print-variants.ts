@@ -1,10 +1,45 @@
-import { BatchPrintSnapshotSchema, BatchPrintQuestionsSchema, BatchPrintCopyRequestsSchema, BatchPrintReferencesSchema, BatchPrintCopySchema, MAX_BATCH_PRINT_QUESTIONS, type BatchPrintQuestion, type BatchPrintReference, type BatchPrintCopy, type BatchPrintCopyAnswer } from '@solveflow/contracts/local';
+import { BatchPrintSnapshotSchema, parseCapturedBatchPrintSnapshot, parseCollectedBatchPrintSnapshot, BatchPrintProblemsSchema, BatchPrintQuestionsSchema, BatchPrintCopyRequestsSchema, BatchPrintReferencesSchema, BatchPrintCopySchema, MAX_BATCH_PRINT_QUESTIONS, MAX_BATCH_PRINT_COPIES, type BatchPrintSnapshot, type BatchPrintProblem, type BatchPrintQuestion, type BatchPrintReference, type BatchPrintCopy, type BatchPrintCopyAnswer } from '@solveflow/contracts/local';
 import { isAuxiliaryContext } from '@solveflow/contracts/http';
 import { questionConversations } from './question-conversations.js';
 
+/** Question extraction is independent of solving and never projects answer fields. */
+export function questionsForBatchQuestionPrint(input: unknown): BatchPrintProblem[] {
+  return sourceProblems(BatchPrintSnapshotSchema.parse(input));
+}
+
+// Decision: .agents/notes/implemented/storage/2026-10-19-pdf-captured-validation.md
+/** Only for an exclusively owned capture; keeps all source and output validation. */
+export async function questionsForCapturedBatchQuestionPrint(input: unknown, beforeRecord: () => Promise<void>): Promise<BatchPrintProblem[]> {
+  return sourceProblems(await parseCapturedBatchPrintSnapshot(input, beforeRecord));
+}
+
+// Decision: .agents/notes/implemented/storage/2026-10-19-pdf-preflight-validation.md
+/** Captures a schema-produced inert snapshot for cooperative preflight; does not replace the formal task capture. */
+export async function questionsForCollectedBatchQuestionPrint(input: unknown, beforeRecord: () => Promise<void>): Promise<BatchPrintProblem[]> {
+  return sourceProblems(await parseCollectedBatchPrintSnapshot(input, beforeRecord));
+}
+
+function sourceProblems(snapshot: BatchPrintSnapshot): BatchPrintProblem[] {
+  const questions: BatchPrintProblem[] = [];
+  for (const record of [...snapshot.records].sort((a, b) => (a.batch?.position ?? 0) - (b.batch?.position ?? 0))) {
+    const threads = questionConversations(record.session.runs).filter(thread => thread.runs.some(run => !isAuxiliaryContext(run.context?.kind)));
+    if (!threads.length) questions.push({ key: `${record.session.id}/unanswered`, ordinal: questions.length + 1, recordId: record.session.id, problem: null });
+    for (const thread of threads) {
+      const run = thread.runs.findLast(item => !isAuxiliaryContext(item.context?.kind) && (item.outcome?.status === 'completed' || item.outcome?.status === 'needs_clarification'));
+      const problem = run?.outcome?.status === 'completed' || run?.outcome?.status === 'needs_clarification' ? run.outcome.candidate.problem : null;
+      questions.push({ key: `${record.session.id}/${thread.key}`, ordinal: questions.length + 1, recordId: record.session.id, ...(thread.number !== undefined ? { number: thread.number } : {}), problem });
+    }
+  }
+  return BatchPrintProblemsSchema.parse(questions);
+}
+
 /** An export assumption never changes the saved independent verification. */
 export function questionsForBatchPrint(input: unknown): BatchPrintQuestion[] {
-  const snapshot = BatchPrintSnapshotSchema.parse(input); const questions: BatchPrintQuestion[] = [];
+  return savedQuestions(BatchPrintSnapshotSchema.parse(input));
+}
+
+function savedQuestions(snapshot: BatchPrintSnapshot): BatchPrintQuestion[] {
+  const questions: BatchPrintQuestion[] = [];
   for (const record of [...snapshot.records].sort((a, b) => (a.batch?.position ?? 0) - (b.batch?.position ?? 0))) {
     const threads = questionConversations(record.session.runs);
     if (!threads.length) throw new Error('作答调整只对有完整已保存回答的批次开放。');
@@ -20,22 +55,42 @@ export function questionsForBatchPrint(input: unknown): BatchPrintQuestion[] {
   return BatchPrintQuestionsSchema.parse(questions);
 }
 
+// Decision: .agents/notes/implemented/storage/2026-10-16-export-snapshot-projection.md
+/** Validate one source per invocation; keep page errors ahead of answer extraction. */
+export function projectBatchPrintSnapshot(input: unknown, includeAnswers: boolean, checkPageCount?: (count: number) => void): { snapshot: BatchPrintSnapshot; problems: BatchPrintProblem[]; questions: BatchPrintQuestion[] } {
+  const snapshot = BatchPrintSnapshotSchema.parse(input);
+  const problems = sourceProblems(snapshot);
+  checkPageCount?.(problems.length);
+  return { snapshot, problems, questions: includeAnswers ? savedQuestions(snapshot) : [] };
+}
+
+// Decision: .agents/notes/implemented/storage/2026-10-19-pdf-captured-projection.md
+/** Only for an inert isolated capture (no accessors/proxies), exclusively owned until completion. Still validates unknown. */
+export async function projectCapturedBatchPrintSnapshot(input: unknown, includeAnswers: boolean, beforeRecord: () => Promise<void>, checkPageCount?: (count: number) => void): Promise<ReturnType<typeof projectBatchPrintSnapshot>> {
+  const snapshot = await parseCapturedBatchPrintSnapshot(input, beforeRecord);
+  const problems = sourceProblems(snapshot);
+  checkPageCount?.(problems.length);
+  return { snapshot, problems, questions: includeAnswers ? savedQuestions(snapshot) : [] };
+}
+
+// Decision: .agents/notes/implemented/storage/2026-10-15-printable-variant-boundary.md
 const sameOptions = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every(label => b.includes(label));
 function referenceFor(question: BatchPrintQuestion, override?: BatchPrintReference) {
   const options = override?.referenceOptions !== undefined ? override.referenceOptions : question.baselineWrong ? null : question.candidate.selectedOptions ?? null;
   const answer = override?.referenceAnswer !== undefined ? override.referenceAnswer : question.baselineWrong ? null : question.candidate.answer;
-  if (options && (options.some(label => !question.validOptions.includes(label)) || (question.candidate.problem.response?.type !== 'multiple-choice' && options.length !== 1))) throw new Error(`第${question.ordinal}题的参照选项无效。`);
+  const allowed = override?.referenceOptions !== undefined ? question.printOptions ?? question.validOptions : question.validOptions;
+  if (options && (options.some(label => !allowed.includes(label)) || (question.candidate.problem.response?.type !== 'multiple-choice' && options.length !== 1))) throw new Error(`第${question.ordinal}题的参照选项无效。`);
   return { options, answer, wrongAnswer: override?.wrongAnswer ?? '' };
 }
 function alternativeOptions(question: BatchPrintQuestion, reference: string[], offset: number): string[] | null {
-  const alternatives = question.validOptions.filter(label => !sameOptions([label], reference) && !sameOptions([label], question.candidate.selectedOptions ?? []));
+  const alternatives = (question.printOptions ?? question.validOptions).filter(label => !sameOptions([label], reference));
   const label = alternatives[offset % alternatives.length];
   return label ? [label] : null;
 }
 function adjustedAnswer(question: BatchPrintQuestion, incorrect: boolean, copyIndex: number, override?: BatchPrintReference): { answer: string; selectedOptions?: string[] } | null {
   const reference = referenceFor(question, override);
   if (question.validOptions.length) {
-    if (!reference.options || question.candidate.problem.optionsComplete === false) return null;
+    if (!reference.options || (question.printOptionsComplete ?? question.candidate.problem.optionsComplete) === false || reference.options.some(label => !(question.printOptions ?? question.validOptions).includes(label))) return null;
     const options = incorrect ? alternativeOptions(question, reference.options, copyIndex + question.ordinal) : reference.options;
     return options ? { answer: options.join('、'), selectedOptions: options } : null;
   }
@@ -101,11 +156,15 @@ function printFilename(batchName: string, suffix: string): string {
   while (new TextEncoder().encode(title.join('') + suffix).byteLength > 240) title.pop();
   return title.join('') + suffix;
 }
-export function batchPrintFilename(batchName: string, input: unknown, options: { multiple?: boolean } = {}): string {
+export function batchPrintFilename(batchName: string, input: unknown, _options: { multiple?: boolean } = {}): string {
   const copy = BatchPrintCopySchema.parse(input);
-  return printFilename(batchName, `_总${copy.total}_对${copy.correct}_错${copy.incorrect}${options.multiple ? `_${String(copy.copyIndex).padStart(2, '0')}` : ''}.pdf`);
+  return printFilename(batchName, `_作答_第${String(copy.copyIndex).padStart(2, '0')}份_${copy.total}题_对${copy.correct}_错${copy.incorrect}.pdf`);
 }
 export function batchQuestionFilename(batchName: string, total: number): string {
   if (!Number.isInteger(total) || total < 1 || total > MAX_BATCH_PRINT_QUESTIONS) throw new Error('导出题目数量无效。');
-  return printFilename(batchName, `_总${total}_纯题目.pdf`);
+  return printFilename(batchName, `_题目_${total}题.pdf`);
+}
+export function batchPrintArchiveFilename(batchName: string, copies: number): string {
+  if (!Number.isInteger(copies) || copies < 1 || copies > MAX_BATCH_PRINT_COPIES) throw new Error('导出份数无效。');
+  return printFilename(batchName, `_作答_${copies}份.zip`);
 }

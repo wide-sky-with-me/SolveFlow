@@ -89,3 +89,24 @@ it('removed evidence remains in backups and legacy runs still use original plus 
   await target.repository.importHistory(async function* () { yield bytes; }, { aborted: false });
   expect(await target.repository.read(record.session.id)).toEqual(saved);
 });
+
+it('adds several materials in order with one transaction and leaves no prefix on failed storage or invalid pixels', async () => {
+  const { engine, repository, values, fail } = setup(); const record = await engine.create(jpeg, 2, 2); const before = new Map(values);
+  const inputs = Array.from({ length: 3 }, () => ({ image: jpeg, width: 2, height: 2 }));
+  fail(true); await expect(engine.addMaterials(record.session.id, inputs)).rejects.toThrow('disk full'); expect(values).toEqual(before);
+  fail(false); await expect(engine.addMaterials(record.session.id, [...inputs, { image: jpeg, width: 3, height: 2 }])).rejects.toThrow(); expect(values).toEqual(before);
+  const saved = await engine.addMaterials(record.session.id, inputs); expect(saved.materials).toHaveLength(3); expect(saved.activeImageIds).toEqual([record.session.upload.id, ...saved.materials!.map(item => item.id)]); expect(saved.session.runs).toHaveLength(0);
+  expect(await repository.read(record.session.id)).toEqual(saved);
+  await expect(engine.addMaterials(record.session.id, Array.from({ length: 5 }, () => inputs[0]))).rejects.toThrow('最多使用8张'); expect(await repository.read(record.session.id)).toEqual(saved);
+});
+it('editing a saved supplement preserves prior evidence, slot order and storage on failure without starting a task', async () => {
+  const { engine, repository, values, fail } = setup(); const original = await engine.create(jpeg, 2, 2); const added = await engine.addMaterials(original.session.id, [{ image: jpeg, width: 2, height: 2 }, { image: jpeg, width: 2, height: 2 }]);
+  const run = await engine.start(original.session.id, '', undefined, async () => answer); await engine.waitForIdle();
+  const before = await repository.read(original.session.id); const bytes = new Map(values); const source = added.materials![0]!;
+  fail(true); await expect(engine.replaceMaterial(original.session.id, source.id, jpeg, 2, 2)).rejects.toThrow('disk full'); expect(values).toEqual(bytes); fail(false);
+  const saved = await engine.replaceMaterial(original.session.id, source.id, jpeg, 2, 2); const replacement = saved.materials!.at(-1)!;
+  expect(saved.materials?.slice(0, 2)).toEqual(before.materials); expect(saved.activeImageIds).toEqual([original.session.upload.id, replacement.id, added.materials![1]!.id]); expect(saved.session.runs).toEqual(before.session.runs);
+  expect(prepareLocalRunRequest(saved, '', { kind: 'verification', sourceRunId: run.id }).imageIds).toEqual(before.activeImageIds);
+  expect(prepareLocalRunRequest(saved, '', undefined).imageIds).toEqual(saved.activeImageIds);
+  await expect(engine.replaceMaterial(original.session.id, source.id, jpeg, 2, 2)).rejects.toThrow('已变化'); expect(await repository.read(original.session.id)).toEqual(saved);
+});

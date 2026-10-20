@@ -7,13 +7,22 @@ test('three-entry navigation opens camera directly and returns to its previous p
   await expect(page.getByTestId('launch-screen')).toBeHidden();
   await expect(page.getByRole('button', { name: 'SolveFlow 首页' })).toHaveCount(0);
   const nav = page.getByRole('navigation', { name: '主导航' });
-  await expect(nav.getByRole('tab')).toHaveCount(2);
-  await expect(nav.getByRole('button')).toHaveCount(1);
+  const entries = nav.getByTestId('navigation-items');
+  await expect(entries.getByRole('tab')).toHaveCount(2);
+  await expect(entries.getByRole('button')).toHaveCount(1);
+  const cameraEntry = entries.getByRole('button', { name: '拍照', exact: true });
+  await expect(cameraEntry).toHaveCount(1); await expect(cameraEntry).toBeEnabled();
+  const brand = nav.getByTestId('desktop-brand');
+  if (page.viewportSize()!.width >= 1100) {
+    await expect(brand).toBeVisible(); await expect(brand.getByText('SolveFlow', { exact: true })).toBeVisible();
+    await expect(brand.getByRole('button')).toHaveCount(1);
+    await expect(brand.getByRole('button', { name: '选择默认考试：未指定', exact: true })).toHaveAttribute('aria-haspopup', 'dialog');
+  } else await expect(brand).toBeHidden();
   await nav.getByRole('tab', { name: '我的', exact: true }).click();
   await expect(page.getByRole('button', { name: '设置', exact: true })).toBeVisible();
   await expect(page.getByText('题图与解答保存在本机')).toHaveCount(0);
   await expect(page.getByText('卸载应用或清除本地数据会删除题目记录。解题时，题图会发送至你配置的模型服务。')).toHaveCount(0);
-  await nav.getByRole('button', { name: '拍照', exact: true }).click();
+  await cameraEntry.click();
   await expect(page.getByText('拍摄题目', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '关闭相机' }).click();
   await expect(nav.getByRole('tab', { name: '我的', exact: true })).toHaveAttribute('aria-selected', 'true');
@@ -23,7 +32,7 @@ test('three-entry navigation opens camera directly and returns to its previous p
   await page.getByRole('button', { name: '查看历史题目' }).click();
   await expect(page.getByText('还没有解题记录')).toBeVisible();
   await page.setViewportSize({ width: 320, height: 700 });
-  const bounds = await nav.boundingBox(); const camera = await nav.getByRole('button').boundingBox();
+  const bounds = await nav.boundingBox(); const camera = await cameraEntry.boundingBox();
   expect(bounds).not.toBeNull(); expect(camera).not.toBeNull();
   expect(Math.abs(camera!.x + camera!.width / 2 - 160)).toBeLessThan(2);
   expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(700);

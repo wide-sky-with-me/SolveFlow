@@ -52,9 +52,9 @@ test('batch PDF keeps ordered questions, originals, saved details and verificati
   const originals = async () => page.evaluate(() => new Promise<string[]>((resolve, reject) => { const open = indexedDB.open('solveflow-local'); open.onsuccess = () => { const db = open.result; const tx = db.transaction('documents'); const req = tx.objectStore('documents').getAll(); tx.oncomplete = () => { db.close(); resolve(req.result.filter((value: unknown) => typeof value === 'string' && value.includes('"session"'))); }; tx.onerror = () => reject(tx.error); }; }));
   const before = await originals();
   await page.getByRole('button', { name: '批次操作', exact: true }).click(); await page.getByRole('button', { name: '导出本批 PDF', exact: true }).click();
+  await page.getByRole('button', { name: '原始记录', exact: true }).click();
   await page.getByText('预览导出内容', { exact: true }).click(); await page.getByText('图片整理', { exact: true }).click();
   const preview = page.getByTestId('batch-print-preview'); await expect(preview).toBeVisible();
-  await page.getByRole('button', { name: '原始记录', exact: true }).click();
   await expect(preview.getByTestId('printed-question')).toHaveCount(2); await expect(preview).toContainText('校验通过'); await expect(preview).toContainText('未确认'); await expect(preview).toContainText('Subtract one');
   await expect(preview).toContainText('Legacy knowledge name'); await expect(preview).toContainText('Keep the signs consistent.');
   const text = await preview.innerText(); expect(text.indexOf('Synthetic question 1')).toBeLessThan(text.indexOf('Synthetic question 2'));
@@ -63,8 +63,12 @@ test('batch PDF keeps ordered questions, originals, saved details and verificati
   await page.getByLabel('导出题图旋转角度').fill('2'); await page.getByRole('button', { name: '更新图像预览', exact: true }).click();
   await expect(page.getByRole('button', { name: '打印 / 保存 PDF', exact: true })).toBeEnabled();
   const prepared = await page.getByAltText('整理后题图', { exact: true }).getAttribute('src');
-  await page.getByLabel('导出裁切left').fill('100'); await page.getByRole('button', { name: '更新图像预览', exact: true }).click();
-  await expect(page.getByText('请检查旋转角度和裁切范围，裁切后的宽高须至少保留 5%。', { exact: true })).toBeVisible();
+  await page.getByLabel('导出裁切left').fill('100');
+  await expect(page.getByRole('button', { name: '更新图像预览', exact: true })).toBeDisabled();
+  // Unapplied image edits leave the last saved preview available for export.
+  await expect(page.getByRole('button', { name: '打印 / 保存 PDF', exact: true })).toBeEnabled();
+  await expect(page.getByLabel('导出裁切left')).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.getByText('裁切边界需为 0% 至 100% 的完整数字，宽高至少保留 5%。', { exact: true })).toBeVisible();
   expect(await page.getByAltText('整理后题图', { exact: true }).getAttribute('src')).toBe(prepared);
   await page.getByLabel('导出裁切left').fill('0'); await page.getByRole('button', { name: '更新图像预览', exact: true }).click();
   await page.getByRole('button', { name: '打印 / 保存 PDF', exact: true }).click();
@@ -77,13 +81,15 @@ test('batch PDF keeps ordered questions, originals, saved details and verificati
 });
 test('a corrupt image aborts the complete PDF and retains all source records', async ({ page }) => {
   await seed(page, true); await page.getByRole('button', { name: '批次操作', exact: true }).click(); await page.getByRole('button', { name: '导出本批 PDF', exact: true }).click();
+  await page.getByRole('button', { name: '原始记录', exact: true }).click();
   await expect(page.getByRole('button', { name: '打印 / 保存 PDF', exact: true })).toBeEnabled();
-  await page.getByRole('button', { name: '原始记录', exact: true }).click(); await page.getByRole('button', { name: '打印 / 保存 PDF', exact: true }).click();
+  await page.getByRole('button', { name: '打印 / 保存 PDF', exact: true }).click();
   await expect(page.getByText('题图无法读取。', { exact: true })).toBeVisible(); await expect(page.getByTestId('batch-print-document')).toHaveCount(0); await expect(page.locator('iframe[title="批次 PDF 打印"]')).toHaveCount(0);
   await page.getByRole('button', { name: '关闭导出', exact: true }).click(); await expect(page.getByTestId('current-batch')).toBeVisible();
 });
 test('a tilted screen is straightened on demand while automatic preparation preserves the full crop and stays usable in short narrow layouts', async ({ page }) => {
   await seed(page, false, true); await page.getByRole('button', { name: '批次操作', exact: true }).click(); await page.getByRole('button', { name: '导出本批 PDF', exact: true }).click();
+  await page.getByRole('button', { name: '原始记录', exact: true }).click();
   await page.getByText('预览导出内容', { exact: true }).click(); await page.getByText('图片整理', { exact: true }).click();
   await expect(page.getByTestId('batch-print-preview')).toBeVisible();
   await page.getByRole('button', { name: '自动整理本图', exact: true }).click(); await expect(page.getByRole('button', { name: '打印 / 保存 PDF', exact: true })).toBeEnabled();

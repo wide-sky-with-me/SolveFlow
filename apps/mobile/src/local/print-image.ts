@@ -1,11 +1,15 @@
 import { PrintImageAdjustmentSchema, PrintLayoutRegionSchema, type PrintImageAdjustment } from '@solveflow/contracts/local';
 import { originalIllustrationBounds, type ProblemStatement } from '@solveflow/contracts/agent';
+import { sharpenPrintPixels } from './print-image-sharpen';
+import { normalizePrintPaperPixels } from './print-image-paper';
+import { estimatePrintRotation } from './print-image-deskew';
+import { warpPrintPerspective } from './print-image-perspective';
 
 export const originalPrintAdjustment: PrintImageAdjustment = { rotation: 0, crop: { left: 0, top: 0, right: 1, bottom: 1 }, enhance: false };
 type Bounds = { left: number; top: number; right: number; bottom: number; count: number };
 function documentField(data: ImageData): Uint8Array {
   const { width: w, height: h } = data; const available = new Uint8Array(w * h); const field = new Uint8Array(w * h); let biggest: number[] = [];
-  for (let index = 0; index < available.length; index++) { const p = index * 4; const r = data.data[p] ?? 0; const g = data.data[p + 1] ?? 0; const b = data.data[p + 2] ?? 0; if ((r + g + b) / 3 > 75 && Math.max(r, g, b) - Math.min(r, g, b) < 22) available[index] = 1; }
+  for (let index = 0; index < available.length; index++) { const p = index * 4; const r = data.data[p] ?? 0; const g = data.data[p + 1] ?? 0; const b = data.data[p + 2] ?? 0; if ((r + g + b) / 3 > 75 && Math.max(r, g, b) - Math.min(r, g, b) < 65) available[index] = 1; }
   const stack: number[] = [];
   for (let i = 0; i < available.length; i++) if (available[i]) {
     const component: number[] = []; available[i] = 0; stack.push(i);
@@ -39,11 +43,13 @@ function textInkPoints(data: ImageData): [number, number][] {
     const area = (bound.right - bound.left + 1) * (bound.bottom - bound.top + 1);
     if (bound.count >= 3 && !(bound.right - bound.left > w * .85) && !(bound.bottom - bound.top > h * .85) && !(area > w * h * .018 && bound.count / area > .25)) components.push(bound);
   }
-  const points: [number, number][] = [];
-  for (const component of components) if (component.right - component.left <= w * .06 && component.bottom - component.top <= h * .06 && component.top > h * .08 && component.bottom < h * .85 && component.right < w * .75) {
+  const points: [number, number][] = []; let glyphs = 0;
+  // Crops have no fixed text margin; relevant labels can sit on any side of the diagram.
+  for (const component of components) if (component.right - component.left <= w * .06 && component.bottom - component.top <= h * .06 && component.left > w * .015 && component.top > h * .015 && component.bottom < h * .985 && component.right < w * .985) {
+    glyphs++;
     for (let y = component.top; y <= component.bottom; y++) for (let x = component.left; x <= component.right; x++) if (ink[y * w + x]) points.push([x, y]);
   }
-  return points;
+  return glyphs >= 12 ? points : [];
 }
 function canvas(width: number, height: number) { const result = document.createElement('canvas'); result.width = width; result.height = height; const context = result.getContext('2d', { willReadFrequently: true }); if (!context) throw new Error('浏览器不支持图像整理。'); return { canvas: result, context }; }
 async function loadImage(uri: string, signal: AbortSignal) {
@@ -61,7 +67,7 @@ async function loadImage(uri: string, signal: AbortSignal) {
   if (image.width * image.height > 16_000_000) throw new Error('题图尺寸超过整理上限。');
   return image;
 }
-function rotated(image: HTMLImageElement, angle: number, maxSize: number) {
+function rotated(image: HTMLImageElement | HTMLCanvasElement, angle: number, maxSize: number) {
   const radians = angle * Math.PI / 180; const scale = Math.min(1, maxSize / Math.max(image.width, image.height));
   const w = image.width * scale; const h = image.height * scale;
   const result = canvas(Math.ceil(Math.abs(w * Math.cos(radians)) + Math.abs(h * Math.sin(radians))), Math.ceil(Math.abs(h * Math.cos(radians)) + Math.abs(w * Math.sin(radians))));
@@ -91,47 +97,44 @@ function screenLineRotation(data: ImageData): number | null {
   return Math.sqrt(error) < 2.5 && Math.abs(angle) <= 12 ? Math.round(angle * 4) / 4 : null;
 }
 export async function detectPrintAdjustment(uri: string, signal: AbortSignal): Promise<PrintImageAdjustment> {
-  const image = await loadImage(uri, signal); const sample = rotated(image, 0, 600); const data = sample.context.getImageData(0, 0, sample.canvas.width, sample.canvas.height); const points = textInkPoints(data);
-  let rotation = 0; let best = 0;
-  if (points.length > 30) for (let angle = -12; angle <= 12; angle += .25) {
-    const radians = angle * Math.PI / 180; const bins = new Uint32Array(sample.canvas.height + sample.canvas.width);
-    for (const [x, y] of points) { const row = Math.round(y * Math.cos(radians) + x * Math.sin(radians)) + Math.ceil(sample.canvas.width / 2); if (row >= 0 && row < bins.length) bins[row] = (bins[row] ?? 0) + 1; }
-    const score = bins.reduce((sum, count) => sum + count * count, 0); if (score > best) { best = score; rotation = angle; }
-  }
-  rotation = screenLineRotation(data) ?? rotation;
-  sample.canvas.width = 0;
-  // A text detector cannot prove that faint diagrams or last choices lie inside its bounds.
-  // Keep the complete rotated source until the user explicitly accepts a crop in preview.
-  return PrintImageAdjustmentSchema.parse({ rotation, crop: originalPrintAdjustment.crop, enhance: true });
+  const image = await loadImage(uri, signal); const sample = rotated(image, 0, 600);
+  try {
+    const data = sample.context.getImageData(0, 0, sample.canvas.width, sample.canvas.height);
+    const rotation = screenLineRotation(data) ?? await estimatePrintRotation(textInkPoints(data), data.width, data.height, signal);
+    signal.throwIfAborted();
+    // Angle detection is not permission to discard faint labels or neighboring choices.
+    return PrintImageAdjustmentSchema.parse({ rotation, crop: originalPrintAdjustment.crop, enhance: true });
+  } finally { sample.canvas.width = 0; }
 }
-/** Geometry and gentle illumination correction only; the source record is never changed. */
+// Decision: .agents/notes/implemented/storage/2026-10-15-explicit-print-enhancement.md
+/** Correct the unrotated paper before padding; source and manual geometry remain unchanged. */
 export async function preparePrintImage(uri: string, value: PrintImageAdjustment, signal: AbortSignal): Promise<string> {
   const parsed = PrintImageAdjustmentSchema.safeParse(value);
   if (!parsed.success) throw new Error('请检查旋转角度和裁切范围，裁切后的宽高须至少保留 5%。');
   const adjustment = parsed.data; const image = await loadImage(uri, signal);
-  const turned = rotated(image, adjustment.rotation, 2048); const crop = adjustment.crop;
-  const x = Math.floor(crop.left * turned.canvas.width); const y = Math.floor(crop.top * turned.canvas.height);
-  const result = canvas(Math.ceil((crop.right - crop.left) * turned.canvas.width), Math.ceil((crop.bottom - crop.top) * turned.canvas.height));
-  result.context.drawImage(turned.canvas, x, y, result.canvas.width, result.canvas.height, 0, 0, result.canvas.width, result.canvas.height);
-  if (adjustment.enhance) {
-    const data = result.context.getImageData(0, 0, result.canvas.width, result.canvas.height); const size = 64;
-    const columns = Math.ceil(data.width / size); const rows = Math.ceil(data.height / size); const background = new Float32Array(columns * rows * 3);
-    for (let top = 0; top < data.height; top += size) for (let left = 0; left < data.width; left += size) {
-      const bottom = Math.min(data.height, top + size); const right = Math.min(data.width, left + size);
-      for (let channel = 0; channel < 3; channel++) { const samples: number[] = [];
-        for (let yy = top; yy < bottom; yy += 4) for (let xx = left; xx < right; xx += 4) samples.push(data.data[(yy * data.width + xx) * 4 + channel] ?? 0);
-        samples.sort((a, b) => a - b); background[(Math.floor(top / size) * columns + Math.floor(left / size)) * 3 + channel] = Math.max(90, samples[Math.floor(samples.length * .9)] ?? 255);
-      }
+  let original: ReturnType<typeof rotated> | undefined; let projected: ReturnType<typeof canvas> | undefined; let turned: ReturnType<typeof rotated> | undefined; let result: ReturnType<typeof canvas> | undefined;
+  try {
+    if (adjustment.enhance || adjustment.perspective) original = rotated(image, 0, 2048);
+    if (adjustment.enhance && original) {
+      const data = original.context.getImageData(0, 0, original.canvas.width, original.canvas.height);
+      await normalizePrintPaperPixels(data.data, data.width, data.height, signal); original.context.putImageData(data, 0, 0);
     }
-    for (let yy = 0; yy < data.height; yy++) for (let xx = 0; xx < data.width; xx++) {
-      const gx = Math.max(0, Math.min(columns - 1, xx / size - .5)); const gy = Math.max(0, Math.min(rows - 1, yy / size - .5)); const x0 = Math.floor(gx); const y0 = Math.floor(gy); const x1 = Math.min(columns - 1, x0 + 1); const y1 = Math.min(rows - 1, y0 + 1); const fx = gx - x0; const fy = gy - y0;
-      const p = (yy * data.width + xx) * 4;
-      for (let c = 0; c < 3; c++) { const a = (background[(y0 * columns + x0) * 3 + c] ?? 255) * (1 - fx) + (background[(y0 * columns + x1) * 3 + c] ?? 255) * fx; const b = (background[(y1 * columns + x0) * 3 + c] ?? 255) * (1 - fx) + (background[(y1 * columns + x1) * 3 + c] ?? 255) * fx; data.data[p + c] = Math.min(255, (data.data[p + c] ?? 0) * 255 / (a * (1 - fy) + b * fy)); }
+    if (adjustment.perspective && original) {
+      const source = original.context.getImageData(0, 0, original.canvas.width, original.canvas.height);
+      const warped = await warpPrintPerspective(source.data, source.width, source.height, adjustment.perspective, signal);
+      projected = canvas(warped.width, warped.height);
+      projected.context.putImageData(new ImageData(warped.data, warped.width, warped.height), 0, 0);
     }
-    result.context.putImageData(data, 0, 0);
-  }
-  if (signal.aborted) throw new Error('导出已取消。');
-  const output = result.canvas.toDataURL('image/jpeg', .94); turned.canvas.width = 0; result.canvas.width = 0; return output;
+    turned = rotated(projected?.canvas ?? original?.canvas ?? image, adjustment.rotation, 2048); const crop = adjustment.crop;
+    const x = Math.floor(crop.left * turned.canvas.width); const y = Math.floor(crop.top * turned.canvas.height);
+    result = canvas(Math.ceil((crop.right - crop.left) * turned.canvas.width), Math.ceil((crop.bottom - crop.top) * turned.canvas.height));
+    result.context.drawImage(turned.canvas, x, y, result.canvas.width, result.canvas.height, 0, 0, result.canvas.width, result.canvas.height);
+    if (adjustment.enhance) {
+      const data = result.context.getImageData(0, 0, result.canvas.width, result.canvas.height);
+      await sharpenPrintPixels(data.data, data.width, data.height, signal); result.context.putImageData(data, 0, 0);
+    }
+    signal.throwIfAborted(); return result.canvas.toDataURL('image/jpeg', .94);
+  } finally { for (const layer of [original, projected, turned, result]) if (layer) layer.canvas.width = 0; }
 }
 
 /** Region coordinates belong to the unrotated source: crop first, then straighten the crop. */
@@ -144,6 +147,7 @@ export async function prepareOriginalPrintRegion(uri: string, region: NonNullabl
     piece.context.drawImage(source.canvas, crop.x * source.canvas.width, crop.y * source.canvas.height, crop.width * source.canvas.width, crop.height * source.canvas.height, 0, 0, piece.canvas.width, piece.canvas.height);
     original = piece.canvas.toDataURL('image/jpeg', .98);
   } finally { source.canvas.width = 0; piece.canvas.width = 0; }
-  const adjustment = { ...originalPrintAdjustment, rotation, enhance: true };
+  const detected = await detectPrintAdjustment(original, signal);
+  const adjustment = { ...detected, rotation: detected.rotation || rotation };
   return { original, image: await preparePrintImage(original, adjustment, signal), adjustment };
 }
