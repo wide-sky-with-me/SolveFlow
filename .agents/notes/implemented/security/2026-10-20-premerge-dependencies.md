@@ -47,3 +47,5 @@ Node 24.19.0 下，`pnpm install` 退出0；随后 `pnpm install --offline --fro
 `pnpm audit --json` 和原样 `pnpm deps:audit` 均退出1：从2 critical、5 high、1 low降到两项high。该事实不因本次合并例外而改变。原始查询、日志和开工快照保留于 `.runtime/merge-repair-2026-10-20/dependencies/`；部分GitHub API请求遇到403，通告正文另由公开HTML核对，不将请求失败视为无漏洞。
 
 全量类型、消费方/离线回归、三端导出和浏览器由主任务统一执行，实际成绩及用户确认归[本轮验收报告](../../../../docs/postmortem/2026-10-20-merge-repair.md)。依赖子任务只完成六项实施，另外两项尚未修复；未执行真实模型或原生二进制验收，本地合并不包含推送/部署。
+
+2026-10-29补充：部分版本锁定和未发布状态由[本轮安全更新](2026-10-29-dependency-hardening.md)替代；其他原决策与当时验收范围保留。

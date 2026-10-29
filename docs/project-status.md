@@ -36,7 +36,7 @@ PDF [语料](postmortem/2026-10-19-pdf-biology-corpus.md)、[样式](postmortem/
 | --- | --- | --- |
 | P1 | 存储极端条件补充 | 整机文件系统ENOSPC、低内存设备与500题规模；已验证的SQLite故障和大文件流程见原生存储报告，不等同这些环境 |
 | P1 | 正式签名与发行 | 确定发布渠道和签名保管，完成构建/升级/备份恢复验收 |
-| P1 | 依赖漏洞修复 | [10-29审计](postmortem/2026-10-29-repository-consolidation.md)35项：1 critical、11 high、18 moderate、5 low；旧[合并例外](postmortem/2026-10-20-merge-repair.md)限当时范围，CI审计不放宽，非生产放行 |
+| P1 | 依赖漏洞修复 | [10-29修复](postmortem/2026-10-29-dependency-hardening.md)消除34项，剩deepmerge一项low已加本地补丁；上游未发布，原始审计仍失败，CI不放宽，非生产放行 |
 | P1 | 核验残余问题与设备交付 | 按[最新复测](postmortem/2026-10-20-act-delivery.md)处理错答PASS与输出截断，复核实际Web校验组并扩大独立题集；功能审查修复尚需重新打包、升级及真机验证，iOS原生按用户要求暂缓 |
 | P2 | 组合损坏下普通导入 | 坏题元数据与Web非字符串摘要并存时冲突检查会中止；先补隔离复现，再修复并验证I/O仍拒绝，见[存储边界](subsystems/storage.md#备份与恢复) |
 | P2 | Web部署与浏览器兼容 | 正式HTTPS来源上的Web Locks、相机、保存和实际模型CORS；Firefox/Safari及多设备验证 |

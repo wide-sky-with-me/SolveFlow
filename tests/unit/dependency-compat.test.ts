@@ -137,3 +137,104 @@ it('uses the application KaTeX in remark-math without inheriting prototype trust
     assert.doesNotMatch(katex.renderToString('\\href{https://fixture.invalid}{link}', options), /<a\b|href="/);
   `);
 });
+
+it('rejects oversized collections before parsing elements through application and Expo Zod consumers', () => {
+  checkDependency(`
+    const mobile = createRequire(resolve('apps/mobile/package.json'));
+    const expo = createRequire(mobile.resolve('expo/package.json'));
+    const cli = createRequire(expo.resolve('@expo/cli'));
+    for (const consumer of [mobile, cli]) {
+      const { z } = consumer('zod');
+      let visited = 0;
+      const value = z.preprocess(input => { visited++; return input; }, z.string());
+      for (const [schema, input] of [
+        [z.array(value).max(4), Array(100).fill(0)],
+        [z.set(value).max(4), new Set(Array.from({ length: 100 }, (_, i) => i))],
+        [z.map(value, value).max(4), new Map(Array.from({ length: 100 }, (_, i) => [i, i]))],
+      ]) {
+        const result = schema.safeParse(input);
+        assert.equal(result.success, false);
+        assert.deepEqual(result.error.issues.map(issue => issue.code), ['too_big']);
+        assert.equal(visited, 0);
+      }
+    }
+  `);
+});
+
+it('preserves Expo merge configuration without inheriting attacker properties from either operand', () => {
+  checkDependency(`
+    const mobile = createRequire(resolve('apps/mobile/package.json'));
+    const expo = createRequire(mobile.resolve('expo/package.json'));
+    const config = createRequire(expo.resolve('@expo/config'));
+    const metro = createRequire(expo.resolve('@expo/metro-config'));
+    for (const consumer of [config, metro]) for (const merge of [consumer('deepmerge'), consumer('deepmerge/dist/umd.js')]) {
+      const malicious = JSON.parse('{"__proto__":{"securityFixture":true},"nested":{"enabled":true}}');
+      for (const output of [merge(malicious, {}), merge(Object.create(null), malicious), merge.all([malicious, {}])]) {
+        assert.equal(Object.getPrototypeOf(output), Object.prototype);
+        assert.equal(output.securityFixture, undefined);
+        assert.equal(Object.hasOwn(output, '__proto__'), false);
+        assert.equal(output.nested.enabled, true);
+      }
+      const input = { nested: { first: true }, list: [1] };
+      const output = merge(input, { nested: { second: true }, list: [2] });
+      assert.deepEqual(output, { nested: { first: true, second: true }, list: [1, 2] });
+      assert.deepEqual(input, { nested: { first: true }, list: [1] });
+      const symbol = Symbol('fixture');
+      assert.equal(merge({ [symbol]: 1 }, { [symbol]: 2 })[symbol], 2);
+    }
+    assert.equal({}.securityFixture, undefined);
+  `);
+});
+
+it('keeps Expo plugin validation and generated tool schemas compatible with the reviewed Zod update', () => {
+  checkDependency(`
+    const mobile = createRequire(resolve('apps/mobile/package.json'));
+    const expo = createRequire(mobile.resolve('expo/package.json'));
+    const cli = createRequire(expo.resolve('@expo/cli/package.json'));
+    const { PluginSchema, DevToolsPluginOutputSchema } = cli('./build/src/start/server/DevToolsPlugin.schema.js');
+    const { createMCPDevToolsExtensionSchema } = cli('./build/src/start/server/createMCPDevToolsExtensionSchema.js');
+    const plugin = PluginSchema.parse({
+      packageName: 'synthetic-plugin', packageRoot: '/fixture', cliExtensions: {
+        description: 'Synthetic tools', entryPoint: './fixture.js', commands: [{
+          name: 'inspect', title: 'Inspect fixture', environments: ['cli', 'mcp'],
+          parameters: [{ name: 'label', type: 'text' }, { name: 'count', type: 'number' }, { name: 'enabled', type: 'confirm' }],
+        }],
+      },
+    });
+    const schema = createMCPDevToolsExtensionSchema(plugin);
+    const input = { command: 'inspect', label: 'fixture', count: 2, enabled: true };
+    assert.deepEqual(schema.parse(input), input);
+    for (const invalid of [{ ...input, count: '2' }, { ...input, enabled: 'true' }, { ...input, command: 'unknown' }, { ...input, extra: true }]) {
+      assert.equal(schema.safeParse(invalid).success, false);
+    }
+    const output = [{ type: 'text', text: 'fixture', level: 'info' }];
+    assert.deepEqual(DevToolsPluginOutputSchema.parse(output), output);
+    assert.equal(DevToolsPluginOutputSchema.safeParse([{ ...output[0], level: 'unknown' }]).success, false);
+  `);
+});
+
+it('preserves Expo RSA and certificate consumers with the signature-verification patch', () => {
+  checkDependency(`
+    const mobile = createRequire(resolve('apps/mobile/package.json'));
+    const expo = createRequire(mobile.resolve('expo/package.json'));
+    const cli = createRequire(expo.resolve('@expo/cli'));
+    const signing = createRequire(cli.resolve('@expo/code-signing-certificates'));
+    const { generateKeyPairSync } = await import('node:crypto');
+    const keys = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
+    for (const consumer of [cli, signing]) {
+      const forge = consumer('node-forge');
+      const privateKey = forge.pki.privateKeyFromPem(keys.privateKey);
+      const publicKey = forge.pki.publicKeyFromPem(keys.publicKey);
+      const digest = forge.md.sha256.create().update('synthetic signature fixture');
+      const signature = privateKey.sign(digest);
+      assert.equal(publicKey.verify(digest.digest().bytes(), signature), true);
+      assert.throws(() => publicKey.verify(digest.digest().bytes(), signature.slice(1)));
+      const cert = forge.pki.createCertificate(); cert.publicKey = publicKey; cert.serialNumber = '01';
+      cert.validity.notBefore = new Date('2026-01-01'); cert.validity.notAfter = new Date('2027-01-01');
+      const name = [{ name: 'commonName', value: 'Synthetic certificate' }];
+      cert.setSubject(name); cert.setIssuer(name); cert.sign(privateKey, forge.md.sha256.create());
+      const restored = forge.pki.certificateFromPem(forge.pki.certificateToPem(cert));
+      assert.equal(restored.verify(restored), true);
+    }
+  `);
+});
