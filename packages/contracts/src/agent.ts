@@ -4,6 +4,8 @@
 import { z } from "zod";
 import { ExamTypeSchema } from './exam.js';
 import { ProblemStatementSchema, KnowledgeDetailsSchema } from "./learning-content.js";
+import { ActTranscriptionChecksSchema } from './act-transcription.js';
+export { ActTranscriptSchema, actProblem, type ActTranscript } from './act-transcription.js';
 export { normalizeGeneratedCandidate } from './model-output.js';
 export { ProblemStatementSchema, KnowledgeDetailsSchema, originalIllustrationBounds, type ProblemStatement, type KnowledgeDetail } from "./learning-content.js";
 import { FiguresSchema } from "./figure.js";
@@ -12,6 +14,8 @@ import { WritingSchema } from './writing.js';
 export { reactionLatex, type Chemistry } from './chemistry.js';
 export { type Writing } from './writing.js';
 import { MAX_MATERIAL_IMAGES, MAX_QUESTION_IMAGE_BYTES } from './material.js';
+import { ImageReviewRegionSchema } from './image-review.js';
+export { ImageReviewRegionSchema, MAX_IMAGE_REVIEW_REGIONS, type ImageReviewRegion } from './image-review.js';
 import { MAX_ANSWER_CHARACTERS, MAX_USER_MESSAGE_CHARACTERS, ResponsePartsSchema, responseWordCount, validSatResponse } from './response-format.js';
 export { MAX_ANSWER_CHARACTERS, MAX_USER_MESSAGE_CHARACTERS, responseWordCount } from './response-format.js';
 
@@ -136,7 +140,7 @@ export type AnswerCandidate = z.infer<typeof AnswerCandidateSchema>;
 export const VerificationCheckSchema = z.enum(["transcription", "logic", "arithmetic", "units", "domain", "citations", "diagram"]);
 export const VerificationIssueSchema = z.strictObject({
   code: z.enum(["TRANSCRIPTION", "LOGIC", "ARITHMETIC", "UNITS", "DOMAIN", "CITATIONS", "DIAGRAM", "INSUFFICIENT_EVIDENCE", "INVALID_CANDIDATE", "POLICY_VIOLATION", "OTHER"]),
-  stepId: IdentifierSchema.optional(), message: text(500),
+  stepId: IdentifierSchema.optional(), message: text(500), imageRegion: ImageReviewRegionSchema.optional(),
 });
 const issues = z.array(VerificationIssueSchema).max(16);
 const checked = z.array(VerificationCheckSchema).max(7).refine(values => new Set(values).size === values.length, "核验项目不能重复");
@@ -151,7 +155,7 @@ const independentChoices = z.array(z.strictObject({
   selectedOptions,
   decisiveEvidence: text(400),
 })).max(4);
-export const VerificationSchema = z.strictObject({ schemaVersion: z.literal(1), verdict: z.enum(["pass", "fail", "unknown"]), issues, checked, coverage: coverage.optional(), independentChoices: independentChoices.optional(), evidenceStatus: z.enum(['sufficient', 'uncertain', 'insufficient']).optional() }).superRefine((value, ctx) => {
+export const VerificationSchema = z.strictObject({ schemaVersion: z.literal(1), verdict: z.enum(["pass", "fail", "unknown"]), issues, checked, coverage: coverage.optional(), independentChoices: independentChoices.optional(), evidenceStatus: z.enum(['sufficient', 'uncertain', 'insufficient']).optional(), actTranscription: ActTranscriptionChecksSchema.optional() }).superRefine((value, ctx) => {
   if (value.verdict === "pass" && (value.issues.length > 0 || value.checked.length === 0)) ctx.addIssue({ code: "custom", message: "通过必须有核验项目且没有问题", path: ["verdict"] });
   if (value.verdict !== "pass" && value.issues.length === 0) ctx.addIssue({ code: "custom", message: "未通过或无法核验必须说明问题", path: ["issues"] });
 });
@@ -184,7 +188,7 @@ const inputFields = {
   image: NormalizedImageSchema, subject: SubjectSchema.optional(), evidence,
   materials: z.array(z.strictObject({ id: z.uuid(), image: NormalizedImageSchema })).max(MAX_MATERIAL_IMAGES).optional(),
   // Server resolves the persisted reference; contents remain untrusted learning data.
-  focus: z.strictObject({ sourceRunId: z.uuid(), kind: z.enum(["step", "question", "reply", "knowledge", "knowledge-list", "regenerate", "explanation"]), content: text(2000), answer: text(MAX_ANSWER_CHARACTERS).optional(), parts: ResponsePartsSchema.optional(), writing: WritingSchema.optional(), chemistry: ChemistrySchema.optional(), draft: z.strictObject({ sourceRunId: z.uuid(), answer: text(MAX_ANSWER_CHARACTERS), title: text(160).optional() }).optional(), verified: z.boolean() }).optional(),
+  focus: z.strictObject({ sourceRunId: z.uuid(), kind: z.enum(["step", "question", "reply", "knowledge", "knowledge-list", "regenerate", "explanation"]), questionNumber: z.number().int().min(1).max(999).optional(), content: text(2000), answer: text(MAX_ANSWER_CHARACTERS).optional(), parts: ResponsePartsSchema.optional(), writing: WritingSchema.optional(), chemistry: ChemistrySchema.optional(), draft: z.strictObject({ sourceRunId: z.uuid(), answer: text(MAX_ANSWER_CHARACTERS), title: text(160).optional() }).optional(), verified: z.boolean() }).optional(),
   problemCorrection: text(2000).optional(),
   history: z.array(z.strictObject({ message: z.string().max(2000), answer: z.string().max(4000) })).max(9).optional(),
 };
@@ -252,13 +256,23 @@ export function parseVerificationForCandidate(value: unknown, candidateValue: un
 /** Applied to newly executed checks; stored v1 PASS records remain readable. */
 // Decision: .agents/notes/implemented/agent/2026-10-05-verification-coverage-and-time.md
 // Decision: .agents/notes/implemented/agent/2026-10-07-exam-reliability-recovery.md
-export function assessVerificationCoverage(verification: Verification, candidate?: AnswerCandidate): Verification {
+export function assessVerificationCoverage(verification: Verification, candidate?: AnswerCandidate, exam?: z.infer<typeof ExamTypeSchema>): Verification {
   if (verification.verdict !== 'pass') return verification;
   const substantive = (items: Verification['checked']) => items.includes('transcription') && (items.includes('logic') || items.includes('arithmetic'));
   const unknown = (message: string): Verification => ({ ...verification, verdict: 'unknown', issues: [{ code: 'INSUFFICIENT_EVIDENCE', message }] });
   if (verification.evidenceStatus && verification.evidenceStatus !== 'sufficient') return unknown('已检查候选答案，但原题依据仍不充分或不可信，请核对警告或补图。');
   if (!substantive(verification.checked)) return unknown('本次校验没有同时完成原图转录和答案逻辑或运算检查，尚不能确认答案正确。');
   if (!candidate) return verification;
+  if ((candidate.questions ?? [candidate]).some(item => (item.problem?.exam ?? exam) === 'act' || item.problem?.transcriptionScope === 'act-visible')) {
+    const review = verification.actTranscription;
+    if (!review) return unknown('ACT尚未分别核对全部可见正文、设问、选项、当前高亮及表格，答案通过不代表转录完整。');
+    if (Object.values(review).includes('fail')) return { ...verification, verdict: 'fail', issues: [{ code: 'TRANSCRIPTION', message: 'ACT可见题面的正文、设问、选项、高亮或表格存在转录差异，请对照原图修正。' }] };
+    const problems = (candidate.questions ?? [candidate]).map(item => item.problem);
+    if (review.body !== 'pass' || review.question !== 'pass' || Object.values(review).includes('unknown')
+      || problems.some(problem => problem?.options?.length) && review.options !== 'pass'
+      || problems.some(problem => problem?.text.includes('**')) && review.activeSpan !== 'pass'
+      || problems.some(problem => /\|.+\|/u.test(problem?.text ?? '')) && review.tables !== 'pass') return unknown('ACT至少一项可见题面内容尚未核对完整，不能标为通过。');
+  }
   const key = (questionNumber?: number, partLabel?: string) => JSON.stringify([questionNumber ?? null, partLabel ?? null]);
   if ((candidate.questions ?? [candidate]).some(answer => answer.problem?.optionsComplete === false)) return unknown('可先采用已给出的计算或推理结论，但选项不完整，尚不能确认原选项对应。');
   const choices = (candidate.questions ?? [candidate]).filter(answer => answer.problem?.options?.length && answer.selectedOptions?.length);
@@ -301,6 +315,7 @@ const errorCatalog = {
   INVALID_INPUT: { message: "输入内容不符合要求，请检查后重试。", retryable: false },
   MODEL_UNAVAILABLE: { message: "模型服务暂时无法完成请求，请检查连接或模型配置。", retryable: false },
   MODEL_REQUEST_REJECTED: { message: "模型服务拒绝了请求，请检查模型名、接口协议、图片支持及参数设置。", retryable: false },
+  MODEL_UPLOAD_TIMEOUT: { message: "题图上传超时，请检查网络后手动重试。", retryable: true },
   MODEL_RATE_LIMITED: { message: "模型服务请求过于频繁，请稍后手动重试。", retryable: true },
   MODEL_TIMEOUT: { message: "模型响应超时，请稍后重试。", retryable: true },
   MODEL_OUTPUT_INVALID: { message: "未能得到有效解题结果，请重试或补充题目。", retryable: true },
@@ -315,7 +330,7 @@ const errorCatalog = {
   WORKER_LOST: { message: "解题任务意外中断，未自动重新执行。", retryable: false },
   INTERNAL_ERROR: { message: "服务暂时无法完成请求。", retryable: false },
 } as const;
-export const AgentErrorCodeSchema = z.enum(["INVALID_INPUT", "MODEL_UNAVAILABLE", "MODEL_REQUEST_REJECTED", "MODEL_RATE_LIMITED", "MODEL_TIMEOUT", "MODEL_OUTPUT_INVALID", "TOOL_FAILED", "TOOL_LIMIT", "MODEL_LIMIT", "VERIFIER_LIMIT", "RUN_TIMEOUT", "CAPABILITY_DENIED", "SPEND_LIMIT", "CANCELLED", "WORKER_LOST", "INTERNAL_ERROR"]);
+export const AgentErrorCodeSchema = z.enum(["INVALID_INPUT", "MODEL_UNAVAILABLE", "MODEL_REQUEST_REJECTED", "MODEL_UPLOAD_TIMEOUT", "MODEL_RATE_LIMITED", "MODEL_TIMEOUT", "MODEL_OUTPUT_INVALID", "TOOL_FAILED", "TOOL_LIMIT", "MODEL_LIMIT", "VERIFIER_LIMIT", "RUN_TIMEOUT", "CAPABILITY_DENIED", "SPEND_LIMIT", "CANCELLED", "WORKER_LOST", "INTERNAL_ERROR"]);
 export type AgentErrorCode = z.infer<typeof AgentErrorCodeSchema>;
 export const SafeAgentErrorSchema = z.strictObject({ code: AgentErrorCodeSchema, message: text(120), retryable: z.boolean(), traceId: IdentifierSchema }).superRefine((value, ctx) => {
   const safe = errorCatalog[value.code];

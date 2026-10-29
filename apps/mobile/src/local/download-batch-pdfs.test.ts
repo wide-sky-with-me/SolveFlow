@@ -18,11 +18,15 @@ function fixture(stemEnd: number) {
   return {
     ownerDocument: { defaultView: { getComputedStyle: () => ({}) }, createTreeWalker: () => ({ nextNode: () => null }) },
     getBoundingClientRect: () => ({ top: 0, bottom: Math.max(2200, stemEnd), height: Math.max(2200, stemEnd) }),
-    querySelectorAll: (selector: string) => selector === '[data-pdf-block],figure,.print-cover' ? blocks : selector === '.print-copy-question > h2' ? [heading] : [],
+    querySelectorAll: (selector: string) => selector === '[data-pdf-block],figure,.print-cover,.print-warning' ? blocks : selector === '.print-copy-question > h2' ? [heading] : [],
   };
 }
 
 describe('batch PDF question pagination', () => {
+  it('keeps a short warning box together instead of exporting an orphan colored edge', () => {
+    const root = { ...fixture(1120), getBoundingClientRect: () => ({ top: 0, height: 1500 }), querySelectorAll: (selector: string) => selector === '[data-pdf-block],figure,.print-cover,.print-warning' ? [element(950, 1020)] : [] };
+    expect(paginator(root)).toEqual([{ start: 0, end: 950 }, { start: 950, end: 1500 }]);
+  });
   it('moves a heading with its short stem when a long question crosses a page', () => {
     expect(paginator(fixture(1120))).toEqual([{ start: 0, end: 900 }, { start: 900, end: 1850 }, { start: 1850, end: 2200 }]);
   });

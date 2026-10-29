@@ -1,19 +1,19 @@
 // Decision: .agents/notes/implemented/storage/2026-10-16-pdf-admission-yield.md
 const failure = () => new Error('导出暂未启动，请重试。');
 
-export function waitForExportInitialization(promise: Promise<void>, signal?: AbortSignal): Promise<void> {
+export function waitForExportInitialization<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
     let settled = false;
-    const finish = (error?: unknown, failed = false) => {
+    const finish = (result: { ok: true; value: T } | { ok: false; error: unknown }) => {
       if (settled) return;
       settled = true; signal?.removeEventListener('abort', abort);
       if (signal?.aborted) reject(signal.reason);
-      else if (failed) reject(error);
-      else resolve();
+      else if (!result.ok) reject(result.error);
+      else resolve(result.value);
     };
-    const abort = () => finish(signal?.reason, true);
-    // Consume the shared initialization even if this waiter already cancelled.
-    promise.then(() => finish(), error => finish(error, true));
+    const abort = () => finish({ ok: false, error: signal?.reason });
+    // Consume late initialization/read failures even after this waiter cancels.
+    promise.then(value => finish({ ok: true, value }), error => finish({ ok: false, error }));
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
   });

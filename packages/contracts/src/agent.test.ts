@@ -16,6 +16,19 @@ const input = () => ({
   message: "", image: { bytes: new Uint8Array([1, 2, 3]), mimeType: "image/png" }, subject: "math", evidence: [evidence()],
 });
 const pass = () => ({ schemaVersion: 1, verdict: "pass", issues: [], checked: ["transcription", "arithmetic"] });
+it('accepts optional source-image issue regions without treating derived views as source images', () => {
+  const region = { imageIndex: 1, x: .2, y: .3, width: .4, height: .1 };
+  const review = (imageRegion: unknown) => ({ schemaVersion: 1, verdict: 'fail', checked: ['transcription'], issues: [{ code: 'TRANSCRIPTION', message: 'Recheck the table cell.', imageRegion }] });
+  expect(VerificationSchema.parse(review(region)).issues[0]).toMatchObject({ imageRegion: region });
+  for (const imageRegion of [{ ...region, imageIndex: 8 }, { ...region, imageIndex: -1 }, { ...region, imageIndex: 1.5 }, { ...region, x: .9 }, { ...region, height: 0 }, { ...region, imageIndex: '1' }, { ...region, sourceUrl: 'https://fixture.invalid/image' }]) expect(VerificationSchema.safeParse(review(imageRegion)).success).toBe(false);
+  expect(VerificationSchema.parse({ ...review(region), issues: [{ code: 'TRANSCRIPTION', message: 'Old review without coordinates.' }] }).issues[0]).not.toHaveProperty('imageRegion');
+});
+it('keeps optional structured question selection separate from historical focus text', () => {
+  const focus = { sourceRunId: '00000000-0000-4000-8000-000000000001', kind: 'regenerate', content: 'Old OCR is not a question-selection protocol.', verified: false };
+  expect(SolverInputSchema.parse({ ...input(), focus }).focus).not.toHaveProperty('questionNumber');
+  for (const questionNumber of [1, 8, 999]) expect(SolverInputSchema.parse({ ...input(), focus: { ...focus, questionNumber } }).focus).toMatchObject({ questionNumber });
+  for (const questionNumber of [0, -1, 1.5, 1000, '8']) expect(SolverInputSchema.safeParse({ ...input(), focus: { ...focus, questionNumber } }).success).toBe(false);
+});
 it('allows an explicit incomplete-choice result without guessing an option label, while retaining complete-choice validation', () => {
   const value = { ...answer(), problem: { ...answer().problem, response: { type: 'single-choice' }, optionsComplete: false, options: [{ label: 'A', text: '1' }], uncertainties: ['选项不完整，仅给出计算结果'] } };
   expect(SolverCandidateSchema.safeParse(value).success).toBe(true);

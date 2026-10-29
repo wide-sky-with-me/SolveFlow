@@ -1,6 +1,6 @@
 import { problemText, answerText } from "@solveflow/contracts/agent";
 import type { SolveOutcome, SolverInput } from "@solveflow/contracts/agent";
-import { questionThreadHistory, resolveQuestionThread, type RunContext, type RunView } from "@solveflow/contracts/http";
+import { isAuxiliaryContext, questionThreadHistory, resolveQuestionThread, type RunContext, type RunView } from "@solveflow/contracts/http";
 type Entry = { message: string; answer: string };
 const excerpt = (text: string, limit: number) => text.length <= limit ? text : text.slice(0, limit - 5) + "…（节选）";
 /** Keep recent answer excerpts within the worker's UTF-8 JSON envelope budget. */
@@ -32,9 +32,28 @@ export function conversationHistory(runs: readonly { message: string; outcome: S
     return [{ message, answer }];
   }), maxBytes);
 }
+// Decision: .agents/notes/implemented/agent/2026-10-20-auxiliary-answer-context.md
+/** On-demand work uses its answer version, including auxiliaries created later. */
+export function answerContextHistory(runs: readonly RunView[], context: RunContext | null): RunView[] {
+  const selected = context ? questionThreadHistory(runs, context) : [...runs];
+  if (!context || !isAuxiliaryContext(context.kind)) return selected;
+  let source = runs.find(run => run.id === context.sourceRunId);
+  const auxiliarySources = new Set<string>();
+  while (source?.context && isAuxiliaryContext(source.context.kind)) {
+    if (auxiliarySources.size >= 10 || auxiliarySources.has(source.id)) throw new Error('INVALID_SAVED_CONTEXT');
+    auxiliarySources.add(source.id);
+    const parentId = source.context.sourceRunId;
+    source = runs.find(run => run.id === parentId);
+  }
+  if (!source) throw new Error('INVALID_SAVED_CONTEXT');
+  const boundary = runs.indexOf(source);
+  // Persisted order survives wall-clock rollback; projection may clone a run object.
+  const available = new Set(runs.slice(0, boundary + 1).map(run => run.id));
+  return selected.filter(run => available.has(run.id) || auxiliarySources.has(run.id));
+}
 
 function learningContext(runs: readonly RunView[], context: RunContext | null): Pick<SolverInput, "focus" | "problemCorrection"> {
-  const selected = context ? questionThreadHistory(runs, context) : runs;
+  const selected = answerContextHistory(runs, context);
   // Corrections remain available verbatim on later follow-ups; never rewrite old answers.
   const correction = context?.kind === "correction" ? context : selected.findLast(run => run.context?.kind === "correction")?.context;
   const result: Pick<SolverInput, "focus" | "problemCorrection"> = correction?.kind === "correction" ? { problemCorrection: correction.text } : {};
@@ -54,6 +73,7 @@ function learningContext(runs: readonly RunView[], context: RunContext | null): 
     if (!originalResult || (originalResult.status !== "completed" && originalResult.status !== "needs_clarification")) throw new Error("INVALID_SAVED_CONTEXT");
     const label = address?.number === undefined ? "重新完整解答本题" : `只重新完整解答第${address.number}题，不解答图片中的其他题目`;
     return { ...result, focus: { sourceRunId: context.sourceRunId, kind: "regenerate", verified: false,
+      ...(address?.number === undefined ? {} : { questionNumber: address.number }),
       content: excerpt(`${label}。请重新读取原图，依据有效条件重新求解全部小问，按本次answerMode呈现结果；brief只保留必要依据和加粗结论，完整教学步骤另行请求。不是对之前某一步的追问或续写。\n原题识别记录（须核对原图，并优先使用明确更正）：${problemText(originalResult.candidate.problem)}\n最初的补充说明：${original.message}`, 2000) } };
   }
   if (context.kind === "knowledge") {
@@ -90,7 +110,7 @@ function learningContext(runs: readonly RunView[], context: RunContext | null): 
 export function resolveLearningContext(runs: readonly RunView[], context: RunContext | null): Pick<SolverInput, "focus" | "problemCorrection"> {
   const result = learningContext(runs, context);
   if (!context || !result.focus) return result;
-  const selected = questionThreadHistory(runs, context);
+  const selected = answerContextHistory(runs, context);
   const index = selected.findIndex(run => run.id === context.sourceRunId);
   const source = selected[index]?.outcome;
   if (source?.status !== 'completed') return result;

@@ -32,7 +32,7 @@ function CropHandle(props: { target: CropDragTarget; crop: Crop; onChange: (valu
     {props.target !== 'move' && <View pointerEvents="none" style={props.target.includes('-') ? styles.corner : styles.edge} />}
   </View>;
 }
-export function PhotoEditor({ photo, onApply, onClose }: { photo: Photo; onApply: (value: Photo) => void; onClose: () => void }) {
+export function PhotoEditor({ photo, onApply, onClose, onBusyChange }: { photo: Photo; onApply: (value: Photo) => void; onClose: () => void; onBusyChange?: (busy: boolean) => void }) {
   const window = useWindowDimensions();
   const landscape = window.height < 500 && window.width > window.height;
   const [crop, setCrop] = useState<Crop>(fullCrop); const [viewport, setViewport] = useState({ width: 300, height: 300 });
@@ -46,10 +46,10 @@ export function PhotoEditor({ photo, onApply, onClose }: { photo: Photo; onApply
   const handleProps = { crop, width, height, onChange: setCrop, disabled: busy };
   function close() { if (busy) return; alive.current = false; onClose(); }
   async function apply() {
-    if (busy) return; setBusy(true); setError('');
+    if (busy) return; setBusy(true); setError(''); onBusyChange?.(true);
     try { const value = await transformPhoto(photo, crop); if (alive.current) onApply(value); else releasePhoto(value); }
     catch { if (alive.current) setError('裁切失败，请调整范围后重试。'); }
-    finally { if (alive.current) setBusy(false); }
+    finally { if (alive.current) setBusy(false); onBusyChange?.(false); }
   }
   return <Modal animationType="slide" onRequestClose={close}><SafeAreaView style={styles.screen}>
     <View style={styles.header}><View style={s.row}><Text style={[s.title, { flex: 1 }]}>确认与裁切题图</Text><Button title="取消裁切" compact secondary disabled={busy} onPress={close} /></View>

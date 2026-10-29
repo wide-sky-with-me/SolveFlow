@@ -1,5 +1,5 @@
 // Decision: .agents/notes/implemented/storage/2026-10-14-background-pdf-exports.md
-import { MAX_BATCH_PRINT_LAYOUT_SOURCES, MAX_BATCH_PRINT_BYTES, parseBatchPrintLayout, type BatchPrintSnapshot, type BatchPrintProblem, type BatchPrintLayoutInput, type PrintLayoutQuestion, type PrintImageAdjustmentSchema } from '@solveflow/contracts/local';
+import { MAX_BATCH_PRINT_LAYOUT_SOURCES, MAX_BATCH_PRINT_BYTES, parseBatchPrintLayout, type BatchPrintSnapshot, type BatchPrintProblem, type BatchPrintLayoutInput, type PrintLayoutQuestion, type PrintImageAdjustment, type PrintImageAdjustmentSchema } from '@solveflow/contracts/local';
 import { isAuxiliaryContext } from '@solveflow/contracts/http';
 import { questionConversations } from '@solveflow/client/learning';
 import type { z } from 'zod';
@@ -10,9 +10,11 @@ import { prepareOriginalPrintRegion } from './print-image';
 import type { Runtime } from '../runtime';
 import { restorePaperBatch } from './prepare-paper-batch.web';
 import { requirePaperPrintLayouts } from './batch-print-presentation.web';
+import { prepareExportImages } from './prepare-export-images.web';
 
-export type ExportLayout = 'saved' | 'clean' | 'paper';
-export interface PreparedExportContent { layouts: PrintLayouts; images: PrintImages }
+export type { ExportLayout } from '@solveflow/contracts/local';
+import type { ExportLayout } from '@solveflow/contracts/local';
+export interface PreparedExportContent { layouts: PrintLayouts; images: PrintImages; sources?: ReviewPrintSource[]; adjustments?: Record<string, PrintImageAdjustment>; processedImages?: Record<string, string> }
 function withinImageBudget(images: PrintImages) {
   if (Object.values(images).reduce((bytes, image) => bytes + image.length, 0) > MAX_BATCH_PRINT_BYTES) throw new Error('导出图片超过128MiB，请拆分批次。');
 }
@@ -27,15 +29,31 @@ function restoredLayout(proposed: PrintLayoutQuestion, question: BatchPrintProbl
 /** A cache miss is not permission to call a model. Whole sources remain explicit in saved mode. */
 export async function prepareBatchExport(runtime: Runtime, snapshot: BatchPrintSnapshot, questions: BatchPrintProblem[], policy: ExportLayout, signal: AbortSignal, progress: (value: string) => void, seed?: PreparedExportContent): Promise<PreparedExportContent> {
   signal.throwIfAborted();
+  // Decision: .agents/notes/implemented/storage/2026-10-22-direct-parsed-pdf.md
+  if (policy === 'direct') {
+    const content: PreparedExportContent = { layouts: {}, images: {} };
+    for (const question of questions) {
+      signal.throwIfAborted();
+      if (!question.problem) throw new Error(`第${question.ordinal}题尚无已解析题干，请改用其他导出版式。`);
+      const record = snapshot.records.find(record => record.session.id === question.recordId);
+      if (!record) throw new Error(`第${question.ordinal}题缺少原记录。`);
+      content.layouts[question.key] = { ...fallbackPrintLayout(question, record), problem: question.problem };
+      for (const source of recordPrintImages(record)) content.images[printImageKey(record.session.id, source.id)] = source.image;
+    }
+    withinImageBudget(content.images);
+    return content;
+  }
   const images: PrintImages = { ...seed?.images }; const layouts: PrintLayouts = {};
   let cacheAvailable = true;
+  const exportSources = [...(seed?.sources ?? [])]; const exportAdjustments = { ...seed?.adjustments };
   for (const record of snapshot.records) for (const source of recordPrintImages(record, 'history')) images[printImageKey(record.session.id, source.id)] ??= source.image;
   withinImageBudget(images);
   if (policy === 'paper') {
     for (const record of snapshot.records) for (const question of questions.filter(question => question.recordId === record.session.id)) layouts[question.key] = seed?.layouts[question.key] ?? fallbackPrintLayout(question, record);
-    const restored = await restorePaperBatch(snapshot, questions, signal, { layouts, images, sources: [], adjustments: {} });
+    const state = { layouts, images, sources: seed?.sources ?? [], adjustments: seed?.adjustments ?? {} };
+    const restored = seed?.processedImages ? state : await restorePaperBatch(snapshot, questions, signal, state);
     requirePaperPrintLayouts(questions, restored.layouts, restored.images);
-    return { layouts: restored.layouts, images: restored.images };
+    return prepareExportImages(snapshot, { ...restored, ...(seed?.processedImages ? { processedImages: seed.processedImages } : {}) }, signal, progress);
   }
   for (const [index, record] of snapshot.records.entries()) {
     signal.throwIfAborted(); progress(`整理题目 ${index + 1} / ${snapshot.records.length}`);
@@ -57,7 +75,7 @@ export async function prepareBatchExport(runtime: Runtime, snapshot: BatchPrintS
           const question = own.find(item => item.key === proposed.key); if (!question) throw new Error('整理结果不属于本批题目。');
           nextLayouts[question.key] = restoredLayout(proposed, question, record, nextImages);
         }
-        withinImageBudget(nextImages); Object.assign(images, nextImages); Object.assign(layouts, nextLayouts);
+        withinImageBudget(nextImages); exportSources.push(...cached.sources); Object.assign(exportAdjustments, cached.adjustments); Object.assign(images, nextImages); Object.assign(layouts, nextLayouts);
         continue;
       } catch { signal.throwIfAborted(); /* An invalid derived cache never invalidates saved records. */ }
     }
@@ -69,7 +87,7 @@ export async function prepareBatchExport(runtime: Runtime, snapshot: BatchPrintS
         const question = own.find(item => item.key === proposed.key); if (!question) throw new Error('整理结果不属于本批题目。');
         if (seed?.layouts[question.key] && !seed.layouts[question.key]?.assets.some(asset => asset.role === 'source')) continue;
         const prepared = await preparePrintLayout(proposed, question, record, images, signal);
-        Object.assign(images, prepared.images); Object.assign(adjustments, prepared.adjustments); sources.push(...prepared.sources); layouts[question.key] = prepared.layout;
+        Object.assign(images, prepared.images); exportSources.push(...prepared.sources); Object.assign(exportAdjustments, prepared.adjustments); Object.assign(adjustments, prepared.adjustments); sources.push(...prepared.sources); layouts[question.key] = prepared.layout;
       }
       withinImageBudget(images);
       if (key) try { await writePrintLayoutCache(key, cachePrintLayout(proposal, images, sources, adjustments), signal); } catch { signal.throwIfAborted(); }
@@ -91,6 +109,7 @@ export async function prepareBatchExport(runtime: Runtime, snapshot: BatchPrintS
         for (const region of regions) {
           const prepared = await prepareOriginalPrintRegion(image, region, 0, signal);
           const key = `${question.key}/saved/${region.id}`; nextImages[key] = prepared.image;
+          exportSources.push({ key, image: prepared.original, label: region.alt, region: true }); exportAdjustments[key] = prepared.adjustment;
           assets.push({ key, sourceId, role: 'question' as const, alt: region.alt });
         }
         withinImageBudget({ ...images, ...nextImages }); Object.assign(images, nextImages);
@@ -99,5 +118,5 @@ export async function prepareBatchExport(runtime: Runtime, snapshot: BatchPrintS
     }
     withinImageBudget(images);
   }
-  signal.throwIfAborted(); withinImageBudget(images); return { layouts, images };
+  signal.throwIfAborted(); withinImageBudget(images); return prepareExportImages(snapshot, { ...seed, layouts, images, sources: exportSources, adjustments: exportAdjustments }, signal, progress);
 }

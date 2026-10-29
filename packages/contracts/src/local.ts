@@ -7,16 +7,29 @@ import { ProblemStatementSchema } from './learning-content.js';
 import { IdentifierSchema, makeSafeAgentError } from './agent.js';
 import { SessionViewSchema, MAX_CONVERSATION_RUNS, MAX_AUXILIARY_RUNS } from './http.js';
 import { ExamTypeSchema } from './exam.js';
-import { LocalMaterialSchema, LocalImageDataSchema, MaterialInfoSchema, QuestionImageIdsSchema, MAX_MATERIAL_IMAGES, MAX_QUESTION_IMAGE_BYTES, MAX_STORED_MATERIAL_IMAGES, MAX_STORED_IMAGE_BYTES } from './material.js';
+import { LocalMaterialSchema, LocalMaterialImageSchema, LocalImageDataSchema, MaterialInfoSchema, QuestionImageIdsSchema, MAX_MATERIAL_IMAGES, MAX_QUESTION_IMAGE_BYTES, MAX_STORED_MATERIAL_IMAGES, MAX_STORED_IMAGE_BYTES } from './material.js';
+import { MAX_IMAGE_REVIEW_REGIONS } from './image-review.js';
 export { LocalMaterialSchema, MAX_MATERIAL_IMAGES, MAX_QUESTION_IMAGE_BYTES, type LocalMaterial } from './material.js';
 export { LocalMaterialImageSchema, LocalMaterialImagesSchema, type LocalMaterialImage } from './material.js';
 export { LocalImageEditSchema, QuestionImageIdsSchema, MAX_STORED_MATERIAL_IMAGES, MAX_STORED_IMAGE_BYTES, type LocalImageEdit } from './material.js';
 export { ExamTypeSchema, EXAM_LABELS, EXAM_DESCRIPTIONS, type ExamType } from './exam.js';
 export const MAX_LOCAL_RECORDS = 500;
 export const MAX_BATCH_PHOTOS = 100;
+/** Waiting photo IDs do not retain decoded images; accepted runs keep their own smaller bound. */
+export const MAX_QUEUED_BATCH_PHOTOS = MAX_LOCAL_RECORDS;
+export type LocalBatchQueueTask = Readonly<{ sessionId: string; batchId: string; phase: 'waiting' | 'solving' | 'verifying' | 'preparing' }>;
+export type LocalBatchQueueSnapshot = Readonly<{
+  tasks: readonly LocalBatchQueueTask[];
+  stoppingBatchIds: readonly string[];
+  stoppingAll: boolean;
+  errors: Readonly<Record<string, string>>;
+  globalError: string | null;
+}>;
+export const MAX_BATCH_IMPORT_BYTES = 500 * 1024 * 1024;
 export const BATCH_CONCURRENCY = 8;
 export const BATCH_VERIFICATION_CONCURRENCY = 8;
-export const MAX_LOCAL_CONCURRENCY = 32;
+// Decision: .agents/notes/implemented/architecture/2026-10-24-higher-batch-concurrency.md
+export const MAX_LOCAL_CONCURRENCY = 64;
 /** Learning requests have their own bounded slots beside batch phases. */
 export const MAX_LOCAL_AUXILIARY_RUNS = 3;
 /** Android protects only executing phases, never all queued verification inputs. */
@@ -30,10 +43,30 @@ export const LocalConcurrencySchema = z.strictObject({
 export type LocalConcurrency = z.infer<typeof LocalConcurrencySchema>;
 export const MAX_LOCAL_DIAGNOSTICS = 128;
 export const LocalBatchSchema = z.strictObject({ id: z.uuid(), title: z.string().trim().min(1).max(100), createdAt: z.iso.datetime(), exam: ExamTypeSchema, position: z.number().int().min(1).max(MAX_BATCH_PHOTOS) });
+export const LocalBatchInsertionSchema = z.strictObject({ beforeId: z.uuid().nullable() });
+export type LocalBatchInsertion = z.infer<typeof LocalBatchInsertionSchema>;
+export const BatchPrintRecordOrderSchema = z.array(z.uuid()).min(1).max(MAX_BATCH_PHOTOS).refine(ids => new Set(ids).size === ids.length, '导出顺序不能重复题图');
 export type LocalBatch = z.infer<typeof LocalBatchSchema>;
 /** Ordered selection for an explicit batch edit; omitted IDs are deleted after confirmation. */
 export const LocalBatchEditSchema = z.strictObject({ batchId: z.uuid(), expectedIds: z.array(z.uuid()).min(1).max(MAX_BATCH_PHOTOS), orderedIds: z.array(z.uuid()).max(MAX_BATCH_PHOTOS) }).refine(value => new Set(value.expectedIds).size === value.expectedIds.length && new Set(value.orderedIds).size === value.orderedIds.length && value.orderedIds.every(id => value.expectedIds.includes(id)), '批次调整包含重复或未知题目');
 export type LocalBatchEdit = z.infer<typeof LocalBatchEditSchema>;
+/** Bounds normalized fan-out writes even when one image is assigned to many questions. */
+export const MAX_BATCH_MATERIAL_BYTES = 128 * 1024 * 1024;
+export const LocalBatchMaterialsSchema = z.strictObject({
+  batchId: z.uuid(),
+  images: z.array(LocalMaterialImageSchema.extend({ sessionIds: z.array(z.uuid()).min(1).max(MAX_BATCH_PHOTOS).refine(ids => new Set(ids).size === ids.length, '补图对应题目不能重复') })).min(1).max(MAX_BATCH_PHOTOS),
+}).superRefine((value, context) => {
+  const counts = new Map<string, number>(); let bytes = 0;
+  for (const image of value.images) {
+    const raw = image.image.slice(image.image.indexOf(',') + 1);
+    const size = Math.floor(raw.length * 3 / 4) - (raw.endsWith('==') ? 2 : raw.endsWith('=') ? 1 : 0);
+    bytes += size * image.sessionIds.length;
+    for (const id of image.sessionIds) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  if (counts.size > MAX_BATCH_PHOTOS || [...counts.values()].some(count => count > MAX_MATERIAL_IMAGES)) context.addIssue({ code: 'custom', message: '单题补图数量或本批题目数量超限' });
+  if (bytes > MAX_BATCH_MATERIAL_BYTES) context.addIssue({ code: 'custom', message: '批量补图保存内容超过128MiB，请分次补图' });
+});
+export type LocalBatchMaterials = z.infer<typeof LocalBatchMaterialsSchema>;
 /** A small title override avoids rewriting every photo when a batch is renamed. */
 export const LocalBatchTitleSchema = z.strictObject({ schemaVersion: z.literal(1), title: LocalBatchSchema.shape.title });
 /** Two-level device thinking control: a switch plus optional effort and protocol. */
@@ -135,10 +168,14 @@ export const ReadableLocalRecordSchema = z.preprocess(normalizeLegacyLocalRecord
 
 
 /** Rebuildable list index: no photo, run history, answer or credentials. */
+export const LOCAL_HISTORY_ANSWER_STATE_VERSION = 3;
 export const LocalHistorySummarySchema = z.strictObject({
   schemaVersion: z.literal(1), id: z.uuid(), subject: SessionViewSchema.shape.subject,
   createdAt: z.iso.datetime(), text: ProblemStatementSchema.shape.text, pending: z.boolean(),
   answerState: z.enum(['verified', 'answered', 'failed', 'unanswered']).optional(),
+  answerStateVersion: z.literal(LOCAL_HISTORY_ANSWER_STATE_VERSION).optional(),
+  answerReady: z.boolean().optional(),
+  taskState: z.enum(['unanswered', 'pending', 'completed', 'failed', 'cancelled', 'needs_clarification']).optional(),
   batch: LocalBatchSchema.optional(),
 });
 export type LocalHistorySummary = z.infer<typeof LocalHistorySummarySchema> & { favorite: boolean };
@@ -233,10 +270,10 @@ export const LocalDiagnosticSchema = z.strictObject({
   toolStopReason: z.enum(['repeated', 'errors', 'budget', 'time', 'format']).optional(),
   toolName: z.enum(['read', 'calculate']).optional(), toolStatus: z.enum(['completed', 'failed']).optional(),
   durationMs: z.number().int().nonnegative().max(1_000_000).optional(),
-  phaseMs: z.number().int().positive().max(1_000_000).optional(), imageCount: z.number().int().min(1).max(MAX_MATERIAL_IMAGES + 1).optional(),
+  phaseMs: z.number().int().positive().max(1_000_000).optional(), imageCount: z.number().int().min(1).max(MAX_MATERIAL_IMAGES + 1 + MAX_IMAGE_REVIEW_REGIONS).optional(),
   streaming: z.boolean().optional(), responseFormat: z.enum(['sse', 'json']).optional(),
   model: ModelReferenceSchema.optional(), resourcePath: z.string().max(160).regex(/^\/skills\/[a-z]+\/(?:references\/)?[a-zA-Z.-]+\.md$/).optional(),
-  reason: z.enum(['http', 'network', 'truncated', 'json', 'schema', 'output_limit', 'invalid_finish', 'background_start', 'started', 'completed', 'failed', 'cancelled', 'deadline', 'thinking_limit', 'storage']).optional(),
+  reason: z.enum(['http', 'upload_timeout', 'network', 'truncated', 'json', 'schema', 'output_limit', 'invalid_finish', 'background_start', 'started', 'completed', 'failed', 'cancelled', 'deadline', 'thinking_limit', 'storage', 'image_review']).optional(),
 });
 export type LocalDiagnostic = z.infer<typeof LocalDiagnosticSchema>;
 export const LocalDiagnosticsSchema = z.strictObject({ schemaVersion: z.literal(1), runId: z.string().min(1).max(128), entries: z.array(LocalDiagnosticSchema).max(MAX_LOCAL_DIAGNOSTICS) });

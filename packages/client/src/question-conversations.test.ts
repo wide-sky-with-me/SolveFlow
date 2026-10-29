@@ -21,3 +21,17 @@ it('keeps on-demand runs inside their thread without making them the continuatio
   const answer = run(4, { kind: 'reply', sourceRunId: root.id });
   expect(continuationContext(questionConversations([root, knowledge, answer])[0]!)).toEqual({ kind: 'reply', sourceRunId: answer.id });
 });
+
+it.each(['explanation', 'knowledge-list'] as const)('keeps structured questions in an auxiliary %s inside the source thread', kind => {
+  const root = run(1);
+  const detail = run(2, { kind, sourceRunId: root.id });
+  if (detail.outcome?.status !== 'completed') throw new Error('COMPLETED_FIXTURE_REQUIRED');
+  detail.outcome.candidate.steps = [1, 2].map(number => ({ id: `example-${number}`, title: `Teaching example ${number}`, explanation: 'Apply the same rule.' }));
+  detail.outcome.candidate.questions = [1, 2].map(number => ({ number, answer: `Teaching example ${number}`, stepIds: [`example-${number}`], figureIds: [] }));
+  const threads = questionConversations([root, detail]);
+  expect(threads).toHaveLength(1);
+  expect(threads[0]?.runs.map(item => item.id)).toEqual([root.id, detail.id]);
+  expect(continuationContext(threads[0]!)).toEqual({ kind: 'reply', sourceRunId: root.id });
+  const followUp = run(3, { kind: 'step', sourceRunId: detail.id, stepId: 'example-1' });
+  expect(questionConversations([root, detail, followUp]).map(thread => thread.runs.map(item => item.id))).toEqual([[root.id, detail.id, followUp.id]]);
+});

@@ -70,7 +70,7 @@ export function estimateAnswerHeight(payload: {
 }
 
 /** Loading the persisted answer never submits another model request. */
-export function AnswerPanel({ outcome, image, width, height, runId, number, disabled, showRegenerate, onRegenerate, onFocus, onCorrect, onViewOriginal, onDisplayReady, onPageSwipe, explanation, knowledge, onRequestSteps, onCancelSteps, onRequestKnowledge, onCancelKnowledge, showHistory, onHistory, verificationPending, verificationFailed, verificationErrorCode, onVerify, onDiagnostics }: Props) {
+export function AnswerPanel({ outcome, image, width, height, runId, number, disabled, regenerateDisabled, showRegenerate, onRegenerate, onFocus, onCorrect, onViewOriginal, onDisplayReady, onPageSwipe, explanation, knowledge, onRequestSteps, onCancelSteps, onRequestKnowledge, onCancelKnowledge, showHistory, onHistory, verificationPending, verificationFailed, verificationErrorCode, onVerify, onDiagnostics }: Props) {
   const { scheme } = useTheme(); const { fontScale } = useWindowDimensions();
   const { share, error: shareError } = useImageShare(image);
   const memory = useContext(PageMemory);
@@ -103,10 +103,10 @@ export function AnswerPanel({ outcome, image, width, height, runId, number, disa
   }, [runId]);
   const explanationId = explanation?.runId; const explanationOutcome = explanation?.outcome; const explanationPending = explanation?.verificationPending;
   const knowledgeId = knowledge?.runId; const knowledgeOutcome = knowledge?.outcome;
-  const payload = useMemo(() => encodeAnswerDocument({ schemaVersion: 1, outcome, image, width, height, runId, number, disabled, showRegenerate, showHistory, verificationPending, verificationFailed, verificationErrorCode,
+  const payload = useMemo(() => encodeAnswerDocument({ schemaVersion: 1, outcome, image, width, height, runId, number, disabled, regenerateDisabled, showRegenerate, showHistory, verificationPending, verificationFailed, verificationErrorCode,
     ...(explanationId && explanationOutcome !== undefined ? { explanation: { runId: explanationId, outcome: explanationOutcome, ...(explanationPending === undefined ? {} : { verificationPending: explanationPending }) } } : {}),
     ...(knowledgeId && knowledgeOutcome !== undefined ? { knowledge: { runId: knowledgeId, outcome: knowledgeOutcome } } : {}),
-  }), [outcome, image, width, height, runId, number, disabled, showRegenerate, showHistory, verificationPending, verificationFailed, verificationErrorCode, explanationId, explanationOutcome, explanationPending, knowledgeId, knowledgeOutcome]);
+  }), [outcome, image, width, height, runId, number, disabled, regenerateDisabled, showRegenerate, showHistory, verificationPending, verificationFailed, verificationErrorCode, explanationId, explanationOutcome, explanationPending, knowledgeId, knowledgeOutcome]);
   const verifyAction = useDocumentAction(onVerify); const historyAction = useDocumentAction(onHistory);
   const diagnosticAction = useDocumentAction(onDiagnostics);
   const stepsAction = useDocumentAction(onRequestSteps); const cancelStepsAction = useDocumentAction(onCancelSteps);
@@ -145,7 +145,7 @@ export function AnswerPanel({ outcome, image, width, height, runId, number, disa
     <Notice text="图文解答加载失败，已保留结果。下方先显示文字内容，公式和图示可尝试重新加载。" error />
     <Button title="重新加载解答" secondary onPress={() => { setAttempt(value => value + 1); setMeasured(false); setPainted(false); setNativeTag(null); setState('loading'); }} />
     {(outcome.status === 'completed' || outcome.status === 'needs_clarification') && <>
-      <Card style={{ borderRadius: 16 }}><View style={s.row}><Text style={[s.label, { flex: 1 }]}>题目</Text>{onDiagnostics && <Button title="诊断详情" compact secondary onPress={() => void onDiagnostics()} />}{showRegenerate && <Button title="重新解答" icon="refresh" compact secondary disabled={disabled} onPress={() => void onRegenerate()} />}{showHistory && <Button title="历史解答" compact secondary onPress={() => void onHistory?.()} />}</View>{image && <OriginalPhoto uri={image} onPress={() => void onViewOriginal()} />}<Text selectable style={s.subtitle}>{fallbackProblem?.text}</Text>{fallbackProblem?.options?.map(option => <View key={option.label} style={{ flexDirection: 'row', gap: 12, padding: 12 }}><Text style={s.label}>{option.label}</Text><Text selectable style={[s.subtitle, { flex: 1 }]}>{option.text}</Text></View>)}</Card>
+      <Card style={{ borderRadius: 16 }}><View style={s.row}><Text style={[s.label, { flex: 1 }]}>题目</Text>{onDiagnostics && <Button title="诊断详情" compact secondary onPress={() => void onDiagnostics()} />}{showRegenerate && <Button title="重新解答" icon="refresh" compact secondary disabled={regenerateDisabled ?? disabled} onPress={() => void onRegenerate()} />}{showHistory && <Button title="历史解答" compact secondary onPress={() => void onHistory?.()} />}</View>{image && <OriginalPhoto uri={image} onPress={() => void onViewOriginal()} />}<Text selectable style={s.subtitle}>{fallbackProblem?.text}</Text>{fallbackProblem?.options?.map(option => <View key={option.label} style={{ flexDirection: 'row', gap: 12, padding: 12 }}><Text style={s.label}>{option.label}</Text><Text selectable style={[s.subtitle, { flex: 1 }]}>{option.text}</Text></View>)}</Card>
       {!!fallbackProblem?.uncertainties.length && <Notice text={`识别待确认：${fallbackProblem.uncertainties.join('；')}。请查看原图，并用更正题干补全条件。`} />}
       {feedback && <Card><Text style={s.label}>{feedback.title}</Text><Text selectable>{feedback.reason}</Text>{feedback.issues.map((issue, index) => <Text selectable key={index}>{issue.label}：{issue.message}</Text>)}<Text selectable>{feedback.next}</Text></Card>}
       <Button title="识别有误？更正题干" secondary disabled={disabled} onPress={() => void onCorrect()} />

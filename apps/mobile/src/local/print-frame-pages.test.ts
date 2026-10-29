@@ -69,6 +69,9 @@ class FakeDocument {
   readonly injectedImages: { decode: () => Promise<void> }[] = [];
   readonly styles: Node[] = [];
   title = ''; baseURI = 'http://fixture.test/';
+  open() {}
+  write(declaration: string) { if (declaration !== '<!doctype html>') throw new Error('UNTRUSTED_DOCUMENT_MARKUP'); }
+  close() {}
   constructor(readonly name: 'host' | 'frame', readonly trace: Trace) { this.body = new Node('body', this); this.head = new Node('head', this); }
   get images(): { decode: () => Promise<void> }[] { return [...[...this.head.querySelectorAll('img'), ...this.body.querySelectorAll('img')].filter((node): node is FakeImage => node instanceof FakeImage), ...this.injectedImages]; }
   createElement(tag: string): Node { return tag === 'img' ? new FakeImage(this, '') : new Node(tag, this); }
@@ -76,7 +79,7 @@ class FakeDocument {
   querySelectorAll(selector: string) { return selector === 'style,link[rel="stylesheet"]' ? this.styles : [...this.head.querySelectorAll(selector), ...this.body.querySelectorAll(selector)]; }
 }
 interface FrameResult { content: Node; doc: object; dispose: () => void; activateQuestionPage?: (index: number) => Promise<void> }
-interface FrameFactory { (element: Node, title: string, signal: AbortSignal, options?: { questionPages?: boolean }): Promise<FrameResult> }
+interface FrameFactory { (element: Node, title: string, signal: AbortSignal, options?: { questionPages?: boolean; lifetimeMs?: number }): Promise<FrameResult> }
 function deferred() { let resolve = () => {}; let reject = (_error: Error) => {}; const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; }
 function fixture() {
   const signal = new AbortController(); const trace: Trace = { created: [], adopted: [], appended: [], decoded: [] };
@@ -97,7 +100,7 @@ function fixture() {
   document.body.append(input);
   const fits: string[][] = []; const fitPages: Node[] = []; const math = vi.fn();
   const single = (page: Node) => { fitPages.push(page); fits.push([page.dataset.pdfQuestion ?? '', ...page.children.map(node => node.label)]); };
-  const dependencies: Record<string, object> = { '@solveflow/client/local': { ExportTaskFailure }, './print-question-pages.web': { fitBatchPrintQuestionPage: single, fitBatchPrintQuestionPages: (root: { querySelectorAll: (selector: string) => Node[] }) => root.querySelectorAll('[data-pdf-question]').forEach(single) } };
+  const dependencies: Record<string, object> = { '@solveflow/client/local': { ExportTaskFailure }, '@solveflow/contracts/local': { MAX_BATCH_PRINT_PAGES: 300 }, './paginate-question-pages.web': { paginateQuestionPage: (page: Node) => { single(page); return [page]; } } };
   // Replace the local math implementation only; frame ownership and resource waits stay real.
   const executable = compiled.replace(/function fitBatchPrintMath\(doc\) \{[\s\S]*?\n\}/, 'function fitBatchPrintMath(doc) { math(doc); }');
   if (executable === compiled) throw new Error('MATH_ADAPTER_NOT_REPLACED');
@@ -105,7 +108,7 @@ function fixture() {
   if (typeof exports !== 'object' || exports === null || !('createBatchPrintFrame' in exports) || typeof exports.createBatchPrintFrame !== 'function' || !('openBatchPrint' in exports) || typeof exports.openBatchPrint !== 'function') throw new Error('FRAME_FACTORY_MISSING');
   const create = exports.createBatchPrintFrame as FrameFactory;
   const print = exports.openBatchPrint as (element: Node, title: string, signal: AbortSignal) => Promise<() => void>;
-  return { input, doc, host: document, iframe, signal, trace, fits, fitPages, math, clock, hooks, target, styles: document.styles, timers, frame: (sparse = true) => create(input, 'copy.pdf', signal.signal, { questionPages: sparse }), print: () => print(input, 'copy.pdf', signal.signal), connected: () => document.body.children.filter(node => node !== input).length };
+  return { input, doc, host: document, iframe, signal, trace, fits, fitPages, math, clock, hooks, target, styles: document.styles, timers, frame: (sparse = true, lifetimeMs?: number) => create(input, 'copy.pdf', signal.signal, { questionPages: sparse, ...(lifetimeMs === undefined ? {} : { lifetimeMs }) }), print: () => print(input, 'copy.pdf', signal.signal), connected: () => document.body.children.filter(node => node !== input).length };
 }
 function activate(frame: FrameResult, index: number) { if (!frame.activateQuestionPage) throw new Error('PAGE_ACTIVATION_MISSING'); return frame.activateQuestionPage(index); }
 function tree(node: Node): Node[] { return [node, ...node.children.flatMap(tree)]; }
@@ -179,6 +182,12 @@ describe('question print-frame materialization', () => {
       for (const event of f.trace.decoded) { expect(event.owner).toBe(f.doc); expect(event.connected).toBe(true); expect(event.image.source).not.toBeNull(); }
       for (const image of images) expect(image.decode).not.toHaveBeenCalled();
     } finally { frame.dispose(); }
+  });
+  it('keeps whole-document math fitting for original reading records without question sheets', async () => {
+    const f = fixture(); f.input.kind = 'reading'; f.input.replaceChildren(new Node('section', f.host, 'original-record'));
+    const frame = await f.frame(false);
+    try { expect(f.math).toHaveBeenCalledOnce(); expect(f.fitPages).toEqual([]); expect(frame.activateQuestionPage).toBeUndefined(); }
+    finally { frame.dispose(); }
   });
   it.each(['pending', 'error'])('does not let %s host fonts control frame resources', async status => {
     const f = fixture(); const images = pageImages(f); for (const image of images) image.control.resolve(); const hostFont = deferred();
@@ -426,6 +435,20 @@ describe('question print-frame materialization', () => {
       frame = await f.frame(); vi.advanceTimersByTime(120000); expect(f.connected()).toBe(0); expect(f.timers.size).toBe(0);
       expect(frame.content.children.map(page => page.children.length)).toEqual([0, 0, 0]); await expect(activate(frame, 1)).rejects.toThrow('打印文档已关闭'); expect(f.fits).toHaveLength(1);
     } finally { frame?.dispose(); f.signal.abort(); vi.useRealTimers(); }
+  });
+  it('retains an export frame past the print-dialog lifetime and releases it at the explicit bounded deadline', async () => {
+    vi.useFakeTimers(); const f = fixture(); let frame: FrameResult | undefined;
+    try {
+      frame = await f.frame(true, 330000);
+      vi.advanceTimersByTime(120000); expect(f.connected()).toBe(1);
+      vi.advanceTimersByTime(209999); expect(f.connected()).toBe(1);
+      vi.advanceTimersByTime(1); expect(f.connected()).toBe(0); expect(f.timers.size).toBe(0);
+      await expect(activate(frame, 1)).rejects.toThrow('打印文档已关闭');
+    } finally { frame?.dispose(); f.signal.abort(); vi.useRealTimers(); }
+  });
+  it.each([0, 119999, 330001, Infinity, NaN])('rejects an invalid frame lifetime before creating resources (%s)', async lifetime => {
+    const f = fixture(); await expect(f.frame(true, lifetime)).rejects.toThrow('打印文档时限无效');
+    expect(f.connected()).toBe(0); expect(f.timers.size).toBe(0);
   });
   it('settles pending activation on lifetime expiry and ignores late resources', async () => {
     vi.useFakeTimers(); const f = fixture(); let frame: FrameResult | undefined;

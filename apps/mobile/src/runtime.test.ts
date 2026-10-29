@@ -7,6 +7,8 @@ vi.mock('./local/documents', () => ({ openDocuments: storage.open }));
 vi.mock('./local/secrets', () => ({ readKey: vi.fn(), writeKey: vi.fn() }));
 vi.mock('./local/lock', () => ({ lockLocalApp: vi.fn() }));
 vi.mock('./local/background', () => ({ background: {}, onBackgroundExpired: storage.expired }));
+vi.mock('./local/act-transcription-views', () => ({ prepareActTranscriptionViews: vi.fn() }));
+vi.mock('./local/image-review-views', () => ({ prepareImageReviewViews: vi.fn() }));
 vi.mock('./local/web-env', () => ({ loadWebEnvironment: vi.fn().mockResolvedValue(null), webModelFetch: (_environment: unknown, fetch: unknown) => fetch, webModelTestFetch: (_environment: unknown, _role: unknown, _profile: unknown, _key: unknown, fetch: unknown) => fetch, saveWebModelSettings: vi.fn(), mutateWebModelPresets: vi.fn() }));
 beforeEach(async () => { vi.resetModules(); vi.clearAllMocks(); const adapter = await import('./local/web-env'); vi.mocked(adapter.loadWebEnvironment).mockResolvedValue(null); });
 it('retries runtime initialization after storage failure and shares one successful engine', async () => {

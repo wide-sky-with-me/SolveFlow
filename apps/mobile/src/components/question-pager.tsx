@@ -347,7 +347,7 @@ export function QuestionPager<T extends { key: string; number?: number }>({
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                 <View style={{ gap: 2 }}>
                   <Text style={s.label}>全部题目</Text>
-                  <Text style={[s.subtitle, { fontSize: 12 }]}>共 {pages.length} 题 · 点击快速跳转</Text>
+                  <Text style={[s.subtitle, { fontSize: 12 }]}>共 {pages.length} 题</Text>
                 </View>
                 <Button title="关闭" compact secondary onPress={() => setGridOpen(false)} />
               </View>

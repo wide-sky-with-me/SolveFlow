@@ -88,14 +88,14 @@ it('round trips photos, favorites, diagnostics and UTF-8; interrupts pending wor
   expect(await to.repository.diagnostics(runId)).toMatchObject([{ reason: 'started' }]); expect(to.values.get('settings')).toBe('PRIVATE');
   const before = [...to.values]; expect(await to.repository.importHistory(source(text), signal)).toEqual({ restored: 0, skipped: 1 }); expect([...to.values]).toEqual(before);
 });
-it('restores unbookmarked questions without invalid favorite documents and can export them again', async () => {
-  const from = setup(); const record = await from.engine.create(jpeg, 2, 2, 'tmua');
+it.each(['act', 'tmua'] as const)('restores unbookmarked %s questions without invalid favorite documents and can export them again', async exam => {
+  const from = setup(); const record = await from.engine.create(jpeg, 2, 2, exam);
   const to = setup();
   expect(await to.repository.importHistory(source(await archive(from.repository)), signal)).toEqual({ restored: 1, skipped: 0 });
   expect(await to.repository.listHistory()).toMatchObject([{ id: record.session.id, favorite: false }]);
   expect(await to.repository.list()).toMatchObject([{ id: record.session.id, favorite: false }]);
   expect(to.values.has(`favorite.${record.session.id}`)).toBe(false);
-  const restored = await to.repository.read(record.session.id); expect(restored.exam).toBe('tmua');
+  const restored = await to.repository.read(record.session.id); expect(restored.exam).toBe(exam);
   const again = setup();
   expect(await again.repository.importHistory(source(await archive(to.repository)), signal)).toEqual({ restored: 1, skipped: 0 });
   expect(await again.repository.listHistory()).toMatchObject([{ favorite: false }]);

@@ -206,6 +206,7 @@ test('copy count and per-copy errors share aligned compact columns across themes
     expect(await dialog.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
     expect(await dialog.locator('.pdf-copy-list').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
     await wrong.focus(); await expect(wrong).toBeFocused(); await page.keyboard.press('Tab');
+    await expect(dialog.getByLabel('第1份备注', { exact: true })).toBeFocused(); await page.keyboard.press('Tab');
     await expect(dialog.getByLabel('第2份答错题数', { exact: true })).toBeFocused();
     await count.scrollIntoViewIfNeeded();
     await page.screenshot({ path: info.outputPath(`copy-alignment-${size.width}x${size.height}-${colorScheme}.png`) });

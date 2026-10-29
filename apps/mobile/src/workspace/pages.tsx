@@ -2,11 +2,12 @@ import { MAX_USER_MESSAGE_CHARACTERS } from '@solveflow/contracts/agent';
 import { EXAM_LABELS } from '@solveflow/contracts/local';
 import { clientError } from '@solveflow/client/presentation';
 import { Image, Pressable, ScrollView, Text, TextInput, View } from '../theme/primitives';
-import { Button, Card, Notice, colors, s } from '../components/ui';
+import { Button, Notice, colors, s } from '../components/ui';
 import { BatchWorkspace } from '../components/batch-workspace';
 import { QuestionMaterials } from '../components/question-materials';
 import { QuestionReader } from '../components/question-reader';
 import { EmptyState } from '../components/empty-state';
+import { RecentRecords } from '../components/recent-records';
 import { HistoryToolbar } from '../components/history-toolbar';
 import { BatchHistory } from '../components/batch-history';
 import { BatchPdfExport, batchPdfAvailable } from '../components/batch-pdf-export';
@@ -29,7 +30,7 @@ export function CurrentQuestionPage({ runtime, state, actions }: PageProps) {
     setError, busy, camera, setCamera, setEditing,
     diagnostics, setDiagnostics, setViewImage, activeId, scroll,
     active, openSession, threads, source, shareOriginal,
-    shareError, hasAnswers, selectedKey, answerReady,
+    shareError, hasAnswers, selectedKey, answerReady, sessions, setTab, setHistorySearch,
   } = state;
   const { reset, gallery, rotate, submit, cancel, correct } = actions;
   return (
@@ -70,7 +71,7 @@ export function CurrentQuestionPage({ runtime, state, actions }: PageProps) {
             )}
             {!!activeId && !active && <Notice text="另一道题正在解答，请在最近题目中查看。" />}
             {!hasAnswers && (
-              <Card style={{ borderWidth: 0, padding: source ? 18 : 0 }}>
+              <View testID={source ? undefined : 'home-overview'} style={[s.card, { borderWidth: 0, padding: source ? 18 : 0 }, !source && { backgroundColor: 'transparent', gap: 20 }]}>
                 {source ? (
                   <>
                     <Pressable accessibilityRole="button" accessibilityLabel="查看题目图片" onPress={() => setViewImage(true)} onLongPress={() => void shareOriginal()}>
@@ -94,13 +95,16 @@ export function CurrentQuestionPage({ runtime, state, actions }: PageProps) {
                     </View>
                   </>
                 ) : (
-                  <EmptyState kind="camera" title="把题目拍清楚">
-                    <Button title="拍一张" onPress={() => setCamera(true)} disabled={busy} />
-                    <Button title="从相册选择" secondary onPress={() => void gallery()} disabled={busy} />
-                    {!runtime.settings && (
-                      <Button title="配置模型与考试类型" secondary onPress={() => setSettingsOpen(true)} />
-                    )}
-                  </EmptyState>
+                  <>
+                    <EmptyState kind="camera" title="把题目拍清楚">
+                      <Button title="拍一张" onPress={() => setCamera(true)} disabled={busy} />
+                      <Button title="从相册选择" secondary onPress={() => void gallery()} disabled={busy} />
+                      {!runtime.settings && (
+                        <Button title="配置模型与考试类型" secondary onPress={() => setSettingsOpen(true)} />
+                      )}
+                    </EmptyState>
+                    <RecentRecords sessions={sessions} disabled={busy} onOpen={openSession} onHistory={() => { setHistorySearch(''); setTab('history'); }} />
+                  </>
                 )}
                 {!hasAnswers && !!source && (
                   <>
@@ -122,7 +126,7 @@ export function CurrentQuestionPage({ runtime, state, actions }: PageProps) {
                     />
                   </>
                 )}
-              </Card>
+              </View>
             )}
           </ScrollView>
           {session && <QuestionMaterials key={`materials-${session.id}`} id={session.id} runtime={runtime} disabled={busy || !!activeId || runtime.batch.busy} />}
@@ -185,6 +189,7 @@ export function HistoryPage({ runtime, state, actions }: PageProps) {
           style={{ flex: 1, display: historyKind === 'batch' ? 'flex' : 'none' }}
         >
           <BatchHistory
+            queue={runtime.batch}
             rows={sessions}
             query={historySearch.trim()}
             disabled={busy}
@@ -224,12 +229,12 @@ export function HistoryPage({ runtime, state, actions }: PageProps) {
           )}
         </View>
       </View>
-      {exportBatchId && <BatchPdfExport runtime={runtime} batchId={exportBatchId} onClose={() => setExportBatchId(null)} />}
+      {exportBatchId && <BatchPdfExport runtime={runtime} batchId={exportBatchId} onReviewQuestion={id => void state.openSession(id)} onClose={() => setExportBatchId(null)} />}
     </View>
   );
 }
 
-export function ProfilePage({ runtime, state, actions }: PageProps) {
+export function ProfilePage({ runtime, state, actions, onTasks }: PageProps & { onTasks: () => void }) {
   const {
     setSettingsOpen, appTab, profileSection, setTab, setProfileSection,
     sessions, session, error, setError, busy,
@@ -276,6 +281,8 @@ export function ProfilePage({ runtime, state, actions }: PageProps) {
           contentContainerStyle={styles.content}
         >
           <Profile
+            onTasks={onTasks}
+            exportRecords={<ExportRecordsEntry runtime={runtime} />}
             onImport={() => { if (!busy && !runtime.batch.busy && runtime.engine.actives.length === 0) setImportOpen(true); }}
             onExport={() => {
               if (!busy && !runtime.batch.busy && runtime.engine.actives.length === 0) setExportOpen(true);
@@ -293,7 +300,6 @@ export function ProfilePage({ runtime, state, actions }: PageProps) {
               void list(true).catch(cause => setError(clientError(cause)));
             }}
           />
-          <ExportRecordsEntry runtime={runtime} />
         </ScrollView>
       )}
     </View>

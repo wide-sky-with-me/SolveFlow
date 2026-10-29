@@ -6,7 +6,7 @@ import { File, Paths } from 'expo-file-system';
 import { cropPixels, type Crop } from '@solveflow/client/presentation';
 import { type ClientStore } from '@solveflow/client/remote';
 import type { Photo } from './platform.types';
-import { MAX_BATCH_PHOTOS } from '@solveflow/contracts/local';
+import { MAX_BATCH_PHOTOS, MAX_BATCH_IMPORT_BYTES } from '@solveflow/contracts/local';
 import { fileNameTime, type ImportPhoto } from './batch-photo-order';
 const keyOf = (key: string) => `solveflow.${Array.from(new TextEncoder().encode(key), byte => byte.toString(16).padStart(2, '0')).join('')}`;
 export const store: ClientStore = {
@@ -24,15 +24,16 @@ export async function pickPhotos(limit: number): Promise<ImportPhoto[]> {
   const result = await Picker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: limit, orderedSelection: true, quality: 1, exif: false, base64: false, preferredAssetRepresentationMode: Picker.UIImagePickerPreferredAssetRepresentationMode.Compatible });
   if (result.canceled) return [];
   try {
-    if (result.assets.length > limit || result.assets.reduce((sum, asset) => sum + (asset.fileSize ?? new File(asset.uri).size), 0) > 100 * 1024 * 1024) throw new Error('选择的图片超过本批剩余数量或100MB，请分次导入。');
+    const sizes = result.assets.map(asset => asset.fileSize ?? new File(asset.uri).size);
+    if (result.assets.length > limit || sizes.reduce((sum, size) => sum + size, 0) > MAX_BATCH_IMPORT_BYTES) throw new Error(`选择的图片超过本批剩余数量或${MAX_BATCH_IMPORT_BYTES / 1024 / 1024}MB，请分次导入。`);
+    return result.assets.map((asset, id) => {
+      const fileName = (asset.fileName || `图片${id + 1}`).slice(0, 160); const timestamp = fileNameTime(fileName);
+      return { id, photo: fromAsset(asset), fileName, sourceBytes: sizes[id] ?? 0, ...(timestamp === undefined ? {} : { timestamp, timeSource: 'filename' as const }) };
+    });
   } catch (cause) {
     for (const asset of result.assets) releasePhoto(fromAsset(asset));
     throw cause;
   }
-  return result.assets.map((asset, id) => {
-    const fileName = (asset.fileName || `图片${id + 1}`).slice(0, 160); const timestamp = fileNameTime(fileName);
-    return { id, photo: fromAsset(asset), fileName, ...(timestamp === undefined ? {} : { timestamp, timeSource: 'filename' as const }) };
-  });
 }
 export async function recoverPhoto(): Promise<Photo | null> {
   const result = await Picker.getPendingResultAsync();

@@ -1,12 +1,25 @@
 import {
   ExportTaskFileSchema, ExportTaskMetadataSchema, ExportTaskProgressSchema, ExportTaskSchema,
   isExportTaskTerminal, MAX_EXPORT_QUEUED_TASKS, MAX_EXPORT_TASK_RECORDS,
-  MAX_PENDING_EXPORT_ARTIFACTS, MAX_PENDING_EXPORT_SAVES, MAX_EXPORT_TASK_TIMEOUT_MS, MAX_EXPORT_ERROR_CHARACTERS,
+  MAX_EXPORT_STORED_BYTES, MAX_PENDING_EXPORT_ARTIFACTS, MAX_PENDING_EXPORT_SAVES, MAX_EXPORT_TASK_TIMEOUT_MS, MAX_EXPORT_ERROR_CHARACTERS,
   type ExportTask, type ExportTaskFile, type ExportTaskMetadata,
 } from '@solveflow/contracts/local';
 
 /** Explicitly classified local validation errors; arbitrary runner errors stay redacted. */
 export class ExportTaskFailure extends Error {}
+
+const storageErrors = {
+  capacity: `导出记录缓存已达 ${MAX_EXPORT_STORED_BYTES / 1024 / 1024} MiB 上限，请先下载并删除旧导出记录，再重试保存。`,
+  quota: '当前浏览器存储空间不足，请释放空间后重试保存。',
+  timeout: '当前浏览器保存导出结果超时，请重试保存。',
+  unavailable: '当前浏览器存储不可用，请检查存储权限后重试。',
+  clone: '当前浏览器无法写入该导出文件，请尝试下载已生成文件。',
+  integrity: '导出记录的容量信息损坏，旧文件已保留。',
+};
+/** Platform adapters classify causes without exposing browser errors or private data. */
+export class ExportTaskStorageError extends Error {
+  constructor(readonly reason: keyof typeof storageErrors) { super(storageErrors[reason]); }
+}
 
 export interface ExportArtifact {
   name: string;
@@ -44,6 +57,7 @@ interface PendingSave {
   notify: boolean;
   create?: boolean;
   committedTask?: ExportTask;
+  saveError?: string;
 }
 const SAVE_ERROR = '导出结果保存失败，请保持应用打开并重试保存。';
 const INTERRUPTED_ERROR = '应用重载或存储故障，导出已中断；请明确重新提交导出。';
@@ -94,6 +108,7 @@ export class LocalExportTasks {
     this.settledListeners.add(listener); return () => { this.settledListeners.delete(listener); };
   }
   get pendingSaveIds(): readonly string[] { return Object.freeze([...this.pending.keys()]); }
+  get pendingFileIds(): readonly string[] { return Object.freeze([...this.pending.keys()].filter(id => this.pendingArtifact(id) !== null)); }
   get storageBlocked(): boolean { return this.pending.size > 0; }
   get notificationError(): string | null { return this.observerError; }
 
@@ -203,7 +218,7 @@ export class LocalExportTasks {
         if (!same && !correction) throw new Error('导出记录已有其他终态，保留待保存结果并停止覆盖。');
       }
       await this.commit(pending);
-      if (this.pending.has(id)) throw new Error(SAVE_ERROR);
+      if (this.pending.has(id)) throw new Error(this.pending.get(id)?.saveError ?? SAVE_ERROR);
     });
   }
 
@@ -217,6 +232,21 @@ export class LocalExportTasks {
       if (artifact.name !== task.file.name || artifact.mimeType !== task.file.mimeType || artifact.data.byteLength !== task.file.bytes) throw new Error('已保存导出文件与记录不一致。');
       return artifact;
     });
+  }
+
+  // Decision: .agents/notes/implemented/storage/2026-10-24-generated-export-recovery.md
+  async readPendingFile(id: string): Promise<ExportArtifact | null> {
+    return this.lock(async () => {
+      this.requireInitialized();
+      const artifact = this.pendingArtifact(id);
+      return artifact ? checkArtifact(artifact) : null;
+    });
+  }
+
+  private pendingArtifact(id: string): ExportArtifact | null {
+    if (this.cancellations.has(id) || this.timeouts.has(id)) return null;
+    const pending = this.pending.get(id);
+    return pending?.task.status === 'succeeded' ? pending.artifact ?? null : null;
   }
 
   async waitForIdle(): Promise<void> {
@@ -326,7 +356,7 @@ export class LocalExportTasks {
     if (pending.artifact && [...this.pending.values()].filter(value => value.artifact && value.task.id !== pending.task.id).length >= MAX_PENDING_EXPORT_ARTIFACTS) throw new Error('待保存导出文件超过上限。');
     this.pending.set(pending.task.id, pending);
     const visible = pending.task.status === 'succeeded'
-      ? ExportTaskSchema.parse({ ...pending.task, status: 'running', progress: '导出完成，等待保存', finishedAt: null, file: null, error: SAVE_ERROR })
+      ? ExportTaskSchema.parse({ ...pending.task, status: 'running', progress: '导出完成，等待保存', finishedAt: null, file: null, error: pending.saveError ?? SAVE_ERROR })
       : pending.task;
     this.records.set(pending.task.id, freezeTask(visible)); this.emit();
   }
@@ -364,9 +394,10 @@ export class LocalExportTasks {
       }
       this.pending.delete(id); this.records.set(id, freezeTask(desired)); this.emit();
       if (pending.notify) this.notify(freezeTask(desired));
-    } catch {
+    } catch (cause) {
       applyCancellation();
-      this.retain({ task: desired, ...(desired.status === 'succeeded' && pending.artifact ? { artifact: pending.artifact } : {}), ...(pending.create ? { create: true } : {}), ...(committedTask ? { committedTask } : {}), cleanup, notify: pending.notify });
+      const saveError = cause instanceof ExportTaskStorageError ? new ExportTaskStorageError(cause.reason).message : SAVE_ERROR;
+      this.retain({ task: desired, ...(desired.status === 'succeeded' && pending.artifact ? { artifact: pending.artifact } : {}), ...(pending.create ? { create: true } : {}), ...(committedTask ? { committedTask } : {}), cleanup, notify: pending.notify, saveError });
       await this.interruptWaiting();
     }
   }

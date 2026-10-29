@@ -1,6 +1,6 @@
-import { ScrollView, Text, TextInput, View, SafeAreaView, Pressable } from '../theme/primitives';
+import { ScrollView, Text, TextInput, View, SafeAreaView, Pressable, Switch } from '../theme/primitives';
 import { useEffect, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Platform, StyleSheet, Switch } from 'react-native';
+import { KeyboardAvoidingView, Platform, StyleSheet } from 'react-native';
 import { MotionModal as Modal } from './motion-modal';
 import { PageHeader } from './page-header';
 import { ModelPresets } from './model-presets';

@@ -6,8 +6,8 @@ import { runApplicationAgent, solve, calculate, RunBudget, createProbeImage } fr
 import { getModelConnections, getLiveCallGate, type SolveFlowConfig } from "@solveflow/config";
 import type { ImageStore } from "./storage.js";
 import { normalizeImage } from "./images.js";
-import { projectQuestionRun, questionThreadHistory } from "@solveflow/contracts/http";
-import { conversationHistory, resolveLearningContext } from "./history.js";
+import { projectQuestionRun } from "@solveflow/contracts/http";
+import { answerContextHistory, conversationHistory, resolveLearningContext } from "./history.js";
 export type Executor = (input: SolverInput, signal: AbortSignal, onEvent: (event: PublicAgentEvent) => Promise<void>, timeoutMs: number) => Promise<SolveOutcome>;
 
 export function liveExecutor(config: SolveFlowConfig): Executor {
@@ -53,7 +53,7 @@ export async function processNext(repository: Repository, storage: ImageStore, e
     const bytes = await storage.get(upload.objectKey, signal);
     const previous = session.runs.slice(0, session.runs.findIndex(run => run.id === job.id));
     const context = resolveLearningContext(previous, job.context);
-    const history = conversationHistory(job.context ? questionThreadHistory(previous, job.context) : previous, context.focus ? 4 * 1024 : 12 * 1024);
+    const history = conversationHistory(answerContextHistory(previous, job.context), context.focus ? 4 * 1024 : 12 * 1024);
     const source = job.context?.kind === "verification" ? previous.find(run => run.id === job.context?.sourceRunId) : undefined;
     const target = source ? projectQuestionRun(source, job.context?.kind === "verification" ? job.context.number : undefined).outcome : undefined;
     if (job.context?.kind === "verification" && target?.status !== "completed") throw new Error("INVALID_SAVED_CONTEXT");

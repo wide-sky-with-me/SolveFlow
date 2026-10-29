@@ -3,6 +3,8 @@ WORKDIR /opt/solveflow
 COPY server.mjs ./server.mjs
 COPY web/ ./web/
 COPY manifest.json ./manifest.json
+# A private host umask must not prevent the unprivileged image user from reading public app assets.
+RUN chmod -R a+rX /opt/solveflow
 ENV NODE_ENV=production SOLVEFLOW_WEB_PORT=3130 SOLVEFLOW_WEB_DIR=/opt/solveflow/web SOLVEFLOW_WEB_STATE_DIR=/var/lib/solveflow
 USER node
 EXPOSE 3130

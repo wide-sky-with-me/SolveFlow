@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { createServer, request } from 'node:http';
 import { privateIPv4, lanGateway } from './web-lan-gateway.mjs';
 const host = '192.168.100.84:3130'; const origin = `http://${host}`;
-async function fixture(t, handleRequest = null) {
+async function fixture(t, handleRequest = null, options = {}) {
   let calls = 0;
   const upstream = createServer(async (req, res) => { calls++; let body = ''; for await (const chunk of req) body += chunk; res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ headers: req.headers, body, method: req.method })); });
   await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
-  const proxy = lanGateway({ address: '192.168.100.84', port: 3130, upstreamPort: upstream.address().port, handleRequest });
+  const proxy = lanGateway({ address: '192.168.100.84', port: 3130, upstreamPort: upstream.address().port, handleRequest, ...options });
+  assert.equal(proxy.requestTimeout, 130000); assert.equal(proxy.headersTimeout, 10000);
   await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
   t.after(async () => { for (const server of [proxy, upstream]) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } });
   const send = (headers, body = '', method = 'GET', path = '/__solveflow/web-env') => new Promise((accept, reject) => {
@@ -20,6 +21,20 @@ test('LAN addresses are restricted to canonical private IPv4', () => {
   for (const value of ['10.1.2.3', '172.16.0.1', '172.31.255.2', '192.168.100.84']) assert.equal(privateIPv4(value), true);
   for (const value of ['100.88.228.28', '8.8.8.8', '0.0.0.0', '127.0.0.1', '172.32.0.1', '192.168.1.999', '192.168.001.1']) assert.equal(privateIPv4(value), false);
   assert.throws(() => lanGateway({ address: '0.0.0.0', port: 3130 }));
+});
+test('Tailnet binding requires opt-in and only accepts canonical 100.64/10 addresses', () => {
+  for (const address of ['100.64.0.1', '100.88.228.28', '100.127.255.254']) {
+    assert.throws(() => lanGateway({ address, port: 3131 }));
+    lanGateway({ address, port: 3131, allowTailnet: true }).close();
+  }
+  for (const address of ['100.63.255.255', '100.128.0.1', '100.088.228.28', '100.88.228.256', '0.0.0.0', '8.8.8.8', '::']) assert.throws(() => lanGateway({ address, port: 3131, allowTailnet: true }));
+});
+test('Tailnet forwarding retains exact Host, Origin and fetch-site gates', async t => {
+  const app = await fixture(t, null, { address: '100.88.228.28', allowTailnet: true });
+  const tailnetHost = '100.88.228.28:3130';
+  assert.equal((await app.send({ host: tailnetHost, origin: `http://${tailnetHost}`, 'sec-fetch-site': 'same-origin' })).status, 200);
+  for (const headers of [{ host }, { host: tailnetHost, origin: 'https://external.invalid' }, { host: tailnetHost, 'sec-fetch-site': 'cross-site' }, { host: 'external.invalid', 'x-forwarded-host': tailnetHost }]) assert.equal((await app.send(headers)).status, 403);
+  assert.equal(app.calls(), 1);
 });
 test('fixed LAN same-origin forwarding preserves body and role authorization', async t => {
   const app = await fixture(t);

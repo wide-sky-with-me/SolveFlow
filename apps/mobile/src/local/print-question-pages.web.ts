@@ -1,6 +1,9 @@
 const MINIMUM_POINTS = 8;
 
-/** Fit the whole question rather than splitting or clipping it across sheets. */
+/** The caller may continue a vertically overflowing question on another sheet. */
+export class PrintQuestionOverflowError extends Error {}
+
+/** Fit one physical sheet at a readable size before considering continuation. */
 export function fitBatchPrintQuestionPage(page: HTMLElement) {
   const body = page.querySelector<HTMLElement>('.print-page-body');
   const inner = page.querySelector<HTMLElement>('.print-page-inner');
@@ -19,7 +22,8 @@ export function fitBatchPrintQuestionPage(page: HTMLElement) {
     for (const image of images) image.style.maxHeight = `${Math.max(48, image.getBoundingClientRect().height * .8)}px`;
     scale = measure();
   }
-  if (!Number.isFinite(scale) || available <= 0 || scale < minimumScale) throw new Error(`第${page.dataset.pdfQuestion}题内容过长，请调整图示或重复材料后再按一题一页导出。`);
+  if (!Number.isFinite(scale) || available <= 0) throw new Error('单题页面尺寸不可用。');
+  if (scale < minimumScale) throw new PrintQuestionOverflowError(`第${page.dataset.pdfQuestion}题内容过长，请调整图示或重复材料后再按一题一页导出。`);
   inner.style.transformOrigin = 'top left';
   inner.style.transform = `scale(${scale})`;
   page.dataset.pdfFit = String(scale);

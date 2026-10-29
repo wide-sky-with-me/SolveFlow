@@ -12,7 +12,7 @@ function textPoints(skew: number): [number, number][] {
 }
 const signal = () => new AbortController().signal;
 describe('bounded text-baseline deskew', () => {
-  it.each([-14, -8, 8, 14])('returns the opposite rotation for a %s degree text baseline', async skew => {
+  it.each([-30, -22, -14, -8, 8, 14, 22, 30])('returns the opposite rotation for a %s degree text baseline', async skew => {
     expect(await estimatePrintRotation(textPoints(skew), 480, 320, signal())).toBeCloseTo(-skew, 0);
   });
   it('does not rotate upright, blank, sparse or uniformly distributed samples', async () => {

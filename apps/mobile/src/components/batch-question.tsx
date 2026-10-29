@@ -1,6 +1,7 @@
 import { QuestionMaterials } from './question-materials';
 import { useImageShare } from './use-image-share';
 import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { StyleSheet, useWindowDimensions } from 'react-native';
 import type { LocalDiagnostic, LocalRecord, LocalImageEdit } from '@solveflow/contracts/local';
 import { isAuxiliaryContext, terminal, type RunContext, type RunView } from '@solveflow/contracts/http';
 import { problemText } from '@solveflow/contracts/agent';
@@ -13,7 +14,7 @@ import { QuestionReader } from './question-reader';
 import { ImageViewer } from './image-viewer';
 import { DiagnosticDetails } from './diagnostic-details';
 import { CorrectionModal } from '../workspace/dialogs';
-import { Button, Notice, s } from './ui';
+import { Button, Notice, layout, s } from './ui';
 import { useTheme } from '../theme/provider';
 import { themeColors } from '../theme/palette';
 import { PageMemory } from './page-memory';
@@ -23,11 +24,12 @@ import { useQuestionPageReady } from './question-page-ready';
 export const BatchQuestion = memo(function BatchQuestion({ id, runtime, queueBusy, available }: { id: string; runtime: Runtime; queueBusy: boolean; available: boolean }) {
   const { scheme } = useTheme();
   const bg = themeColors[scheme].background;
+  const window = useWindowDimensions();
   const [record, setRecord] = useState<LocalRecord | null>(null); const [error, setError] = useState('');
   const memory = useContext(PageMemory);
   const [busy, setBusy] = useState(false); const [selected, select] = useState(() => memory?.selections.get(id) ?? '');
   const [retryQueued, setRetryQueued] = useState(runtime.batch.ids.includes(id));
-  const retrying = useRef(false);
+  const retrying = useRef(false); const submitting = useRef(false);
   useEffect(() => runtime.batch.subscribe(() => setRetryQueued(runtime.batch.ids.includes(id))), [runtime, id]);
   const setSelected = (key: string) => { memory?.selections.set(id, key); select(key); }; const [view, setView] = useState(false);
   const [diagnostics, setDiagnostics] = useState<LocalDiagnostic[] | null>(null);
@@ -56,7 +58,20 @@ export const BatchQuestion = memo(function BatchQuestion({ id, runtime, queueBus
     });
     return () => { alive.current = false; off(); };
   }, [id, runtime, refresh]);
-  async function submit(text: string, context?: RunContext, imageEdit?: LocalImageEdit) { if (busy || queueBusy && !isAuxiliaryContext(context?.kind)) return false; setBusy(true); setError(''); try { await runtime.start(id, text, context, imageEdit); await refresh(); setCorrection(null); return true; } catch (cause) { setError(clientError(cause)); return false; } finally { if (alive.current) setBusy(false); } }
+  // Decision: .agents/notes/implemented/architecture/2026-10-27-batch-regeneration-admission.md
+  async function submit(text: string, context?: RunContext, imageEdit?: LocalImageEdit) {
+    if (submitting.current || busy) return false;
+    const regenerate = context?.kind === 'regenerate';
+    if (regenerate && runtime.batch.ids.includes(id)) return false;
+    if (queueBusy && !regenerate && !isAuxiliaryContext(context?.kind)) { setError('请先等待批量任务完成或停止批量解题，再提交追问或更正。'); return false; }
+    submitting.current = true; setBusy(true); setError('');
+    try {
+      if (regenerate) await runtime.regenerateBatch(id, text, context);
+      else await runtime.start(id, text, context, imageEdit);
+      await refresh(); setCorrection(null); return true;
+    } catch (cause) { if (alive.current) setError(clientError(cause)); return false; }
+    finally { submitting.current = false; if (alive.current) setBusy(false); }
+  }
   async function retry(run: RunView) {
     if (retrying.current || busy || runtime.batch.ids.includes(id)) return false;
     retrying.current = true; setBusy(true); setError('');
@@ -82,11 +97,21 @@ export const BatchQuestion = memo(function BatchQuestion({ id, runtime, queueBus
   );
   return <>
     <QuestionMaterials key={id} id={id} runtime={runtime} disabled={busy || !!activeId} />
-    {(error || shareError) ? <Notice text={error || shareError} error /> : null}
-    {!threads.length ? <><Pressable accessibilityRole="button" accessibilityLabel="查看题目图片" onPress={() => setView(true)} onLongPress={() => void share()}><Image accessibilityLabel="批量待解题原图" source={{ uri: record.image }} resizeMode="contain" style={{ height: 280, width: '100%' }} /></Pressable><Text style={s.subtitle}>{runtime.batch.ids.includes(id) ? '已保存，正在排队解题并自动核验。' : '题图已保存，点击“继续待解题”开始。'}</Text></> :
-      <QuestionReader runtime={runtime} backupAvailable={!!runtime.settings?.backup} threads={threads} selected={key} onSelect={setSelected} image={record.image} imageSize={record.session.upload} busy={busy} conversationBlocked={queueBusy} activeId={activeId} available={available} connection="" onSubmit={submit} onRetry={retry} retryQueued={retryQueued} onCorrect={(run, number) => { if (run.outcome?.status === 'completed' || run.outcome?.status === 'needs_clarification') setCorrection({ run, text: problemText(run.outcome.candidate.problem).slice(0, 2000), ...(number === undefined ? {} : { number }) }); }} onCancel={runId => { void runtime.engine.cancelRun(runId).catch(cause => setError(clientError(cause))); }} onRefresh={() => void refresh()} onViewOriginal={async () => setView(true)} onAnswerReady={() => {}} onDiagnostics={runId => { void runtime.repository.diagnostics(runId).then(setDiagnostics).catch(cause => setError(clientError(cause))); }} />}
+    {!!threads.length && retryQueued && !activeId && <View testID="batch-queued-notice" style={styles.body}><View style={styles.status}><Text accessibilityLiveRegion="polite" style={styles.statusText}>等待重新解答</Text></View></View>}
+    {(error || shareError) ? <View style={styles.body}><Notice text={error || shareError} error /></View> : null}
+    {!threads.length ? <View testID="batch-pending-question" style={styles.body}><View testID="batch-pending-card" style={[s.card, { gap: 16 }]}>
+      <View style={[s.row, { justifyContent: 'space-between' }]}><Text style={s.label}>题目</Text><View style={styles.status}><Text testID="batch-pending-status" accessibilityLiveRegion="polite" style={styles.statusText}>{retryQueued ? '等待解题' : '待解题'}</Text></View></View>
+      <Pressable accessibilityRole="button" accessibilityLabel="查看题目图片" onPress={() => setView(true)} onLongPress={() => void share()} style={{ borderRadius: 12, overflow: 'hidden', backgroundColor: '#f5f7fb' }}><Image accessibilityLabel="批量待解题原图" source={{ uri: record.image }} resizeMode="contain" style={{ height: Math.max(160, Math.min(360, (window.width - 84) * record.session.upload.height / record.session.upload.width)), width: '100%' }} /></Pressable>
+    </View></View> :
+      <QuestionReader runtime={runtime} backupAvailable={!!runtime.settings?.backup} threads={threads} selected={key} onSelect={setSelected} image={record.image} imageSize={record.session.upload} busy={busy} conversationBlocked={queueBusy} regenerateBlocked={retryQueued} activeId={activeId} available={available} connection="" onSubmit={submit} onRetry={retry} retryQueued={retryQueued} onCorrect={(run, number) => { if (run.outcome?.status === 'completed' || run.outcome?.status === 'needs_clarification') setCorrection({ run, text: problemText(run.outcome.candidate.problem).slice(0, 2000), ...(number === undefined ? {} : { number }) }); }} onCancel={runId => { void runtime.engine.cancelRun(runId).catch(cause => setError(clientError(cause))); }} onRefresh={() => void refresh()} onViewOriginal={async () => setView(true)} onAnswerReady={() => {}} onDiagnostics={runId => { void runtime.repository.diagnostics(runId).then(setDiagnostics).catch(cause => setError(clientError(cause))); }} />}
     {view && <ImageViewer uri={record.image} size={record.session.upload} onClose={() => setView(false)} />}
     {diagnostics && <DiagnosticDetails entries={diagnostics} onClose={() => setDiagnostics(null)} />}
     <CorrectionModal correction={correction} runtime={runtime} busy={busy || queueBusy} active={runtime.engine.actives.find(run => run.id === activeId) ?? null} available={available} error={error} onClose={() => setCorrection(null)} onChange={text => setCorrection(value => value ? { ...value, text } : null)} onSubmit={imageEdit => { if (correction) void submit('请按更正后的条件和图片重新解答。', { kind: 'correction', sourceRunId: correction.run.id, text: correction.text, ...(correction.number === undefined ? {} : { number: correction.number }) }, imageEdit); }} />
   </>;
+});
+
+const styles = StyleSheet.create({
+  body: { width: '100%', maxWidth: layout.workspaceWidth, alignSelf: 'center', paddingHorizontal: 10, paddingVertical: 4 },
+  status: { alignSelf: 'flex-start', backgroundColor: '#edf3ff', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
+  statusText: { color: '#2867dd', fontSize: 13, lineHeight: 20, fontWeight: '500' },
 });

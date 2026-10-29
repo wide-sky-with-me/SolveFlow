@@ -3,7 +3,8 @@ import { request as httpRequest } from 'node:http';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import { MAX_LOCAL_MODEL_RUNS } from '../../packages/contracts/src/local.js';
 import { loadWebEnv } from '../../scripts/web-env.mjs';
 import { webServer } from '../../scripts/web-server.mjs';
 const config = { WEB_ENV_ENABLED: 'true', SOLVEFLOW_LLM_BASE_URL: 'https://fixture.invalid/v1', SOLVEFLOW_LLM_API_KEY: 'synthetic-provider-secret', SOLVEFLOW_SOLVER_MODEL: 'primary' };
@@ -24,6 +25,32 @@ it('admits eight solver streams together and reports header and first-byte timin
   } finally { await Promise.allSettled(responses.map(response => response.body?.cancel())); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 async function listen(server: Server) { await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve)); const address = server.address(); if (!address || typeof address === 'string') throw new Error('PORT'); return `http://127.0.0.1:${address.port}`; }
+it('admits 64 solver and 64 verifier streams plus three auxiliary streams in one shared instance, bounds overflow and releases the slots', async () => {
+  const environment = await loadWebEnv('/tmp/nonexistent-solveflow-env', { ...config, SOLVEFLOW_VERIFIER_MODEL: 'checker' });
+  if (!environment?.roles.verifier) throw new Error('ENV');
+  let calls = 0; const streams: ReadableStreamDefaultController<Uint8Array>[] = []; const entries: import('../../scripts/web-server.mjs').WebModelDiagnostic[] = [];
+  const server = webServer('/tmp', null, environment, async () => {
+    calls++; return new Response(new ReadableStream<Uint8Array>({ start(controller) { streams.push(controller); controller.enqueue(new TextEncoder().encode('data: fixture\n\n')); } }), { headers: { 'content-type': 'text/event-stream' } });
+  }, entry => entries.push(entry));
+  const base = await listen(server); const responses: Response[] = [];
+  const post = (role: 'solver' | 'verifier') => {
+    const value = environment.roles[role]; if (!value) throw new Error('ROLE');
+    return fetch(base + '/__solveflow/web-env/model/' + role, { method: 'POST', headers: { authorization: `Bearer ${value.token}` }, body: JSON.stringify({ model: value.profile.model, max_tokens: 1024 }) });
+  };
+  try {
+    for (let index = 0; index < 131; index++) {
+      const response = await post(index < 64 ? 'solver' : 'verifier'); responses.push(response); expect(response.status).toBe(200);
+    }
+    expect(calls).toBe(131);
+    const overflow = await post('solver'); expect(overflow.status).toBe(429); await overflow.text(); expect(calls).toBe(131);
+    streams.forEach(stream => stream.close()); await Promise.all(responses.map(response => response.text()));
+    await expect.poll(() => entries.length).toBe(131);
+    const next = await post('solver'); responses.push(next); expect(next.status).toBe(200); expect(calls).toBe(132);
+    streams.at(-1)!.close(); await next.text(); await expect.poll(() => entries.length).toBe(132);
+  } finally {
+    await Promise.allSettled(responses.map(response => response.body?.cancel())); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
 it('marks only local authorization rejection and never forwards a provider-forged replay marker', async () => {
   const environment = await loadWebEnv('/tmp/nonexistent-solveflow-env', config); if (!environment) throw new Error('ENV');
   let calls = 0;
@@ -106,4 +133,82 @@ it('streams reasoning SSE beyond 1 MiB while still rejecting streams above 8 MiB
     expect(entries[1]).toMatchObject({ status: 'failed', reason: 'response_limit', receivedBytes: 8 * 1024 * 1024 + 1 });
     expect(signals.every(signal => signal.aborted)).toBe(true);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(directory, { recursive: true, force: true }); }
+});
+
+it('releases stalled model uploads after 30 seconds without dispatching, replaying or losing diagnostics', async () => {
+  const environment = await loadWebEnv('/tmp/nonexistent-solveflow-env', config); if (!environment) throw new Error('ENV');
+  let calls = 0; const statuses: number[] = [];
+  const entries: import('../../scripts/web-server.mjs').WebModelDiagnostic[] = [];
+  const server = webServer('/tmp', null, environment, async () => { calls++; return Response.json({ ok: true }); }, entry => entries.push(entry)); const base = await listen(server);
+  const requests: import('node:http').ClientRequest[] = [];
+  const headers = { authorization: `Bearer ${environment.roles.solver.token}`, 'content-type': 'application/json', 'content-length': 100 };
+  const post = () => fetch(base + '/__solveflow/web-env/model/solver', { method: 'POST', headers: { authorization: headers.authorization }, body: JSON.stringify({ model: 'primary', max_tokens: 8 }) });
+  try {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let received = 0; let allReceived = () => {};
+    const admitted = new Promise<void>(resolve => { allReceived = resolve; });
+    const observe = () => { if (++received === MAX_LOCAL_MODEL_RUNS) allReceived(); };
+    server.on('request', observe);
+    for (let i = 0; i < MAX_LOCAL_MODEL_RUNS; i++) {
+      const slow = httpRequest(base + '/__solveflow/web-env/model/solver', { method: 'POST', headers }, response => { statuses.push(response.statusCode ?? 0); response.resume(); });
+      slow.on('error', () => {}); requests.push(slow); slow.write('{');
+    }
+    await admitted; server.off('request', observe);
+    expect((await post()).status).toBe(429);
+    const dispatchedBefore = calls; expect(dispatchedBefore).toBe(0);
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(statuses).toHaveLength(0); expect(calls).toBe(0);
+    await vi.advanceTimersByTimeAsync(15_000); vi.useRealTimers();
+    await expect.poll(() => statuses.length).toBe(MAX_LOCAL_MODEL_RUNS);
+    expect(statuses).toEqual(Array(MAX_LOCAL_MODEL_RUNS).fill(408)); expect(calls).toBe(dispatchedBefore);
+    expect(entries).toHaveLength(MAX_LOCAL_MODEL_RUNS);
+    expect(entries.every(entry => entry.reason === 'upload_timeout')).toBe(true);
+    expect(JSON.stringify(entries)).not.toContain(environment.roles.solver.token);
+    const response = await post(); expect(response.status).toBe(200); await response.text(); expect(calls).toBe(dispatchedBefore + 1);
+  } finally { vi.useRealTimers(); requests.forEach(request => request.destroy()); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
+it('accepts concurrent uploads progressing beyond 15 seconds and releases slots', async () => {
+  const environment = await loadWebEnv('/tmp/nonexistent-solveflow-env', config); if (!environment) throw new Error('ENV');
+  let calls = 0; const server = webServer('/tmp', null, environment, async () => { calls++; return Response.json({ ok: true }); }); const base = await listen(server);
+  const requests: import('node:http').ClientRequest[] = []; const results: Promise<number>[] = [];
+  const payload = JSON.stringify({ model: 'primary', max_tokens: 8 });
+  try {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let received = 0; let ready = () => {}; const admitted = new Promise<void>(resolve => { ready = resolve; });
+    server.on('request', () => { if (++received === 16) ready(); });
+    for (let i = 0; i < 16; i++) results.push(new Promise((resolve, reject) => {
+      const request = httpRequest(base + '/__solveflow/web-env/model/solver', { method: 'POST', headers: { authorization: `Bearer ${environment.roles.solver.token}`, 'content-length': Buffer.byteLength(payload) } }, response => { response.resume(); response.on('end', () => resolve(response.statusCode ?? 0)); });
+      request.on('error', reject); requests.push(request); request.write(payload.slice(0, 1));
+    }));
+    await admitted; await vi.advanceTimersByTimeAsync(20_000);
+    expect(calls).toBe(0);
+    for (const request of requests) request.end(payload.slice(1));
+    vi.useRealTimers(); expect(await Promise.all(results)).toEqual(Array(16).fill(200)); expect(calls).toBe(16);
+    expect(server.requestTimeout).toBe(130_000);
+  } finally { vi.useRealTimers(); requests.forEach(request => request.destroy()); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
+it('ends a progressing upload at the 120-second absolute deadline with a safe local marker', async () => {
+  const environment = await loadWebEnv('/tmp/nonexistent-solveflow-env', config); if (!environment) throw new Error('ENV');
+  let calls = 0; let observed = () => {};
+  const entries: import('../../scripts/web-server.mjs').WebModelDiagnostic[] = [];
+  const server = webServer('/tmp', null, environment, async () => { calls++; return Response.json({ ok: true }); }, entry => entries.push(entry)); const base = await listen(server);
+  server.on('request', req => req.on('data', () => observed()));
+  let request: import('node:http').ClientRequest | undefined;
+  try {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const result = new Promise<{ status: number; marker: string | string[] | undefined }>((resolve, reject) => {
+      request = httpRequest(base + '/__solveflow/web-env/model/solver', { method: 'POST', headers: { authorization: `Bearer ${environment.roles.solver.token}` } }, response => { response.resume(); response.on('end', () => resolve({ status: response.statusCode ?? 0, marker: response.headers['x-solveflow-request-failure'] })); });
+      request.on('error', reject);
+    });
+    const write = () => new Promise<void>(resolve => { observed = resolve; request?.write(' '); });
+    await write();
+    for (let i = 0; i < 5; i++) { await vi.advanceTimersByTimeAsync(20_000); await write(); }
+    expect(calls).toBe(0);
+    await vi.advanceTimersByTimeAsync(20_001); vi.useRealTimers();
+    expect(await result).toEqual({ status: 408, marker: 'upload-timeout' });
+    expect(entries).toContainEqual(expect.objectContaining({ reason: 'upload_timeout', dispatched: false, httpStatus: 408, requestBytes: 6 }));
+    expect(calls).toBe(0);
+  } finally { vi.useRealTimers(); request?.destroy(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });

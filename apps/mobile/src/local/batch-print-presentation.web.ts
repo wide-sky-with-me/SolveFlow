@@ -21,7 +21,6 @@ export function requireCleanPrintLayouts(questions: BatchPrintProblem[], layouts
 }
 export function requirePaperPrintLayouts(questions: BatchPrintProblem[], layouts: PrintLayouts, images: PrintImages) {
   requireSavedPrintLayouts(questions, layouts, images);
-  for (const question of questions) if (layouts[question.key]?.assets.some(asset => asset.role === 'source')) throw new Error(`第${question.ordinal}题尚未整理，请先整理题目与图示，或在图片整理中确认必要内容。`);
 }
 export function requireSavedPrintLayouts(questions: BatchPrintProblem[], layouts: PrintLayouts, images: PrintImages) {
   for (const question of questions) {
@@ -39,8 +38,8 @@ export function printableVariantQuestions(questions: BatchPrintQuestion[], layou
     const options = layout.problem.options ?? [];
     const labels = options.map(option => option.label);
     // Print eligibility is transient metadata; the saved candidate remains a valid immutable record.
-    const mapped = labels.length > 0 && !question.candidate.selectedOptions?.some(label => !labels.includes(label));
-    const complete = mapped ? layout.problem.optionsComplete ?? question.candidate.problem.optionsComplete : false;
+    const mapped = labels.length > 0 && !question.candidate?.selectedOptions?.some(label => !labels.includes(label));
+    const complete = mapped ? layout.problem.optionsComplete ?? question.candidate?.problem.optionsComplete : false;
     return { ...question, printOptions: labels, ...(complete === undefined ? {} : { printOptionsComplete: complete }) };
   });
 }

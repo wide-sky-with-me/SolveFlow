@@ -13,6 +13,12 @@ function adapt<T extends object>(style: RN.StyleProp<T>, scheme: ThemeScheme) {
 export const View = forwardRef<ComponentRef<typeof RN.View>, ComponentProps<typeof RN.View>>((p, ref) => { const { scheme } = useTheme(); return <RN.View {...p} ref={ref} style={adapt(p.style, scheme)} />; });
 export const Text = forwardRef<ComponentRef<typeof RN.Text>, ComponentProps<typeof RN.Text>>((p, ref) => { const { scheme } = useTheme(); return <RN.Text {...p} ref={ref} style={[{ color: themeColors[scheme].ink }, adapt(p.style, scheme)]} />; });
 export const TextInput = forwardRef<ComponentRef<typeof RN.TextInput>, ComponentProps<typeof RN.TextInput>>((p, ref) => { const { scheme } = useTheme(); return <RN.TextInput {...p} ref={ref} keyboardAppearance={scheme} placeholderTextColor={themeColors[scheme].muted} selectionColor={themeColors[scheme].accent} style={adapt(p.style, scheme)} />; });
+export const Switch = forwardRef<ComponentRef<typeof RN.Switch>, ComponentProps<typeof RN.Switch>>((p, ref) => {
+  const { scheme } = useTheme(); const palette = themeColors[scheme];
+  // RN Web has a separate active thumb prop; native uses thumbColor in both states.
+  const webThumb = RN.Platform.OS === 'web' ? { activeThumbColor: palette.surface } : {};
+  return <RN.Switch {...p} {...webThumb} ref={ref} trackColor={{ false: palette.muted, true: palette.accent }} thumbColor={palette.surface} ios_backgroundColor={palette.muted} style={[p.style, p.disabled && { opacity: .4 }]} />;
+});
 export const Pressable = forwardRef<ComponentRef<typeof RN.View>, ComponentProps<typeof RN.Pressable>>((p, ref) => { const { scheme } = useTheme(); const style = p.style; return <RN.Pressable {...p} ref={ref} style={state => adapt(typeof style === 'function' ? style(state) : style, scheme)} />; });
 export const ScrollView = forwardRef<ComponentRef<typeof RN.ScrollView>, ComponentProps<typeof RN.ScrollView>>((p, ref) => { const { scheme } = useTheme(); return <RN.ScrollView {...p} ref={ref} indicatorStyle={scheme === 'dark' ? 'white' : 'black'} style={adapt(p.style, scheme)} contentContainerStyle={adapt(p.contentContainerStyle, scheme)} />; });
 export const Image = forwardRef<ComponentRef<typeof RN.Image>, ComponentProps<typeof RN.Image>>((p, ref) => { const { scheme } = useTheme(); return <RN.Image {...p} ref={ref} style={adapt(p.style, scheme)} />; });

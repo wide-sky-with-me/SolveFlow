@@ -14,6 +14,7 @@ function fixture(cache: unknown = null) {
     '../dom/batch-print-document': { recordPrintImages: () => { sourceReads++; return [{ id: 'primary', image: 'original' }, { id: 'supplement', image: 'extra' }]; }, printImageKey: (record: string, id: string) => `${record}/${id}` },
     './batch-print-presentation.web': { fallbackPrintLayout: () => ({ problem: { text: 'saved question' }, assets: [{ key: 'record/primary', sourceId: 'primary', role: 'source' }, { key: 'record/supplement', sourceId: 'supplement', role: 'source' }], warnings: [] }) },
     './batch-print-cache.web': { printLayoutCacheKey: async () => 'cache-key', readPrintLayoutCache: async () => cache },
+    './prepare-export-images.web': { prepareExportImages: async (_snapshot: unknown, content: unknown) => content },
     './print-image': { prepareOriginalPrintRegion: async (image: string) => { crops++; cropFrom.push(image); return { image: 'saved-crop' }; } },
   };
   const prepare: unknown = new Function('require', 'exports', `${compiled}\nreturn exports.prepareBatchExport;`)((name: string) => dependencies[name] ?? {}, {});
@@ -26,6 +27,19 @@ function fixture(cache: unknown = null) {
 const illustration = { id: 'diagram', alt: 'diagram', x: .2, y: .2, width: .3, height: .3 };
 
 describe('saved-content PDF preparation', () => {
+  it('direct export ignores derived caches, image edits and models while retaining saved question sources', async () => {
+    const f = fixture({ proposal: { badRelation: true } });
+    const seed = { get images() { throw new Error('QUICK_EXPORT_READS_EDITED_IMAGES'); } };
+    const prepared = await f.prepare(f.runtime, f.snapshot, [{ ...f.questions[0], problem: { text: 'saved', illustrations: [illustration] } }], 'direct', new AbortController().signal, () => {}, seed);
+    expect(f.calls()).toBe(0); expect(f.crops()).toBe(0);
+    expect(prepared.images).toEqual({ 'record/primary': 'original', 'record/supplement': 'extra' });
+    expect(prepared.layouts[questionKey].problem.text).toBe('saved');
+  });
+  it('direct export reports a missing parsed stem without starting extraction', async () => {
+    const f = fixture();
+    await expect(f.prepare(f.runtime, f.snapshot, [{ ...f.questions[0], problem: null }], 'direct', new AbortController().signal, () => {})).rejects.toThrow('尚无已解析题干');
+    expect(f.calls()).toBe(0); expect(f.crops()).toBe(0);
+  });
   it('exports saved answers and original diagrams on a cache miss without any model request', async () => {
     const f = fixture();
     const prepared = await f.prepare(f.runtime, f.snapshot, f.questions, 'saved', new AbortController().signal, () => {});

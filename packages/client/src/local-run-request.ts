@@ -7,12 +7,11 @@ import {
   RunContextSchema,
   isAuxiliaryContext,
   projectQuestionRun,
-  questionThreadHistory,
   terminal,
   type RunContext,
   type RunView,
 } from '@solveflow/contracts/http';
-import { conversationHistory, resolveLearningContext } from './learning-history.js';
+import { answerContextHistory, conversationHistory, resolveLearningContext } from './learning-history.js';
 import { currentImageIds } from './local-image-selection.js';
 
 type PreparedRequest = Pick<
@@ -99,7 +98,7 @@ export function prepareLocalRunRequest(
   }
 
   const learning = resolveLearningContext(runs, context ?? null);
-  const selectedHistory = context ? questionThreadHistory(runs, context) : runs;
+  const selectedHistory = answerContextHistory(runs, context ?? null);
   const history = conversationHistory(selectedHistory, learning.focus ? 4096 : 12288);
   const detailed = context && ['explanation', 'step', 'knowledge', 'knowledge-list'].includes(context.kind);
   // Decision: .agents/notes/implemented/agent/2026-10-04-exam-response-and-materials.md

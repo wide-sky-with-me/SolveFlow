@@ -12,10 +12,15 @@ describe('print adjustment number drafts', () => {
   });
   it.each(['', '-', '+', '.', '-.', '1e1', 'NaN', 'Infinity', 'abc'])('keeps incomplete or malformed input invalid: %j', text => {
     const parsed = parsePrintNumberDrafts(base, { rotation: text });
-    expect(parsed.adjustment).toBeNull(); expect(parsed.invalid).toEqual(['rotation']); expect(parsed.error).toContain('-15°');
+    expect(parsed.adjustment).toBeNull(); expect(parsed.invalid).toEqual(['rotation']); expect(parsed.error).toContain('-45°');
   });
-  it.each([{ rotation: '16' }, { rotation: '-16' }, { left: '-1' }, { right: '101' }, { left: '97' }])('enforces shared numeric bounds: %j', drafts => {
+  it.each([{ rotation: '46' }, { rotation: '-46' }, { left: '-1' }, { right: '101' }, { left: '97' }])('enforces shared numeric bounds: %j', drafts => {
     expect(parsePrintNumberDrafts(base, drafts).adjustment).toBeNull();
+  });
+  it('accepts a photographed screen beyond the former fifteen-degree limit', () => {
+    expect(parsePrintNumberDrafts(base, { rotation: '16.75' }).adjustment?.rotation).toBe(16.75);
+    expect(parsePrintNumberDrafts(base, { rotation: '-45' }).adjustment?.rotation).toBe(-45);
+    expect(parsePrintNumberDrafts(base, { rotation: '45' }).adjustment?.rotation).toBe(45);
   });
   it('accepts complete numbers while preserving the untouched enhancement and perspective', () => {
     const value: PrintImageAdjustment = { ...base, enhance: false, perspective: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }] };

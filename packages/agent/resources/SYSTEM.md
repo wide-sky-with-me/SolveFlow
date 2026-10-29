@@ -33,6 +33,8 @@ focus.kind=regenerate要求从头重新核对整道题，覆盖全部小问，�
 
 作答前核对替换与图示边界：英语题逐字确定划线/高亮起止，末尾逗号、破折号也可能属于替换范围，将每个选项完整代回原句后判断。图表分清图例组别及箭头端点指向的对象；看不清且会影响选项时明确指出缺失的标记，不用文字常识代替视觉证据。
 
+纠错时若derivedViews.source为issue-regions，最后几张图片是核验疑点的局部放大，regions逐张指明其原图编号与区域。优先重新辨认对应标点、高亮、单元格/行列、数学符号、图例或单位，查清后结合完整原图重算受影响的结论；不把局部裁边当缺页，也不把补图局部或其坐标当成主图illustrations。旧识别、候选及核验意见都待检查，不能为了同意核验意见而捏造读数。仍不清楚则明确指出需补拍的图片和区域。最终保留完整题面与全部所求，不只返回一个改动片段。
+
 题型与完整材料：新作答在problem.response.type声明single-choice、multiple-choice、numeric、short-answer、essay、multipart或drawing；problem.exam/module只记录本题明确来源，不把默认设置当作可见证据。单选只选一项，填答用responseValue给可直接填写的值，SAT填答使用numericFormat=sat-spr。作文在response.wordLimit记录题目上限，TARA最多750词。multipart在response.parts列出原小问标签，并在同级parts逐项提供label/answer；answer只概述，不能漏问或用摘要替代正文。选择题继续保留全部原始选项。不要把同题小问拆成questions。
 多图按第一张题图、materialOrder对应补图的顺序提供；补图是同题文章、下一页或局部细节，不能擅自扩大答题范围。综合全部已提供材料，缺页才具体澄清；illustrations仅裁切第一张题图，其他页从应用材料入口查看。focus.answer/parts是所选历史答案的完整正文，优先用于针对最后一段、逐段修改等追问，仍是待核验内容而非正确性证据。
 

@@ -3,8 +3,10 @@ import { createServer as createHttpsServer } from 'node:https';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isIPv4 } from 'node:net';
 import proxyApi from './api-proxy.cjs';
 import { MAX_DEVICE_PHASE_DURATION_MS } from '../packages/contracts/dist/agent.js';
+import { configureWebRequestTimeouts } from './web-request-limits.mjs';
 
 export function privateIPv4(address) {
   if (typeof address !== 'string') return false;
@@ -15,8 +17,11 @@ export function privateIPv4(address) {
 }
 
 // Decision: .agents/notes/implemented/architecture/2026-10-14-container-web-loopback.md
-export function lanGateway({ address, port, upstreamPort = port, tls = null, handleRequest = null }) {
-  if (!privateIPv4(address) || !Number.isInteger(port) || port < 1024 || port > 65535 || !Number.isInteger(upstreamPort) || upstreamPort < 1024 || upstreamPort > 65535) throw new Error('INVALID_LAN_GATEWAY');
+// Decision: .agents/notes/implemented/architecture/2026-10-22-private-web-instance.md
+export function lanGateway({ address, port, upstreamPort = port, tls = null, handleRequest = null, allowTailnet = false }) {
+  const [first, second] = typeof address === 'string' ? address.split('.').map(Number) : [];
+  const tailnetAddress = typeof address === 'string' && isIPv4(address) && first === 100 && second >= 64 && second <= 127;
+  if (!(privateIPv4(address) || allowTailnet === true && tailnetAddress) || !Number.isInteger(port) || port < 1024 || port > 65535 || !Number.isInteger(upstreamPort) || upstreamPort < 1024 || upstreamPort > 65535) throw new Error('INVALID_LAN_GATEWAY');
   const host = `${address}:${port}`; const origin = `${tls ? 'https' : 'http'}://${host}`;
   const server = (tls ? createHttpsServer : createServer)(tls ?? {}, (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -33,7 +38,7 @@ export function lanGateway({ address, port, upstreamPort = port, tls = null, han
     if (handleRequest?.(req, res)) return;
     return proxyApi(req, res, upstreamPort, MAX_DEVICE_PHASE_DURATION_MS + 10000);
   });
-  server.requestTimeout = 15000; server.headersTimeout = 10000;
+  configureWebRequestTimeouts(server);
   return server;
 }
 
@@ -41,8 +46,10 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   try {
     const address = process.env.SOLVEFLOW_LAN_ADDRESS;
     const port = Number(process.env.SOLVEFLOW_LAN_PORT ?? '3130');
+    const tailnet = process.env.SOLVEFLOW_LAN_TAILNET;
+    if (tailnet !== undefined && !['true', 'false'].includes(tailnet)) throw new Error('INVALID_TAILNET_SWITCH');
     const [key, cert] = await Promise.all([readFile(process.env.SOLVEFLOW_LAN_TLS_KEY), readFile(process.env.SOLVEFLOW_LAN_TLS_CERT)]);
-    const server = lanGateway({ address, port, tls: { key, cert } });
+    const server = lanGateway({ address, port, tls: { key, cert }, allowTailnet: tailnet === 'true' });
     server.on('error', () => { console.error('LAN_GATEWAY_LISTEN_FAILED'); process.exitCode = 1; });
     server.listen(port, address, () => console.log(JSON.stringify({ type: 'web.lan.ready', url: `https://${address}:${port}`, pid: process.pid })));
     const stop = () => { server.closeAllConnections(); server.close(); };

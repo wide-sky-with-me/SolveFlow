@@ -17,6 +17,8 @@ export function Camera({
   onGallery,
   continuous = false,
   count = 0,
+  pendingCount = 0,
+  captureBlocked = false,
   limit = 100,
   externalBusy = false,
   message,
@@ -33,6 +35,8 @@ export function Camera({
   onGallery: () => void;
   continuous?: boolean;
   count?: number;
+  pendingCount?: number;
+  captureBlocked?: boolean;
   limit?: number;
   externalBusy?: boolean;
   message?: string;
@@ -80,7 +84,7 @@ export function Camera({
   useEffect(() => { if (suspended) setReady(false); }, [suspended]);
 
   async function capture() {
-    if (!camera.current || !ready || capturing.current || externalBusy) return;
+    if (!camera.current || !ready || capturing.current || externalBusy || captureBlocked) return;
     capturing.current = true;
     setBusy(true);
     try {
@@ -96,7 +100,8 @@ export function Camera({
     }
   }
 
-  const atLimit = continuous && count >= limit;
+  const atLimit = continuous && count + pendingCount >= limit;
+  const controlsBusy = busy || externalBusy || pendingCount > 0;
 
   return (
     <Modal animationType="slide" onRequestClose={() => { if (!busy && !externalBusy) onClose(); }}>
@@ -107,7 +112,7 @@ export function Camera({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="重命名批次"
-              disabled={busy || externalBusy}
+              disabled={controlsBusy}
               onPress={onRename}
               style={{ flex: 1, minHeight: 44, justifyContent: 'center' }}
             >
@@ -126,7 +131,7 @@ export function Camera({
             disabled={busy || externalBusy}
             onPress={onClose}
           />
-          {continuous && onDiscard && <Button title="放弃本批" compact secondary danger disabled={busy || externalBusy} onPress={onDiscard} />}
+          {continuous && onDiscard && <Button title="放弃本批" compact secondary danger disabled={controlsBusy} onPress={onDiscard} />}
         </View>
 
         <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
@@ -168,8 +173,8 @@ export function Camera({
             <CameraGuide
               busy={busy || externalBusy}
               message={
-                (busy || externalBusy)
-                  ? (continuous && count > 0 ? `已拍下第 ${count} 张 · 正在保存…` : '拍摄中…')
+                pendingCount > 0 ? `已保存 ${count} 张 · 待保存 ${pendingCount} 张` : (busy || externalBusy)
+                  ? '拍摄中…'
                   : (continuous
                     ? `已保存 ${count} 张${Platform.OS === 'android' ? ' · 点画面重新对焦' : ''}`
                     : '将完整题目放入画面')
@@ -212,9 +217,9 @@ export function Camera({
               key={String(value)}
               accessibilityRole="button"
               accessibilityLabel={value ? '批量解题' : '单题拍照'}
-              accessibilityState={{ selected: continuous === value, disabled: busy || externalBusy || !onModeChange }}
+              accessibilityState={{ selected: continuous === value, disabled: controlsBusy || !onModeChange }}
               aria-pressed={continuous === value}
-              disabled={busy || externalBusy || !onModeChange}
+              disabled={controlsBusy || !onModeChange}
               onPress={() => onModeChange?.(value)}
               style={styles.mode}
             >
@@ -233,23 +238,23 @@ export function Camera({
 
         {/* Keep the shutter width stable so a longer label doesn't wrap the footer and resize the live preview. */}
         <View style={styles.footer}>
-          {continuous && onReview && <Button title="调整批次图片" secondary disabled={busy || externalBusy || !count} onPress={onReview} />}
+          {continuous && onReview && <Button title="调整批次图片" secondary disabled={controlsBusy || !count} onPress={onReview} />}
           <Button
             title="从相册选择"
             secondary
             onPress={onGallery}
-            disabled={busy || externalBusy || atLimit}
+            disabled={controlsBusy || atLimit}
           />
           <Button
             title="拍摄"
             onPress={() => void capture()}
-            disabled={!ready || busy || externalBusy || !active || atLimit}
+            disabled={!ready || busy || externalBusy || captureBlocked || !active || atLimit}
           />
           <Button
             title="切换镜头"
             secondary
             onPress={() => { setReady(false); setFacing(value => value === 'back' ? 'front' : 'back'); }}
-            disabled={busy || externalBusy}
+            disabled={controlsBusy}
           />
         </View>
 

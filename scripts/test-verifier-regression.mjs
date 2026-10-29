@@ -12,7 +12,8 @@ import { AnswerCandidateSchema } from '../packages/contracts/dist/agent.js';
 const file = process.argv.find(arg => arg.startsWith('--cases='))?.slice(8);
 const safePath = value => { const path = resolve(value); const part = relative(resolve('.runtime'), path); assert(part && !part.startsWith('..') && !part.startsWith('/'), 'Fixtures must stay in ignored .runtime'); return path; };
 assert(file, 'Specify --cases=.runtime/.../cases.json; --live explicitly enables paid requests');
-const manifest = z.strictObject({ profile: LocalModelProfileSchema, cases: z.array(z.strictObject({ id: z.string().regex(/^[a-z0-9-]+$/), exam: ExamTypeSchema, imagePath: z.string(), imageSha256: z.string().regex(/^[a-f0-9]{64}$/), candidate: AnswerCandidateSchema, expected: z.enum(['pass', 'fail']), provenance: z.string().min(1) })).min(1).max(20) }).parse(JSON.parse(await readFile(safePath(file), 'utf8')));
+const caseSchema = z.strictObject({ id: z.string().regex(/^[a-z0-9-]+$/), exam: ExamTypeSchema, imagePath: z.string(), imageSha256: z.string().regex(/^[a-f0-9]{64}$/), candidate: AnswerCandidateSchema, answerMode: z.enum(['brief', 'detailed']).default('brief'), expected: z.enum(['pass', 'fail']), provenance: z.string().min(1) });
+const manifest = z.strictObject({ profile: LocalModelProfileSchema, cases: z.array(caseSchema).min(1).max(20) }).parse(JSON.parse(await readFile(safePath(file), 'utf8')));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 for (const item of manifest.cases) assert.equal(hash(await readFile(safePath(item.imagePath))), item.imageSha256, 'Fixture photo changed');
 console.log(JSON.stringify({ planned: manifest.cases.length, live: process.argv.includes('--live'), ids: manifest.cases.map(item => item.id) }));
@@ -23,9 +24,9 @@ const output = resolve('.runtime', `verifier-regression-${new Date().toISOString
 const report = { manifestSha256: hash(await readFile(safePath(file))), codeSha256: hash(await readFile('packages/agent/dist/pi/mobile.js')), resourcesSha256: hash(await readFile('packages/agent/dist/pi/mobile-resources.js')), environment: 'Host Node, production device agent; simulated photos, not physical-camera capture', rows: [] };
 for (const item of manifest.cases) {
   const started = performance.now(); const diagnostics = [];
-  const outcome = await solveOnDevice({ schemaVersion: 1, role: 'solver', exam: item.exam, identity: { ownerId: 'local-verifier-regression', sessionId: randomUUID(), runId: randomUUID() }, message: '请独立校验原图题目的答案。', image: { bytes: new Uint8Array(await readFile(safePath(item.imagePath))), mimeType: 'image/jpeg' }, evidence: [], verificationMode: 'manual', verificationTarget: item.candidate }, { schemaVersion: 1, solver: manifest.profile, verifier: null }, { solver: connection.apiKey, verifier: null }, fetch, AbortSignal.timeout(125_000), () => {}, row => diagnostics.push(row));
+  const outcome = await solveOnDevice({ schemaVersion: 1, role: 'solver', exam: item.exam, identity: { ownerId: 'local-verifier-regression', sessionId: randomUUID(), runId: randomUUID() }, message: '请独立校验原图题目的答案。', image: { bytes: new Uint8Array(await readFile(safePath(item.imagePath))), mimeType: 'image/jpeg' }, evidence: [], answerMode: item.answerMode, verificationMode: 'manual', verificationTarget: item.candidate }, { schemaVersion: 1, solver: manifest.profile, verifier: null }, { solver: connection.apiKey, verifier: null }, fetch, AbortSignal.timeout(125_000), () => {}, row => diagnostics.push(row));
   const verdict = outcome.status === 'completed' ? outcome.verification?.verdict ?? null : null;
-  const row = { id: item.id, expected: item.expected, verdict, elapsedMs: Math.round(performance.now() - started), passed: verdict === item.expected, outcome, diagnostics };
+  const row = { id: item.id, answerMode: item.answerMode, expected: item.expected, verdict, elapsedMs: Math.round(performance.now() - started), passed: verdict === item.expected, outcome, diagnostics };
   report.rows.push(row); if (!row.passed) process.exitCode = 1;
   await writeFile(`${output}/report.json`, JSON.stringify(report, null, 2), { mode: 0o600 });
   console.log(JSON.stringify({ id: row.id, expected: row.expected, verdict, passed: row.passed, elapsedMs: row.elapsedMs }));

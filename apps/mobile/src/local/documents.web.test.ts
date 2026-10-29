@@ -37,3 +37,30 @@ it('classifies a non-string saved value as keyed corruption without hiding trans
   const unavailable = documents.get('favorite.example'); const ioRejection = expect(unavailable).rejects.toThrow('本地保存失败'); tx.onabort?.(); await ioRejection;
   await expect(unavailable).rejects.not.toBeInstanceOf(LocalDataError);
 });
+
+it('reads ordered duplicate and missing keys in one bounded IndexedDB transaction', async () => {
+  const get = vi.fn((key: string) => ({ result: key === 'missing' ? undefined : `value:${key}` }));
+  const tx = { oncomplete: null as (() => void) | null, onabort: null as (() => void) | null, onerror: null as (() => void) | null, objectStore: () => ({ get }) };
+  const transaction = vi.fn(() => tx), pending = { ...pendingOpen(), result: { close: vi.fn(), transaction } };
+  vi.stubGlobal('indexedDB', { open: () => pending }); const { openDocuments } = await import('./documents.web');
+  const opening = openDocuments(); pending.onsuccess?.(); const documents = await opening;
+  expect(documents.getMany).toBeDefined();
+  const read = documents.getMany!(['summary.one', 'missing', 'summary.one']);
+  expect(transaction).toHaveBeenCalledTimes(1); tx.oncomplete?.();
+  await expect(read).resolves.toEqual(['value:summary.one', null, 'value:summary.one']);
+  await expect(documents.getMany!([])).resolves.toEqual([]); expect(transaction).toHaveBeenCalledTimes(1);
+  await expect(documents.getMany!(Array.from({ length: 1001 }, () => 'summary.one'))).rejects.toThrow('读取条目数量超限');
+  expect(transaction).toHaveBeenCalledTimes(1);
+});
+it('keeps keyed corruption distinct from an aborted bulk read', async () => {
+  const tx = { oncomplete: null as (() => void) | null, onabort: null as (() => void) | null, onerror: null as (() => void) | null, objectStore: () => ({ get: (key: string) => ({ result: key === 'summary.bad' ? { broken: true } : 'valid' }) }) };
+  const pending = { ...pendingOpen(), result: { close: vi.fn(), transaction: () => tx } };
+  vi.stubGlobal('indexedDB', { open: () => pending }); const { openDocuments } = await import('./documents.web');
+  const { LocalDataError } = await import('@solveflow/client/local');
+  const opening = openDocuments(); pending.onsuccess?.(); const documents = await opening;
+  expect(documents.getMany).toBeDefined();
+  const damaged = documents.getMany!(['summary.good', 'summary.bad']); const observed = expect(damaged).rejects.toMatchObject({ key: 'summary.bad' }); tx.oncomplete?.(); await observed;
+  await expect(damaged).rejects.toBeInstanceOf(LocalDataError);
+  const failed = documents.getMany!(['summary.good']); const failure = expect(failed).rejects.toThrow('本地保存失败'); tx.onabort?.(); await failure;
+  await expect(failed).rejects.not.toBeInstanceOf(LocalDataError);
+});

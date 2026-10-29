@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { chooseSyntheticPhoto } from './local-fixture.js';
+import { chooseSyntheticPhoto, configureLocalModel } from './local-fixture.js';
 
 const candidate = { schemaVersion: 1, kind: 'answer', problem: { text: 'x+1=3，求x', subject: 'math', uncertainties: [] }, answer: 'x=2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] };
 function responseSse() {
@@ -7,7 +7,7 @@ function responseSse() {
   return [{ type: 'response.created', response: { id: 'resp_fixture' } }, { type: 'response.output_item.added', output_index: 0, item: { ...item, content: [] } }, { type: 'response.output_item.done', output_index: 0, item }, { type: 'response.completed', response: { id: 'resp_fixture', status: 'completed', output: [item], usage: { input_tokens: 100, output_tokens: 100, total_tokens: 200 } } }].map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
 }
 async function openSettings(page: Page) { await page.getByRole('tab', { name: '我的', exact: true }).click(); await page.getByRole('button', { name: '设置', exact: true }).click(); }
-for (const [initialExam, nextExam] of [['SAT', 'AP'], ['ESAT', 'TMUA'], ['TMUA', 'TARA'], ['TARA', 'ESAT']] as const) test(`${initialExam} persists with old questions after changing default to ${nextExam}`, async ({ page }) => {
+for (const [initialExam, nextExam] of [['SAT', 'AP'], ['ACT', 'SAT'], ['SAT', 'ACT'], ['ESAT', 'TMUA'], ['TMUA', 'TARA'], ['TARA', 'ESAT']] as const) test(`${initialExam} persists with old questions after changing default to ${nextExam}`, async ({ page }) => {
   const bodies: unknown[] = [];
   await page.route('https://fixture-model.invalid/v1/responses', async route => { bodies.push(route.request().postDataJSON()); await route.fulfill({ contentType: 'text/event-stream', body: responseSse() }); });
   await page.goto('/'); await page.getByRole('button', { name: '配置模型与考试类型', exact: true }).click();
@@ -26,6 +26,9 @@ for (const [initialExam, nextExam] of [['SAT', 'AP'], ['ESAT', 'TMUA'], ['TMUA',
   await openSettings(page); await page.getByRole('button', { name: nextExam, exact: true }).click();
   await page.getByRole('button', { name: '保存设置', exact: true }).click(); await page.getByRole('tab', { name: '题目', exact: true }).click();
   await expect(page.getByTestId('current-exam')).toHaveText(`本题考试：${initialExam}`);
+  await page.reload(); await expect(page.getByTestId('current-exam')).toHaveText(`本题考试：${initialExam}`); expect(bodies).toHaveLength(1);
+  // Ordinary Web keys are memory-only; re-enter the fixture key without changing the persisted default exam.
+  await configureLocalModel(page);
   await page.getByLabel('继续问这道题', { exact: true }).fill('再解释一下'); await page.getByRole('button', { name: '发送同题追问', exact: true }).click();
   await expect.poll(() => bodies.length).toBe(2); expect(JSON.stringify(bodies[1])).toContain(`来源：/skills/exams/references/${initialExam.toLowerCase()}.md`);
   expect(JSON.stringify(bodies[1])).not.toContain(`来源：/skills/exams/references/${nextExam.toLowerCase()}.md`);
@@ -39,6 +42,6 @@ for (const [initialExam, nextExam] of [['SAT', 'AP'], ['ESAT', 'TMUA'], ['TMUA',
   await page.reload(); await expect(page.getByTestId('current-exam')).toHaveText(`本题考试：${nextExam}`);
   await openSettings(page); await expect(page.getByRole('button', { name: nextExam, exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('button', { name: 'Responses', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByLabel('解题API Key', { exact: true })).toHaveValue('');
+  await expect(page.getByLabel('解题API Key', { exact: true })).toHaveValue(''); expect(bodies).toHaveLength(3);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
 });

@@ -15,6 +15,8 @@ services:
       SOLVEFLOW_WEB_DIR: /opt/solveflow/web
       SOLVEFLOW_WEB_STATE_DIR: /var/lib/solveflow
       SOLVEFLOW_WEB_PUBLIC_ORIGIN: "${SOLVEFLOW_WEB_PUBLIC_ORIGIN:-}"
+      SOLVEFLOW_WEB_SOLVER_CONCURRENCY: "${SOLVEFLOW_WEB_SOLVER_CONCURRENCY:-8}"
+      SOLVEFLOW_WEB_VERIFIER_CONCURRENCY: "${SOLVEFLOW_WEB_VERIFIER_CONCURRENCY:-8}"
     volumes:
       - type: bind
         source: ./state

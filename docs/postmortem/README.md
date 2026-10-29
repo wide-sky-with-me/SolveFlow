@@ -10,8 +10,13 @@
 | --- | --- |
 | 官网样卷、归档及分科分卷结果 | [2026-10-06全量评测](2026-10-06-official-exam-suite.md)、[分科分卷](2026-10-06-official-exam-suite-by-subject.md)、[分析](2026-10-06-official-exam-suite-analysis.md) |
 | 新分支TMUA全量、PDF回归与国庆对照 | [2026-10-13实际评测](2026-10-13-tmua-branch-evaluation.md) |
-| 试卷式纯题、单页与多份作答ZIP | [试卷验收](2026-10-14-exam-style-pdf-export.md)、[持久整理](2026-10-14-persistent-paper-preparation.md)、[入口](2026-10-14-pdf-preparation-header.md)、[误取消](2026-10-14-print-preparation-cancellation.md)、[模型截断](2026-10-14-print-layout-truncation.md)、[Windows追加验收](2026-10-14-windows-chrome-print-preparation.md)、[本机格式修正](2026-10-14-print-layout-format-retry.md)、[可见重试](2026-10-15-print-layout-resilience.md) |
-| PDF真实多份、资源边界与图示修正 | [真实批次导出](2026-10-15-pdf-export-acceptance.md)、[资源门禁与裁图](2026-10-15-pdf-resource-guards.md)、[疑点排版与容量](2026-10-15-pdf-layout-capacity.md)、[单页提速与边界](2026-10-15-pdf-render-scope.md)、[图示摆正](2026-10-15-pdf-image-deskew.md)、[纸面与容量复测](2026-10-15-pdf-paper-enhancement.md)、[陈述与容量提示](2026-10-15-pdf-statement-capacity.md)、[失败反馈与重试](2026-10-15-pdf-failure-feedback.md)、[前台成品恢复](2026-10-15-pdf-inline-save-retry.md)、[弹窗订阅与连续导出](2026-10-15-pdf-render-subscription-load.md)、[四角与实图校样](2026-10-15-pdf-image-perspective.md) |
+| 试卷式纯题、单页与多份作答ZIP | [试卷验收](2026-10-14-exam-style-pdf-export.md)、[持久整理](2026-10-14-persistent-paper-preparation.md)、[Windows校样](2026-10-14-windows-chrome-print-preparation.md)、[失败恢复](2026-10-15-pdf-failure-feedback.md) |
+| PDF真实多份、资源边界与图示修正 | [真实批次导出](2026-10-15-pdf-export-acceptance.md)、[资源与裁图](2026-10-15-pdf-resource-guards.md)、[容量边界](2026-10-15-pdf-layout-capacity.md)、[四角校样](2026-10-15-pdf-image-perspective.md) |
+| ACT完整识别、两轮一致性与低质量材料 | [转录修复](2026-10-23-act-source-capture.md)、[两轮结果](2026-10-24-act-english-consistency.md)、[材料诊断](2026-10-26-act-material-diagnosis.md) |
+| 快速PDF答案表、书签及补图导出 | [ACT导出](2026-10-23-act-pdf.md)、[补图复现](2026-10-24-supplement-pdf-reproduction.md)、[保存恢复](2026-10-24-export-save-recovery.md) |
+| 导入速度、插入编号和拖动顺序 | [预处理](2026-10-23-batch-import-optimization.md)、[拖动](2026-10-27-batch-import-drag.md)、[默认追加](2026-10-27-batch-append-default.md) |
+| 共享补图、独立重答及弹窗交互 | [异步补图](2026-10-27-batch-material-workbench.md)、[缩略图](2026-10-27-material-thumbnail-controls.md)、[重答反馈](2026-10-27-batch-regeneration-feedback.md)、[提示真实计时](2026-10-27-material-notice-expiry.md) |
+| 开发产物清理及代码、文档整理 | [本次清理](2026-10-27-development-cleanup.md) |
 | 生物批次答案与核验问题 | [2026-10-09逐题判断](2026-10-09-biology-batch-answers.md)、[批测](2026-10-09-biology-batch-acceptance.md) |
 | 答题/校验两队列与判错接手 | [2026-10-09队列修复](2026-10-09-independent-queues.md)、[直接核对](2026-10-09-direct-answer-review.md) |
 | 失败题重试、超时和非流式模型对比 | [2026-10-09运行核查](2026-10-09-batch-retry-and-timeouts.md) |

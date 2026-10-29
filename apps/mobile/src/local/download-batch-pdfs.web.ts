@@ -4,28 +4,42 @@
 // Decision: .agents/notes/implemented/storage/2026-10-16-pdf-async-jpeg.md
 // Decision: .agents/notes/implemented/storage/2026-10-18-pdf-resource-handoff.md
 // Decision: .agents/notes/implemented/storage/2026-10-19-pdf-cleanup-settlement.md
-import { MAX_BATCH_PRINT_BYTES, MAX_BATCH_PRINT_COPIES, MAX_BATCH_PRINT_PAGES } from '@solveflow/contracts/local';
+// Decision: .agents/notes/implemented/storage/2026-10-21-reading-pdf-render-scope.md
+import { MAX_EXPORT_PDF_BYTES, MAX_EXPORT_ARTIFACT_BYTES, MAX_BATCH_PRINT_COPIES, MAX_BATCH_PRINT_PAGES } from '@solveflow/contracts/local';
 import { ExportTaskFailure } from '@solveflow/client/local';
 import { createBatchPrintFrame, fitBatchPrintMath } from './print-batch.web.ts';
 import { fitBatchPrintQuestionPage, fitBatchPrintQuestionPages } from './print-question-pages.web';
 import type html2canvas from 'html2canvas';
 import { createPdfRenderLifecycle, yieldPdfRender } from './pdf-render-lifecycle.web';
+import { createReadingPdfScope, trimReadingPageMargins } from './reading-pdf-scope.web';
 
 export interface BatchPdfDownload { element: Element | (() => Element | Promise<Element>); name: string }
-export interface BatchPdfDownloadProgress { copy: number; copies: number; page: number; pages: number; estimatedBytes?: number }
+export interface BatchPdfDownloadProgress { copy: number; copies: number; page: number; pages: number; pagesFinal?: boolean; estimatedBytes?: number }
 interface Interval { start: number; end: number }
 const MAX_COPIES = MAX_BATCH_PRINT_COPIES;
 const MAX_PAGES = MAX_BATCH_PRINT_PAGES;
 const RESOURCE_TIMEOUT = 30000;
+const MAX_COPY_TIMEOUT = 300000;
+// Decision: .agents/notes/implemented/storage/2026-10-21-pdf-copy-time-budget.md
+const copyTimeout = (pages: number) => Math.min(MAX_COPY_TIMEOUT, Math.max(60000, pages * 10000));
 const MM_PER_PIXEL = 25.4 / 96;
 const PAGE_HEIGHT = 264 / MM_PER_PIXEL;
 const ARCHIVE_ENTRY_ESTIMATE = 2048;
 
 export function formatBatchPdfProgress(value: BatchPdfDownloadProgress): string {
-  const current = `生成第 ${value.copy} / ${value.copies} 份 · 第 ${value.page} / ${value.pages} 页`;
+  const current = `生成第 ${value.copy} / ${value.copies} 份 · ${value.pagesFinal === false ? `第 ${value.page} 页（总页数统计中）` : `第 ${value.page} / ${value.pages} 页`}`;
   const estimate = value.estimatedBytes;
-  if (estimate === undefined || !Number.isFinite(estimate) || estimate < MAX_BATCH_PRINT_BYTES * .9) return current;
-  return `${current} · 预计约 ${(estimate / 1024 / 1024).toFixed(1)} MiB，${estimate >= MAX_BATCH_PRINT_BYTES ? '可能超过' : '接近'} ${MAX_BATCH_PRINT_BYTES / 1024 / 1024} MiB 上限；可取消后减少份数。`;
+  if (estimate === undefined || !Number.isFinite(estimate) || estimate < MAX_EXPORT_ARTIFACT_BYTES * .9) return current;
+  return `${current} · 预计约 ${(estimate / 1024 / 1024).toFixed(1)} MiB，${estimate >= MAX_EXPORT_ARTIFACT_BYTES ? '可能超过' : '接近'} ${MAX_EXPORT_ARTIFACT_BYTES / 1024 / 1024} MiB 上限；可取消后减少份数。`;
+}
+// Source snapshots, one PDF and the complete ZIP have distinct resource budgets.
+// Decision: .agents/notes/implemented/storage/2026-10-22-multi-copy-pdf-capacity.md
+export function requireBatchPdfBytes(copyBytes: number, completedBytes = 0): void {
+  if (copyBytes > MAX_EXPORT_PDF_BYTES) throw new ExportTaskFailure(`单份 PDF 超过 ${MAX_EXPORT_PDF_BYTES / 1024 / 1024} MiB，请按题目分批导出。`);
+  if (copyBytes + completedBytes > MAX_EXPORT_ARTIFACT_BYTES) throw new ExportTaskFailure(`PDF 导出合计超过 ${MAX_EXPORT_ARTIFACT_BYTES / 1024 / 1024} MiB，请减少份数或分批导出。`);
+}
+export function estimateBatchPdfBytes(completedBytes: number, completedCopies: number, copies: number): number {
+  return Math.ceil(completedBytes * copies / completedCopies) + ARCHIVE_ENTRY_ESTIMATE * copies;
 }
 function checkCancelled(signal: AbortSignal) {
   if (signal.aborted) throw new Error('导出已取消。');
@@ -38,7 +52,7 @@ function cleanupAll(cleanups: Array<() => void>) {
   if (errors.length > 1) throw new AggregateError(errors, 'PDF 资源清理失败。');
 }
 
-function bounded<T>(work: Promise<T>, signal: AbortSignal, cleanup: () => void, deadline?: number): Promise<T> {
+export function boundedPdfResource<T>(work: Promise<T>, signal: AbortSignal, cleanup: () => void, deadline?: number): Promise<T> {
   try { checkCancelled(signal); } catch (error) { void work.catch(() => {}); throw error; }
   const expiresAt = Math.min(Date.now() + RESOURCE_TIMEOUT, deadline ?? Infinity);
   return new Promise<T>((resolve, reject) => {
@@ -75,11 +89,13 @@ function bounded<T>(work: Promise<T>, signal: AbortSignal, cleanup: () => void, 
     });
   });
 }
+const bounded = boundedPdfResource;
 
-function safeFilename(name: string, extension: 'pdf' | 'zip'): string {
+export function safePdfFilename(name: string, extension: 'pdf' | 'zip'): string {
   const stem = name.replace(/\.(pdf|zip)$/i, '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-').replace(/[.\s]+$/g, '').trim().slice(0, 180);
   return `${stem || 'batch'}.${extension}`;
 }
+const safeFilename = safePdfFilename;
 
 export function requireBatchPdfPageCount(count: number) {
   if (count > MAX_PAGES) throw new ExportTaskFailure(`PDF 页数超过上限（每份 ${MAX_PAGES} 页），请按题目拆分后重试。`);
@@ -106,7 +122,7 @@ function paginate(root: HTMLElement): Interval[] {
   const forcedBreaks: number[] = [];
   const breakGaps: Interval[] = [];
   const interval = (rect: DOMRect): Interval => ({ start: Math.max(0, rect.top - top), end: Math.min(height, rect.bottom - top) });
-  for (const block of root.querySelectorAll<HTMLElement>('[data-pdf-block],figure,.print-cover')) {
+  for (const block of root.querySelectorAll<HTMLElement>('[data-pdf-block],figure,.print-cover,.print-warning')) {
     const value = interval(block.getBoundingClientRect());
     if (value.end > value.start && value.end - value.start < PAGE_HEIGHT) blocks.push(value);
   }
@@ -195,7 +211,7 @@ export async function buildBatchPdfs(
 ): Promise<{ name: string; mimeType: 'application/pdf' | 'application/zip'; data: Uint8Array<ArrayBuffer> }> {
   checkCancelled(signal);
   if (items.length < 1 || items.length > MAX_COPIES) throw new Error('每次导出需要 1 至 20 份。');
-  const [canvasModule, pdfModule, zipModule] = await bounded(Promise.all([import('html2canvas'), import('jspdf'), import('fflate')]), signal, () => undefined);
+  const [canvasModule, pdfModule] = await bounded(Promise.all([import('html2canvas'), import('jspdf')]), signal, () => undefined);
   checkCancelled(signal);
   if (Reflect.get(canvasModule.default, 'renderLifecycleVersion') !== 2) throw new ExportTaskFailure('PDF 绘制组件版本不匹配，请刷新页面后重试。');
   const files: Record<string, Uint8Array<ArrayBuffer>> = Object.create(null);
@@ -209,23 +225,41 @@ export async function buildBatchPdfs(
     }), signal, () => undefined);
     checkCancelled(signal);
     requireLocalImages(element);
-    const frame = await createBatchPrintFrame(element, item.name, signal, { questionPages: true });
-    const copyDeadline = Date.now() + 60000;
+    const frame = await createBatchPrintFrame(element, item.name, signal, { questionPages: true, lifetimeMs: MAX_COPY_TIMEOUT + RESOURCE_TIMEOUT });
+    const copyStarted = Date.now();
+    let copyDeadline = copyStarted + 60000;
+    let currentPage = 1; let pageCount = 0;
+    let readingScope: ReturnType<typeof createReadingPdfScope> = null;
     try {
       requireLocalImages(frame.doc);
       if (frame.content.scrollWidth > frame.content.clientWidth + 1) throw new Error('PDF 正文超出页宽，请调整公式或图片。');
       let pages = paginate(frame.content);
+      readingScope = createReadingPdfScope(frame.content, pages, paginate);
+      if (readingScope) pages = readingScope.pages;
+      copyDeadline = copyStarted + copyTimeout(pages.length); pageCount = pages.length;
       const candidates = [...frame.content.querySelectorAll<HTMLElement>('[data-pdf-question]')];
-      const questionPages = frame.content.matches('.print-copy-document') && candidates.every(page => page.parentElement === frame.content && page.matches('.print-copy-question.print-question-page')) ? candidates : [];
+      let questionPages = frame.content.matches('.print-copy-document') && candidates.every(page => page.parentElement === frame.content && page.matches('.print-copy-question.print-question-page')) ? candidates : [];
       const pdf = new pdfModule.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
       let imageBytes = 0;
       for (let pageIndex = 0; pageIndex < pages.length; pageIndex++) {
+        currentPage = pageIndex + 1;
         checkCancelled(signal);
         checkCopyDeadline(copyDeadline);
-        if (pageIndex > 0 && frame.activateQuestionPage) await bounded(frame.activateQuestionPage(pageIndex), signal, frame.dispose, copyDeadline);
+        if (pageIndex > 0 && frame.activateQuestionPage) {
+          await bounded(frame.activateQuestionPage(pageIndex), signal, frame.dispose, copyDeadline);
+          // Decision: .agents/notes/implemented/storage/2026-10-21-question-continuation-pages.md
+          // Connecting the next question may add trusted continuation sheets before rasterization.
+          pages = paginate(frame.content);
+          copyDeadline = copyStarted + copyTimeout(pages.length); pageCount = pages.length;
+          questionPages = [...frame.content.querySelectorAll<HTMLElement>('[data-pdf-question]')];
+        }
         let page = pages[pageIndex];
         if (!page) throw new Error('PDF 分页不可用。');
         const questionPage = questionPages[pageIndex];
+        const readingPage = readingScope?.activate(pageIndex);
+        const readingInterval = readingPage?.pages[readingPage.index];
+        if (readingPage && !readingInterval) throw new Error('PDF 阅读页不可用。');
+        if (readingPage) await bounded(Promise.all([...readingPage.element.querySelectorAll('img')].map(image => image.decode())), signal, frame.dispose, copyDeadline);
         let renderActive = true;
         const renderDeadline = Math.min(copyDeadline, Date.now() + RESOURCE_TIMEOUT);
         const lifecycle = createPdfRenderLifecycle(frame.doc, () => {
@@ -234,7 +268,7 @@ export async function buildBatchPdfs(
           if (!renderActive) throw new Error('PDF 绘制已结束。');
         });
         const options: NonNullable<Parameters<typeof html2canvas>[1]> = {
-          backgroundColor: '#ffffff', scale: 2, x: 0, y: questionPage ? 0 : page.start,
+          backgroundColor: '#ffffff', scale: 2, x: 0, y: questionPage ? 0 : readingInterval?.start ?? page.start,
           width: frame.content.clientWidth, height: page.end - page.start,
           windowWidth: 800, windowHeight: 1100, scrollX: 0, scrollY: 0,
           logging: false, allowTaint: false, useCORS: false, imageTimeout: 15000,
@@ -249,23 +283,37 @@ export async function buildBatchPdfs(
           onclone: (doc, clonedRoot) => {
             lifecycle.bindClone(doc);
             fitBatchPrintMath(doc);
+            if (readingPage) {
+              const measured = trimReadingPageMargins(clonedRoot, paginate(clonedRoot));
+              if (!readingPage.measured) {
+                requireBatchPdfPageCount(pages.length - readingPage.pages.length + measured.length);
+                readingScope?.measure(pageIndex, measured);
+                copyDeadline = copyStarted + copyTimeout(pages.length); pageCount = pages.length;
+              } else if (measured.length !== readingPage.pages.length || measured.some((value, i) => Math.abs(value.start - (readingPage.pages[i]?.start ?? -1)) > 1 || Math.abs(value.end - (readingPage.pages[i]?.end ?? -1)) > 1)) throw new ExportTaskFailure('PDF 排版在绘制时发生变化，请重试。');
+              if (clonedRoot.scrollWidth > clonedRoot.clientWidth + 1) throw new ExportTaskFailure('PDF 绘制内容超出页宽。');
+              const local = measured[readingPage.index]; if (!local) throw new Error('PDF 阅读页不可用。');
+              options.y = local.start; options.height = local.end - local.start; options.width = clonedRoot.clientWidth;
+              page = local;
+              onProgress?.({ copy: index + 1, copies: items.length, page: pageIndex + 1, pages: pages.length, pagesFinal: pageIndex === pages.length - 1, ...(estimatedBytes === undefined ? {} : { estimatedBytes }) });
+              return;
+            }
             if (questionPage) fitBatchPrintQuestionPage(clonedRoot); else fitBatchPrintQuestionPages(doc);
             const clonedDocument = questionPage ? clonedRoot.parentElement : clonedRoot;
             if (!clonedDocument) throw new Error('PDF 单题页面结构不完整。');
             if (clonedDocument.scrollWidth > clonedDocument.clientWidth + 1) throw new Error('PDF 绘制内容超出页宽。');
             // Recheck all sheet positions, including the retained empty siblings.
             const measured = paginate(clonedDocument);
-            if (pageIndex === 0) pages = measured;
+            if (pageIndex === 0) { pages = measured; copyDeadline = copyStarted + copyTimeout(pages.length); pageCount = pages.length; }
             else if (measured.length !== pages.length || measured.some((value, i) => Math.abs(value.start - (pages[i]?.start ?? -1)) > 1 || Math.abs(value.end - (pages[i]?.end ?? -1)) > 1)) throw new Error('PDF 排版在绘制时发生变化，请重试。');
             page = pages[pageIndex];
             if (!page) throw new Error('PDF 分页不可用。');
             options.y = questionPage ? 0 : page.start; options.height = page.end - page.start; options.width = clonedRoot.clientWidth;
-            onProgress?.({ copy: index + 1, copies: items.length, page: pageIndex + 1, pages: pages.length, ...(estimatedBytes === undefined ? {} : { estimatedBytes }) });
+            onProgress?.({ copy: index + 1, copies: items.length, page: pageIndex + 1, pages: pages.length, pagesFinal: !frame.activateQuestionPage || pageIndex === pages.length - 1, ...(estimatedBytes === undefined ? {} : { estimatedBytes }) });
           },
         };
         let canvas: HTMLCanvasElement;
         try {
-          const render = canvasModule.default(questionPage ?? frame.content, options);
+          const render = canvasModule.default(questionPage ?? readingPage?.element ?? frame.content, options);
           let pendingCanvas: Promise<HTMLCanvasElement>;
           // Guard completion first; observe late resources even if synchronous cancellation throws.
           try { pendingCanvas = bounded(render, signal, () => { renderActive = false; cleanupAll([() => lifecycle.dispose(), () => frame.dispose()]); }, copyDeadline); }
@@ -285,42 +333,63 @@ export async function buildBatchPdfs(
           if (blob.type !== 'image/jpeg' || blob.size === 0) throw new ExportTaskFailure('PDF 页面图像格式无效，请重试。');
           // Preserve the former data-URI estimate, including its prefix and base64 padding.
           imageBytes += 3 * Math.ceil(blob.size / 3) + 18;
-          if (imageBytes + totalBytes > MAX_BATCH_PRINT_BYTES) throw new ExportTaskFailure('PDF 导出超过 128 MiB，请减少份数或分批导出。');
+          requireBatchPdfBytes(imageBytes, totalBytes);
           const image = new Uint8Array(await bounded(blob.arrayBuffer(), signal, frame.dispose, copyDeadline));
           checkCancelled(signal);
           checkCopyDeadline(copyDeadline);
           if (pageIndex > 0) pdf.addPage('a4', 'portrait');
           // Typed-array auto-aliases can collide on different JPEG tails; each page is unique.
           pdf.addImage(image, 'JPEG', 16, 16, 178, (page.end - page.start) * 178 / frame.content.clientWidth, `page-${pageIndex + 1}`, 'FAST');
-          if (!frame.content.querySelector('[data-pdf-question]')) { pdf.setFontSize(8); pdf.setTextColor(100); pdf.text(`${pageIndex + 1} / ${pages.length}`, 194, 289, { align: 'right' }); }
         } finally { canvas.width = 0; canvas.height = 0; }
         await bounded(new Promise<void>(resolve => setTimeout(resolve, 0)), signal, frame.dispose, copyDeadline);
       }
       checkCancelled(signal);
       checkCopyDeadline(copyDeadline);
+      if (!frame.content.querySelector('[data-pdf-question]')) {
+        const total = pdf.getNumberOfPages();
+        for (let page = 1; page <= total; page++) {
+          checkCancelled(signal); checkCopyDeadline(copyDeadline);
+          pdf.setPage(page); pdf.setFontSize(8); pdf.setTextColor(100); pdf.text(`${page} / ${total}`, 194, 289, { align: 'right' });
+        }
+      }
       const bytes = new Uint8Array(pdf.output('arraybuffer'));
       checkCancelled(signal);
       checkCopyDeadline(copyDeadline);
+      requireBatchPdfBytes(bytes.byteLength, totalBytes);
       totalBytes += bytes.byteLength;
-      if (totalBytes > MAX_BATCH_PRINT_BYTES) throw new ExportTaskFailure('PDF 导出超过 128 MiB，请减少份数或分批导出。');
       const filename = safeFilename(item.name, 'pdf');
       let name = filename;
       for (let duplicate = 2; files[name]; duplicate++) name = `${filename.slice(0, -4)}-${String(duplicate).padStart(2, '0')}.pdf`;
       files[name] = bytes;
       if (index + 1 < items.length) {
         // Completed files are representative; estimates advise, never reject an artifact.
-        estimatedBytes = Math.ceil(totalBytes * items.length / (index + 1)) + ARCHIVE_ENTRY_ESTIMATE * items.length;
-        onProgress?.({ copy: index + 1, copies: items.length, page: pages.length, pages: pages.length, estimatedBytes });
+        estimatedBytes = estimateBatchPdfBytes(totalBytes, index + 1, items.length);
+        onProgress?.({ copy: index + 1, copies: items.length, page: pages.length, pages: pages.length, pagesFinal: true, estimatedBytes });
         checkCancelled(signal);
       }
-    } finally { frame.dispose(); }
+    } catch (error) {
+      if (!signal.aborted && error instanceof ExportTaskFailure && /^(?:单份 PDF 处理超时|PDF 资源处理超时)/.test(error.message)) {
+        throw new ExportTaskFailure(`第 ${index + 1} / ${items.length} 份，第 ${currentPage} / ${pageCount} 页：${error.message}`, { cause: error.cause ?? error });
+      }
+      throw error;
+    } finally { try { readingScope?.dispose(); } finally { frame.dispose(); } }
   }
+  return packBatchPdfFiles(files, archiveName, signal);
+}
+
+/** Share bounded filenames/ZIP handoff with the direct renderer, without loading HTML capture. */
+export async function packBatchPdfFiles(files: Record<string, Uint8Array<ArrayBuffer>>, archiveName: string, signal: AbortSignal): Promise<{ name: string; mimeType: 'application/pdf' | 'application/zip'; data: Uint8Array<ArrayBuffer> }> {
   checkCancelled(signal);
-  if (items.length === 1) {
+  const entries = Object.entries(files);
+  if (!entries.length || entries.length > MAX_COPIES) throw new Error('每次导出需要 1 至 20 份。');
+  let totalBytes = 0;
+  for (const [, data] of entries) { requireBatchPdfBytes(data.byteLength, totalBytes); totalBytes += data.byteLength; }
+  if (entries.length === 1) {
     const entry = Object.entries(files)[0];
     if (!entry) throw new Error('PDF 文件为空。');
     return { data: entry[1], name: entry[0], mimeType: 'application/pdf' };
   }
+  const zipModule = await bounded(import('fflate'), signal, () => undefined);
   let terminate: (() => void) | undefined;
   const archive = await bounded(new Promise<Uint8Array<ArrayBuffer>>((resolve, reject) => {
     terminate = zipModule.zip(files, { level: 0 }, (error, bytes) => {
@@ -331,7 +400,7 @@ export async function buildBatchPdfs(
     });
   }), signal, () => terminate?.());
   checkCancelled(signal);
-  if (archive.byteLength > MAX_BATCH_PRINT_BYTES) throw new ExportTaskFailure('PDF 压缩包超过 128 MiB，请减少份数或分批导出。');
+  if (archive.byteLength > MAX_EXPORT_ARTIFACT_BYTES) throw new ExportTaskFailure(`PDF 压缩包超过 ${MAX_EXPORT_ARTIFACT_BYTES / 1024 / 1024} MiB，请减少份数或分批导出。`);
   return { data: archive, name: safeFilename(archiveName, 'zip'), mimeType: 'application/zip' };
 }
 

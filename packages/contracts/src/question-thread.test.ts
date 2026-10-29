@@ -56,3 +56,13 @@ it('projects explicit choice labels with their question and never leaks them int
   if (second?.status !== 'completed') throw new Error('fixture');
   expect(second.candidate.selectedOptions).toBeUndefined();
 });
+
+it.each(['step', 'verification'] as const)('keeps %s references to structured auxiliary examples in their original single question', kind => {
+  const root = run(1);
+  if (root.outcome?.status !== 'completed') throw new Error('fixture');
+  delete root.outcome.candidate.questions;
+  const detail = run(2, { context: { kind: 'explanation', sourceRunId: root.id } });
+  const context = kind === 'step' ? { kind, sourceRunId: detail.id, stepId: 'a' } : { kind, sourceRunId: detail.id };
+  expect(resolveQuestionThread([root, detail], context)).toEqual({ rootRunId: root.id });
+  expect(questionThreadHistory([root, detail], context).map(item => item.id)).toEqual([root.id, detail.id]);
+});

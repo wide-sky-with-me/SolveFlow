@@ -82,7 +82,7 @@ describe('variants follow the printable choice boundary', () => {
   });
   it('preserves a hidden original baseline without treating it as a new printable alternative', () => {
     const next = invokeProject({ ...choice, options: [{ label: 'A', text: 'one' }, { label: 'C', text: 'three' }] });
-    expect(next[0]?.candidate.selectedOptions).toEqual(['B']); expect(next[0]?.printOptionsComplete).toBe(false); expect(next[0]?.candidate).toEqual(original[0]?.candidate);
+    expect(next[0]?.candidate?.selectedOptions).toEqual(['B']); expect(next[0]?.printOptionsComplete).toBe(false); expect(next[0]?.candidate).toEqual(original[0]?.candidate);
     expect(planBatchPrintCopies(next, [{ correct: 1, incorrect: 0 }])[0]?.answers[0]?.selectedOptions).toEqual(['B']);
     expect(() => planBatchPrintCopies(next, [{ correct: 0, incorrect: 1 }])).toThrow('可调整的题目不足');
   });

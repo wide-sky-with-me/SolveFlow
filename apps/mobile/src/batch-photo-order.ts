@@ -1,6 +1,6 @@
 import type { Photo } from './platform.types';
 
-export type ImportPhoto = { id: number; photo: Photo; fileName: string; timestamp?: number; timeSource?: 'modified' | 'filename' };
+export type ImportPhoto = { id: number; photo: Photo; fileName: string; sourceBytes?: number; timestamp?: number; timeSource?: 'modified' | 'filename' };
 export type PhotoOrder = 'filename' | 'time';
 const names = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
 

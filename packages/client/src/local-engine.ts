@@ -8,12 +8,14 @@ import {
   MAX_LOCAL_RECORDS, MAX_LOCAL_DIAGNOSTICS, MAX_LOCAL_AUXILIARY_RUNS, BATCH_VERIFICATION_CONCURRENCY, MAX_PENDING_VERIFICATIONS, LocalConcurrencySchema, LocalMaterialSchema, LocalMaterialImageSchema, LocalMaterialImagesSchema, MAX_MATERIAL_IMAGES, LocalBatchSchema, LocalBatchEditSchema, LocalRecordSchema, LocalDiagnosticSchema,
   type LocalConcurrency, type LocalBatch, type LocalDiagnostic, type LocalRecord, type ExamType, type LocalImageEdit,
 } from '@solveflow/contracts/local';
+import { LocalBatchInsertionSchema, LocalBatchMaterialsSchema, type LocalBatchInsertion } from '@solveflow/contracts/local';
 import { isAuxiliaryContext, questionThreadHistory, terminal, type RunContext, type RunView } from '@solveflow/contracts/http';
 import { AnswerCandidateSchema, SolveOutcomeSchema, makeSafeAgentError, type AnswerCandidate, type SolverInput, type PublicAgentEvent, type SolveOutcome } from '@solveflow/contracts/agent';
 import { LocalRepository } from './local-repository.js';
 import { prepareLocalRunRequest } from './local-run-request.js';
 import { PhaseQueue } from './phase-queue.js';
 import { applyImageEdit, currentImageIds } from './local-image-selection.js';
+import { batchMaterialRequests } from './local-batch-materials.js';
 export type DeviceSolveLifecycle = { candidate: (candidate: AnswerCandidate) => Promise<void>; verification: () => Promise<() => Promise<void>> };
 
 /** One model execution; LocalEngine supplies validated input and owns persistence. */
@@ -72,6 +74,7 @@ export class LocalEngine {
   /** Preparation and result writes are serialized; executions overlap afterwards. */
   private queue: Promise<unknown> = Promise.resolve();
   private deleting = false;
+  private readonly materialUpdates = new Set<string>();
   private listeners = new Set<(run: RunView) => void>();
   private errors = new Set<(message: string) => void>();
   constructor(
@@ -128,7 +131,7 @@ export class LocalEngine {
     };
   }
 
-  async create(image: string, width: number, height: number, exam: ExamType = 'general', batch?: LocalBatch): Promise<LocalRecord> {
+  async create(image: string, width: number, height: number, exam: ExamType = 'general', batch?: LocalBatch, insertion?: LocalBatchInsertion): Promise<LocalRecord> {
     if (this.deleting)
       throw new Error('正在删除历史，请稍候。');
     return this.lock(async () => {
@@ -140,7 +143,7 @@ export class LocalEngine {
       if (batch) {
         LocalBatchSchema.parse(batch);
         const siblings = history.filter(row => row.batch?.id === batch.id);
-        if (siblings.some(row => row.batch?.position === batch.position))
+        if (!insertion && siblings.some(row => row.batch?.position === batch.position))
           throw new Error('批量序号已存在。');
         if (batch.exam !== exam)
           throw new Error('批量考试类型不一致。');
@@ -172,6 +175,7 @@ export class LocalEngine {
           },
         },
       });
+      if (insertion) { LocalBatchInsertionSchema.parse(insertion); return this.repository.insertBatchRecord(record, insertion); }
       await this.repository.save(record);
       return record;
     });
@@ -199,7 +203,7 @@ export class LocalEngine {
     this.correctionGeneration++;
     if (this.deleting) throw new Error('正在删除历史，请稍候。');
     return this.lock(async () => {
-      if (this.storageBlocked || this.actives.some(run => run.sessionId === id)) throw new Error('请先结束本题解题并保存结果，再补充材料。');
+      if (this.storageBlocked || this.materialUpdates.has(id) || this.actives.some(run => run.sessionId === id)) throw new Error('请先结束本题解题或批量补图并保存结果，再补充材料。');
       const record = await this.repository.read(id);
       const ids = currentImageIds(record);
       if (ids.length + images.length > MAX_MATERIAL_IMAGES + 1) throw new Error(`最多使用${MAX_MATERIAL_IMAGES + 1}张同题图片。`);
@@ -213,13 +217,38 @@ export class LocalEngine {
     });
   }
 
+  /** Atomic evidence-only preparation; the batch queue owns subsequent solve admission. */
+  // Decision: .agents/notes/implemented/storage/2026-10-27-asynchronous-batch-materials.md
+  async addBatchMaterials(input: unknown, signal?: AbortSignal, settle?: (ids: readonly string[]) => Promise<void>) {
+    signal?.throwIfAborted(); this.correctionGeneration++;
+    if (this.deleting) throw new Error('正在删除历史，请稍候。');
+    const plan = LocalBatchMaterialsSchema.parse(input); const ids = [...new Set(plan.images.flatMap(image => image.sessionIds))];
+    await this.lock(async () => {
+      signal?.throwIfAborted();
+      if (this.deleting || this.storageBlocked) throw new Error('请先处理存储或删除操作，再批量补图。');
+      if (ids.some(id => this.materialUpdates.has(id))) throw new Error('这些题目正在保存补图，请稍候。');
+      if (!settle && this.actives.some(run => ids.includes(run.sessionId))) throw new Error('收到补图的题目仍在处理中。');
+      await this.repository.checkBatchMaterials(plan, this.uuid, signal, record => { batchMaterialRequests(record, true); });
+      ids.forEach(id => this.materialUpdates.add(id));
+    });
+    try {
+      // Never wait for active.done while holding the persistence lock.
+      await settle?.(ids); signal?.throwIfAborted();
+      return await this.lock(async () => {
+        signal?.throwIfAborted();
+        if (this.deleting || this.storageBlocked || this.actives.some(run => ids.includes(run.sessionId))) throw new Error('请先结束目标题任务并保存结果，再批量补图。');
+        return this.repository.appendBatchMaterials(plan, this.uuid, signal, record => { batchMaterialRequests(record); });
+      });
+    } finally { ids.forEach(id => this.materialUpdates.delete(id)); }
+  }
+
   /** Replace the current selection with new pixels; older runs keep the immutable source material. */
   async replaceMaterial(id: string, materialId: string, image: string, width: number, height: number): Promise<LocalRecord> {
     const value = LocalMaterialImageSchema.parse({ image, width, height });
     this.correctionGeneration++;
     if (this.deleting) throw new Error('正在删除历史，请稍候。');
     return this.lock(async () => {
-      if (this.storageBlocked || this.actives.some(run => run.sessionId === id)) throw new Error('请先结束本题解题并保存结果，再编辑材料。');
+      if (this.storageBlocked || this.materialUpdates.has(id) || this.actives.some(run => run.sessionId === id)) throw new Error('请先结束本题解题或批量补图并保存结果，再编辑材料。');
       const record = await this.repository.read(id); const ids = currentImageIds(record);
       if (!ids.includes(materialId) || !record.materials?.some(item => item.id === materialId)) throw new Error('待编辑的补图已变化，请重新打开。');
       const material = LocalMaterialSchema.parse({ ...value, id: this.uuid(), bytes: atob(image.slice(image.indexOf(',') + 1)).length });
@@ -260,6 +289,7 @@ export class LocalEngine {
         throw new Error('同时进行的按需请求过多，请稍候。');
     }
     return this.lock(async () => {
+      if (this.materialUpdates.has(id)) throw new Error('本题正在更新补图，请稍后再提交解答。');
       if (correction && correction.generation !== this.correctionGeneration) throw new Error('AUTO_CORRECTION_OBSOLETE');
       if (this.storageBlocked)
         throw new Error('请先重试保存已有结果，再开始解题。');

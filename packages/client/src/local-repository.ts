@@ -1,11 +1,14 @@
 // Decision: .agents/notes/implemented/architecture/2026-10-09-overall-study-timer.md
 import { z } from 'zod';
 import { MAX_LOCAL_RECORDS, LocalBatchEditSchema, type LocalBatchEdit, ReadableLocalRecordSchema, ReadableStoredLocalRecordSchema, StoredLocalRecordSchema, StoredLocalImageSchema, LocalBatchTitleSchema, LocalRecordSchema, LocalFavoriteSchema, LocalDiagnosticsSchema, LocalHistoryExportLineSchema, type LocalHistoryExportLine, type LocalDiagnostic, type LocalRecord, type LocalRecordMetadata, LocalStudyTimerSchema, type LocalStudyTimer } from '@solveflow/contracts/local';
-import { terminal, questionAnswerState, type SessionView } from '@solveflow/contracts/http';
+import { terminal, type SessionView } from '@solveflow/contracts/http';
 import { makeSafeAgentError, type SolveOutcome } from '@solveflow/contracts/agent';
-import { LocalHistorySummarySchema, type LocalHistorySummary } from '@solveflow/contracts/local';
+import { LOCAL_HISTORY_ANSWER_STATE_VERSION, LocalHistorySummarySchema, type LocalHistorySummary } from '@solveflow/contracts/local';
 import { readHistoryArchive, type HistoryImportSource, type HistoryImportProgress } from './local-history-import.js';
-import { historyEntry } from './history-payload.js';
+import { historyEntry, historyTaskStatus } from './history-payload.js';
+import { LocalBatchMaterialsSchema, LocalMaterialSchema, type LocalMaterial, type LocalBatchMaterials } from '@solveflow/contracts/local';
+import { checkHistoryImage } from './history-image.js';
+import { LocalBatchInsertionSchema, MAX_BATCH_PHOTOS, type LocalBatchInsertion } from '@solveflow/contracts/local';
 export type LocalDocumentChange = { key: string; value: string | null };
 export interface LocalDocuments {
   get(key: string): Promise<string | null>;
@@ -136,7 +139,7 @@ export class LocalRepository {
   }
   private summary(record: Pick<LocalRecord, 'session' | 'batch'>) {
     const { favorite: _favorite, ...entry } = historyEntry(record.session);
-    return LocalHistorySummarySchema.parse({ schemaVersion: 1, ...entry, ...(record.batch ? { batch: record.batch } : {}), answerState: questionAnswerState(record.session.runs), pending: record.session.runs.some(run => !terminal(run.status)) });
+    return LocalHistorySummarySchema.parse({ schemaVersion: 1, ...entry, ...historyTaskStatus(record.session.runs), ...(record.batch ? { batch: record.batch } : {}), answerStateVersion: LOCAL_HISTORY_ANSWER_STATE_VERSION, pending: record.session.runs.some(run => !terminal(run.status)) });
   }
   async listHistory({ cached = false }: { cached?: boolean } = {}): Promise<LocalHistorySummary[]> {
     return this.lock(async () => {
@@ -145,19 +148,28 @@ export class LocalRepository {
       const summaries: LocalHistorySummary[] = []; const titles = new Map<string, string | null>();
       const metadataKeys = ids.flatMap(id => [`summary.${id}`, `favorite.${id}`]);
       const metadata = new Map<string, string | null>();
+      // Decision: .agents/notes/implemented/storage/2026-10-23-batch-import-preparation.md
+      let batched = false;
       if (this.documents.getMany && metadataKeys.length) {
-        const values = await this.documents.getMany(metadataKeys);
-        if (values.length !== metadataKeys.length) throw new Error('本地批量读取失败。');
-        metadataKeys.forEach((key, index) => metadata.set(key, values[index] ?? null));
+        try {
+          const values = await this.documents.getMany(metadataKeys);
+          if (values.length !== metadataKeys.length) throw new Error('本地批量读取失败。');
+          metadataKeys.forEach((key, index) => metadata.set(key, values[index] ?? null));
+          batched = true;
+        } catch (cause) {
+          // Preserve per-record repair/isolation for corrupt metadata; I/O remains fatal.
+          if (!(cause instanceof LocalDataError) || !metadataKeys.includes(cause.key)) throw cause;
+        }
       }
-      const readMetadata = (key: string) => this.documents.getMany ? Promise.resolve(metadata.get(key) ?? null) : this.documents.get(key);
+      const readMetadata = (key: string) => batched ? Promise.resolve(metadata.get(key) ?? null) : this.documents.get(key);
       for (const id of ids) {
         try {
         const summaryKey = `summary.${id}`; let raw: string | null = null;
         try { raw = await readMetadata(summaryKey); }
         catch (cause) { if (!(cause instanceof LocalDataError && cause.key === summaryKey)) throw cause; }
         let summary: ReturnType<typeof LocalHistorySummarySchema.parse> | null = null;
-        try { const parsed = LocalHistorySummarySchema.safeParse(raw ? JSON.parse(raw) : null); if (parsed.success && parsed.data.id === id && parsed.data.answerState !== undefined) summary = parsed.data; } catch { /* A derived cache can be rebuilt from the original. */ }
+        // Decision: .agents/notes/implemented/storage/2026-10-20-grouped-answer-status.md
+        try { const parsed = LocalHistorySummarySchema.safeParse(raw ? JSON.parse(raw) : null); if (parsed.success && parsed.data.id === id && parsed.data.answerState !== undefined && parsed.data.answerStateVersion === LOCAL_HISTORY_ANSWER_STATE_VERSION && parsed.data.answerReady !== undefined && parsed.data.taskState !== undefined) summary = parsed.data; } catch { /* A derived cache can be rebuilt from the original. */ }
         if (!summary) { summary = this.summary(await this.readMetadata(id)); await this.documents.put(summaryKey, JSON.stringify(summary)); }
         this.damaged.delete(summaryKey);
         if (summary.batch) {
@@ -248,6 +260,11 @@ export class LocalRepository {
       const old = await this.documents.get(`record.${parsed.session.id}`);
       if (old === null && (await this.documents.keys()).filter(key => key.startsWith('record.')).length >= MAX_LOCAL_RECORDS) throw new Error('已保存500张题图，请先清理记录。');
       const stored = old ? ReadableStoredLocalRecordSchema.safeParse(JSON.parse(old)) : null;
+      // Position belongs to the current batch transaction, not a delayed model result.
+      if (stored?.success && stored.data.batch) {
+        if (parsed.batch && parsed.batch.id !== stored.data.batch.id) throw new Error('已保存题目的批次归属不可修改。');
+        parsed.batch = { ...stored.data.batch, title: await this.batchTitle(stored.data.batch.id) ?? stored.data.batch.title };
+      }
       const { image } = parsed; const metadata = recordMetadata(parsed);
       if (stored?.success && JSON.stringify(stored.data.session.upload) !== JSON.stringify(parsed.session.upload)) throw new Error('已保存的原图不可替换，请新建题目。');
       const previousMaterials = stored?.success ? stored.data.materials ?? [] : [];
@@ -268,6 +285,97 @@ export class LocalRepository {
     }
     this.changed(); });
   }
+  // Decision: .agents/notes/implemented/storage/2026-10-26-batch-insertion-export-order.md
+  /** Insert the new record and renumber metadata in one transaction; source images stay immutable. */
+  async insertBatchRecord(value: LocalRecord, insertion: LocalBatchInsertion): Promise<LocalRecord> {
+    const parsed = LocalRecordSchema.parse(value); const { beforeId } = LocalBatchInsertionSchema.parse(insertion);
+    return this.lock(async () => {
+      if (!this.documents.batch) throw new Error('当前存储不支持批次插入事务。');
+      if (!parsed.batch) throw new Error('插入题目必须属于批次。');
+      const ids = await this.recordIds({ strict: true });
+      if (ids.includes(parsed.session.id)) throw new Error('题目已存在，不能重复插入。');
+      if (ids.length >= MAX_LOCAL_RECORDS) throw new Error('已保存500张题图，请先清理记录。');
+      const siblings: LocalRecordMetadata[] = [];
+      for (const id of ids) {
+        try { const record = await this.readMetadata(id); if (record.batch?.id === parsed.batch.id) siblings.push(record); }
+        catch (cause) { this.noteIssue(cause, id); throw new Error('存在无法确认归属的记录，请先处理记录维护。'); }
+      }
+      siblings.sort((a, b) => (a.batch?.position ?? 0) - (b.batch?.position ?? 0));
+      if (new Set(siblings.map(record => record.batch?.position)).size !== siblings.length) throw new Error('批次序号存在重复，请先调整批次图片。');
+      if (siblings.length >= MAX_BATCH_PHOTOS) throw new Error(`每批最多${MAX_BATCH_PHOTOS}张，请新建批次。`);
+      if (siblings.some(record => record.batch?.exam !== parsed.exam) || parsed.batch.exam !== parsed.exam) throw new Error('批量考试类型不一致。');
+      const offset = beforeId === null ? siblings.length : siblings.findIndex(record => record.session.id === beforeId);
+      if (offset < 0) throw new Error('插入位置对应的题图已变化，请重新选择。');
+      const title = await this.batchTitle(parsed.batch.id) ?? siblings[0]?.batch?.title ?? parsed.batch.title;
+      parsed.batch = { ...parsed.batch, title, position: offset + 1 };
+      const order = [...siblings.slice(0, offset), parsed, ...siblings.slice(offset)];
+      const changes: LocalDocumentChange[] = [];
+      for (const [index, record] of order.entries()) {
+        if (!record.batch) throw new Error('批次归属无法确认。');
+        if (record.session.id === parsed.session.id) {
+          changes.push({ key: `image.${parsed.session.id}`, value: JSON.stringify({ schemaVersion: 1, image: parsed.image }) }, ...materialChanges(parsed),
+            { key: `record.${parsed.session.id}`, value: JSON.stringify({ ...recordMetadata(parsed), schemaVersion: 2 }) });
+        } else if (record.batch.position !== index + 1) {
+          const original = await this.loadRecord(record.session.id, false);
+          changes.push({ key: `record.${record.session.id}`, value: JSON.stringify({ ...original, batch: { ...record.batch, position: index + 1 } }) });
+        } else continue;
+        changes.push({ key: `summary.${record.session.id}`, value: JSON.stringify(this.summary({ ...record, batch: { ...record.batch, position: index + 1 } })) });
+      }
+      await this.documents.batch(changes); this.history = null; this.changed(); return parsed;
+    });
+  }
+  /** Shared pixels get recipient-owned IDs; every recipient commits before any solve is admitted. */
+  // Decision: .agents/notes/implemented/storage/2026-10-24-batch-material-assignments.md
+  async appendBatchMaterials(input: unknown, uuid: () => string, signal?: AbortSignal, validate?: (record: LocalRecordMetadata) => void): Promise<LocalRecordMetadata[]> {
+    const plan = LocalBatchMaterialsSchema.parse(input);
+    return this.lock(async () => {
+      const { changes, result } = await this.planBatchMaterials(plan, uuid, signal, validate);
+      signal?.throwIfAborted();
+      if (!this.documents.batch) throw new Error('当前存储不支持批量补图事务。');
+      await this.documents.batch(changes);
+      this.history = null; this.changed(); return result;
+    });
+  }
+
+  /** Read-only preflight before interrupting just the receiving questions. */
+  async checkBatchMaterials(input: unknown, uuid: () => string, signal?: AbortSignal, validate?: (record: LocalRecordMetadata) => void) {
+    const plan = LocalBatchMaterialsSchema.parse(input);
+    return this.lock(async () => { await this.planBatchMaterials(plan, uuid, signal, validate, true); });
+  }
+
+  private async planBatchMaterials(plan: LocalBatchMaterials, uuid: () => string, signal?: AbortSignal, validate?: (record: LocalRecordMetadata) => void, allowActive = false) {
+    signal?.throwIfAborted();
+    if (!this.documents.batch) throw new Error('当前存储不支持批量补图事务。');
+    const assignments = new Map<string, LocalMaterial[]>();
+    for (const image of plan.images) {
+      const bytes = atob(image.image.slice(image.image.indexOf(',') + 1)).length;
+      checkHistoryImage(image.image, { width: image.width, height: image.height, bytes });
+      for (const id of image.sessionIds) {
+        const material = LocalMaterialSchema.parse({ image: image.image, width: image.width, height: image.height, bytes, id: uuid() });
+        assignments.set(id, [...assignments.get(id) ?? [], material]);
+      }
+    }
+    const changes: LocalDocumentChange[] = []; const result: LocalRecordMetadata[] = [];
+    for (const [id, additions] of assignments) {
+      signal?.throwIfAborted();
+      const record = await this.readMetadata(id);
+      if (record.batch?.id !== plan.batchId) throw new Error('补图对应题目不属于当前批次，请重新选择。');
+      if (!allowActive && record.session.runs.some(run => !terminal(run.status))) throw new Error('收到补图的题目仍在处理中，请稍后重试。');
+      const selected = record.activeImageIds ?? [record.session.upload.id, ...(record.materials ?? []).map(item => item.id)];
+      const next = StoredLocalRecordSchema.parse({ ...record, schemaVersion: 2, activeImageIds: [...selected, ...additions.map(item => item.id)], materials: [...record.materials ?? [], ...additions.map(({ image: _image, ...info }) => info)] });
+      const metadata: LocalRecordMetadata = { ...next, schemaVersion: 1 }; validate?.(metadata);
+      if (allowActive) { result.push(metadata); continue; }
+      const original = await this.loadRecord(id, false);
+      if (original.schemaVersion === 1) {
+        changes.push({ key: `image.${id}`, value: JSON.stringify({ schemaVersion: 1, image: original.image }) }, ...materialChanges(original));
+      }
+      changes.push(...additions.map(item => ({ key: materialKey(id, item.id), value: JSON.stringify({ schemaVersion: 1, image: item.image }) })),
+        { key: `record.${id}`, value: JSON.stringify(next) }, { key: `summary.${id}`, value: JSON.stringify(this.summary(next)) });
+      result.push(metadata);
+    }
+    return { changes, result: result.sort((a, b) => (a.batch?.position ?? 0) - (b.batch?.position ?? 0)) };
+  }
+
   /** Replace one explicitly selected unreadable question in one transaction. */
   // Decision: .agents/notes/implemented/storage/2026-10-03-backup-and-atomic-repair.md
   async restoreQuestion(source: HistoryImportSource, sessionId: string, signal: Pick<AbortSignal, 'aborted'>, progress?: (value: HistoryImportProgress) => void) {

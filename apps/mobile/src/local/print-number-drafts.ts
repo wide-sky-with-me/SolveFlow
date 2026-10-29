@@ -1,4 +1,4 @@
-import { PrintImageAdjustmentSchema, type PrintImageAdjustment } from '@solveflow/contracts/local';
+import { MAX_PRINT_ROTATION, PrintImageAdjustmentSchema, type PrintImageAdjustment } from '@solveflow/contracts/local';
 
 export const printCropSides = ['left', 'top', 'right', 'bottom'] as const;
 export type PrintNumberField = 'rotation' | typeof printCropSides[number];
@@ -18,5 +18,5 @@ export function parsePrintNumberDrafts(value: PrintImageAdjustment, drafts: Prin
   const parsed = PrintImageAdjustmentSchema.safeParse({ ...value, rotation: read('rotation', value.rotation), crop: { left: read('left', value.crop.left, 100), top: read('top', value.crop.top, 100), right: read('right', value.crop.right, 100), bottom: read('bottom', value.crop.bottom, 100) } });
   if (parsed.success) return { adjustment: parsed.data, error: '', invalid: [] };
   const rotation = parsed.error.issues.some(issue => issue.path[0] === 'rotation');
-  return { adjustment: null, error: rotation ? '旋转角度需为 -15° 至 15° 的完整数字。' : '裁切边界需为 0% 至 100% 的完整数字，宽高至少保留 5%。', invalid: rotation ? ['rotation'] : [...printCropSides] };
+  return { adjustment: null, error: rotation ? `旋转角度需为 -${MAX_PRINT_ROTATION}° 至 ${MAX_PRINT_ROTATION}° 的完整数字。` : '裁切边界需为 0% 至 100% 的完整数字，宽高至少保留 5%。', invalid: rotation ? ['rotation'] : [...printCropSides] };
 }

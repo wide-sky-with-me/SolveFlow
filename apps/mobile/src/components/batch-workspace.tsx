@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { MotionModal as Modal } from './motion-modal';
 import type { QuestionAnswerState } from '@solveflow/contracts/http';
-import { isAuxiliaryContext } from '@solveflow/contracts/http';
-import { MAX_BATCH_PHOTOS, type LocalBatch } from '@solveflow/contracts/local';
+import { resumeBatchTasks } from '../batch-task-actions';
+import { MAX_BATCH_PHOTOS, type LocalBatch, type LocalBatchInsertion } from '@solveflow/contracts/local';
 import { batchPages, type BatchPage } from './batch-pages';
 import { clientError } from '@solveflow/client/presentation';
 import type { Runtime } from '../runtime';
@@ -10,14 +10,16 @@ import type { Photo } from '../platform.types';
 import { pickPhotos, releasePhoto } from '../platform';
 import type { ImportPhoto } from '../batch-photo-order';
 import { Pressable, SafeAreaView, ScrollView, Text, View } from '../theme/primitives';
-import { CaptureFlow, addBatchPhoto, saveBatchPhoto } from './batch-capture';
+import { CaptureFlow, saveBatchPhoto } from './batch-capture';
 import { BatchImport } from './batch-import';
 import { BatchName } from './batch-name';
 import { BatchEditor } from './batch-editor';
+import { BatchMaterials } from './batch-materials';
 import { BatchPdfExport, batchPdfAvailable } from './batch-pdf-export';
 import { DialogSurface } from './dialog-surface';
 import { QuestionPager } from './question-pager';
 import { BatchQuestion } from './batch-question';
+import { useExpiringNotice } from './use-expiring-notice';
 import { Button, Notice, layout, s } from './ui';
 export type BatchView = Omit<LocalBatch, 'position'> & { selectedId?: string };
 export function BatchWorkspace({ runtime, batch, available, active = true, jumpGridTrigger }: { runtime: Runtime; batch: BatchView; available: boolean; active?: boolean; jumpGridTrigger?: number | undefined }) {
@@ -25,16 +27,22 @@ export function BatchWorkspace({ runtime, batch, available, active = true, jumpG
   const [states, setStates] = useState<ReadonlyMap<string, QuestionAnswerState>>(new Map());
   const [pages, setPages] = useState<BatchPage[]>([]); const [selected, setSelected] = useState(batch.selectedId ?? '');
   useEffect(() => { setSelected(batch.selectedId ?? ''); setActions(false); }, [batch]);
-  const [camera, setCamera] = useState(false); const [busy, setBusy] = useState(false); const [queueBusy, setQueueBusy] = useState(runtime.batch.busy); const [error, setError] = useState('');
+  const [camera, setCamera] = useState(false); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
   const [importPhotos, setImportPhotos] = useState<ImportPhoto[] | null>(null);
   const [review, setReview] = useState(false); const [discard, setDiscard] = useState(false);
   const [pdfExport, setPdfExport] = useState(false);
-  useEffect(() => { if (!active) setImportPhotos(null); }, [active]);
-  const [queueMessage, setQueueMessage] = useState(runtime.batch.message);
+  const [materials, setMaterials] = useState(false);
+  const { message: materialMessage, show: showMaterialMessage, clear: clearMaterialMessage } = useExpiringNotice(batch.id, active);
+  useSyncExternalStore(runtime.batch.subscribe, runtime.batch.getSnapshot, runtime.batch.getSnapshot);
+  const queueBusy = runtime.batch.isBusy(batch.id);
+  const queueMessage = runtime.batch.messageFor(batch.id);
   const saving = useRef(false); const selecting = useRef(false); const alive = useRef(true); const revision = useRef(0);
+  // Decision: .agents/notes/implemented/storage/2026-10-23-batch-import-preparation.md
+  const importing = useRef(false); const importPosition = useRef(0); const importCount = useRef(0); const lastImported = useRef<string | null>(null);
   const activeView = useRef(active); const viewRevision = useRef(0);
   if (activeView.current !== active) { activeView.current = active; viewRevision.current++; }
   const refresh = useCallback(async () => {
+    if (importing.current) return;
     const ticket = ++revision.current;
     try {
       const values = (await runtime.repository.listHistory({ cached: true })).filter(row => row.batch?.id === batch.id).sort((a, b) => (a.batch?.position ?? 0) - (b.batch?.position ?? 0));
@@ -42,56 +50,52 @@ export function BatchWorkspace({ runtime, batch, available, active = true, jumpG
         setPages(previous => batchPages(previous, values));
         setStates(new Map(values.map(value => [value.id, value.answerState ?? 'unanswered'])));
         if (values[0]?.batch) setTitle(values[0].batch.title);
-        setQueueBusy(runtime.batch.busy);
       }
     } catch (cause) { if (alive.current) setError(clientError(cause)); }
   }, [runtime, batch.id]);
-  useEffect(() => { alive.current = true; void refresh(); const off = runtime.batch.subscribe(() => { setQueueBusy(runtime.batch.busy); setQueueMessage(runtime.batch.message); }); const stop = runtime.repository.subscribeHistory(() => { void refresh(); }); return () => { alive.current = false; off(); stop(); }; }, [runtime, refresh]);
-  async function add(photo: Photo) {
-    if (saving.current) { releasePhoto(photo); return; } saving.current = true; setBusy(true); setError('');
-    try {
-      const { selectedId: _selected, ...identity } = batch;
-      const nextPos = Math.max(0, ...pages.map(page => page.number)) + 1;
-      const id = await addBatchPhoto(runtime, { ...identity, title }, photo, nextPos); if (alive.current) setSelected(id);
-      await refresh();
-    } catch (cause) { if (alive.current) setError(clientError(cause)); await refresh(); }
-    finally { saving.current = false; if (alive.current) setBusy(false); }
-  }
+  useEffect(() => { if (!active) { importing.current = false; setImportPhotos(null); setMaterials(false); void refresh(); } }, [active, refresh]);
+  useEffect(() => { alive.current = true; void refresh(); const stop = runtime.repository.subscribeHistory(() => { void refresh(); }); return () => { alive.current = false; stop(); }; }, [runtime, refresh]);
   async function gallery() {
     if (saving.current || selecting.current || importPhotos) return;
     selecting.current = true; setBusy(true); const ticket = viewRevision.current;
-    try { const photos = await pickPhotos(MAX_BATCH_PHOTOS - Math.max(0, ...pages.map(page => page.number))); if (alive.current && activeView.current && ticket === viewRevision.current) { if (photos.length) setImportPhotos(photos); } else photos.forEach(row => releasePhoto(row.photo)); }
+    try {
+      const rows = (await runtime.repository.listHistory({ cached: true })).filter(row => row.batch?.id === batch.id);
+      const position = Math.max(0, ...rows.map(row => row.batch?.position ?? 0));
+      const photos = await pickPhotos(MAX_BATCH_PHOTOS - rows.length);
+      if (alive.current && activeView.current && ticket === viewRevision.current) {
+        if (photos.length) { importPosition.current = position; importCount.current = rows.length; lastImported.current = null; importing.current = true; setImportPhotos(photos); }
+      } else photos.forEach(row => releasePhoto(row.photo));
+    }
     catch (cause) { if (alive.current) setError(clientError(cause)); }
     finally { selecting.current = false; if (alive.current) setBusy(false); }
   }
-  async function importPhoto(photo: Photo) {
+  async function importPhoto(photo: Photo, prepare?: () => Promise<Photo>, placement?: LocalBatchInsertion) {
     if (!alive.current || !activeView.current) throw new Error('批量导入已关闭。');
     const ticket = viewRevision.current;
     const { selectedId: _selected, ...identity } = batch;
-    const id = await saveBatchPhoto(runtime, { ...identity, title }, photo);
-    if (!alive.current || !activeView.current || ticket !== viewRevision.current) return '题图已保存，导入已关闭，未开始解题。';
-    if (alive.current) setSelected(id);
-    await refresh();
+    const target = placement ?? { beforeId: null };
+    const next = (target.beforeId ? importCount.current : importPosition.current) + 1;
+    const id = await saveBatchPhoto(runtime, { ...identity, title }, photo, next, prepare, target);
+    importCount.current++; importPosition.current = target.beforeId ? importCount.current : next; lastImported.current = id;
     if (!alive.current || !activeView.current || ticket !== viewRevision.current) return '题图已保存，导入已关闭，未开始解题。';
     try { await runtime.enqueueBatch(id); }
     catch (cause) { return `题图已保存，但尚未开始解题：${clientError(cause)}。关闭预览后可手动继续待解题。`; }
+  }
+  function closeImport() {
+    importing.current = false;
+    setImportPhotos(null);
+    if (lastImported.current) setSelected(lastImported.current);
+    void refresh();
   }
   async function resume(retry = false) {
     if (busy) return;
     setBusy(true);
     setError('');
     try {
-      const failures: string[] = [];
-      for (const page of pages) {
-        if (!alive.current) break;
-        try {
-          const record = await runtime.repository.readMetadata(page.key);
-          const last = record.session.runs.at(-1);
-          if (!last || (retry && ['failed', 'cancelled'].includes(last.status) && !isAuxiliaryContext(last.context?.kind))) await runtime.enqueueBatch(page.key, retry);
-        } catch (cause) { failures.push(clientError(cause)); }
-      }
+      const failures = await resumeBatchTasks(runtime, batch.id, retry, () => alive.current);
       if (failures.length && alive.current) setError(failures.join('；'));
-    } finally {
+    } catch (cause) { if (alive.current) setError(clientError(cause)); }
+    finally {
       if (alive.current) { setBusy(false); await refresh(); }
     }
   }
@@ -101,9 +105,9 @@ export function BatchWorkspace({ runtime, batch, available, active = true, jumpG
     catch (cause) { if (alive.current) setError(clientError(cause)); }
     finally { saving.current = false; if (alive.current) setBusy(false); }
   }
-  const renderPage = useCallback((page: { key: string }) => <BatchQuestion key={page.key} id={page.key} runtime={runtime} queueBusy={queueBusy} available={available} />, [runtime, queueBusy, available]); const current = pages.some(row => row.key === selected) ? selected : pages[0]?.key ?? '';
+  const renderPage = useCallback((page: { key: string }) => <BatchQuestion key={page.key} id={page.key} runtime={runtime} queueBusy={runtime.batch.busy} available={available} />, [runtime, runtime.batch.busy, available]); const current = pages.some(row => row.key === selected) ? selected : pages[0]?.key ?? '';
   return <View style={{ flex: 1 }} testID="current-batch">
-    {importPhotos && <BatchImport photos={importPhotos} onAdd={importPhoto} onClose={() => setImportPhotos(null)} />}
+    {importPhotos && <BatchImport photos={importPhotos} placement={{ runtime, batchId: batch.id }} onAdd={importPhoto} onClose={closeImport} />}
     <View testID="batch-header" style={{ paddingHorizontal: 14, paddingVertical: 6, gap: 4 }}><View style={[s.row, { flexWrap: 'nowrap', gap: 8 }]}>
       <View testID="batch-details" style={{ flex: 1, minWidth: 0, alignItems: 'flex-start' }}>
         <Pressable testID="batch-rename" accessibilityRole="button" accessibilityLabel="重命名批次" onPress={() => setRename(true)} disabled={busy} style={{ flexShrink: 1, minWidth: 0, maxWidth: '100%', minHeight: 44, justifyContent: 'center' }}>
@@ -127,7 +131,8 @@ export function BatchWorkspace({ runtime, batch, available, active = true, jumpG
                   <Button title="继续拍摄" disabled={busy || pages.length >= MAX_BATCH_PHOTOS} onPress={() => { setActions(false); setCamera(true); }} />
                   <Button title="添加相册题图" secondary disabled={busy || pages.length >= MAX_BATCH_PHOTOS} onPress={() => { setActions(false); void gallery(); }} />
                   <Button title="调整批次图片" secondary disabled={busy || !pages.length} onPress={() => { setActions(false); setReview(true); }} />
-                  {batchPdfAvailable && <Button title="导出本批 PDF" secondary disabled={busy || queueBusy || !pages.length || runtime.engine.actives.length > 0} onPress={() => { setActions(false); setPdfExport(true); }} />}
+                  <Button title="批量补图并重答" secondary disabled={busy || !available || !pages.length} onPress={() => { setActions(false); clearMaterialMessage(); setMaterials(true); }} />
+                  {batchPdfAvailable && <Button title="导出本批 PDF" secondary disabled={busy || queueBusy || !pages.length || runtime.engine.actives.some(run => pages.some(page => page.key === run.sessionId))} onPress={() => { setActions(false); setPdfExport(true); }} />}
                   <Button title="继续待解题" secondary disabled={busy || !pages.length} onPress={() => { setActions(false); void resume(); }} />
                   <Button title="重试未完成" secondary disabled={busy || !pages.length} onPress={() => { setActions(false); void resume(true); }} />
                   {queueBusy && (
@@ -141,12 +146,14 @@ export function BatchWorkspace({ runtime, batch, available, active = true, jumpG
         </Modal>
       )}
       {(error || queueMessage) && <Notice text={error || queueMessage!} error />}
+      {!!materialMessage && <Notice text={materialMessage} onDismiss={clearMaterialMessage} />}
     </View>
     {!!pages.length && <QuestionPager states={states} showNavigation jumpGridTrigger={jumpGridTrigger} threads={pages} selected={current} onSelect={setSelected} retainPages scrollPages={false} render={renderPage} />}
     {camera && <CaptureFlow runtime={runtime} initialBatch={{ id: batch.id, createdAt: batch.createdAt, exam: batch.exam, title }} onPhoto={() => {}} onGallery={() => {}} onClose={() => { setCamera(false); void refresh(); }} />}
     {rename && <BatchName title={title} onClose={() => setRename(false)} onSave={async value => { await runtime.repository.renameBatch(batch.id, value); setTitle(value); await refresh(); }} />}
     {review && <BatchEditor runtime={runtime} batchId={batch.id} onClose={() => setReview(false)} onApplied={() => void refresh()} />}
-    {pdfExport && <BatchPdfExport runtime={runtime} batchId={batch.id} onClose={() => setPdfExport(false)} />}
+    {materials && <BatchMaterials runtime={runtime} batchId={batch.id} onClose={() => { setMaterials(false); void refresh(); }} onApplied={showMaterialMessage} />}
+    {pdfExport && <BatchPdfExport runtime={runtime} batchId={batch.id} onReviewQuestion={setSelected} onClose={() => setPdfExport(false)} />}
     {discard && <Modal transparent animationType="fade" onRequestClose={() => { if (!busy) setDiscard(false); }}><DialogSurface>
       <Text style={s.title}>放弃整个批次？</Text><Text style={s.subtitle}>本批 {pages.length} 张题图及解答将永久删除，本批任务会停止。其他批次和单题保留。</Text>
       {!!error && <Notice text={error} error />}

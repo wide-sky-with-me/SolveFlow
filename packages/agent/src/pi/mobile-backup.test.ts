@@ -11,6 +11,17 @@ const pass = { schemaVersion: 1, verdict: 'pass', checked: ['transcription', 'lo
 const keys = { solver: 'synthetic-primary', verifier: 'synthetic-check', backup: 'synthetic-backup' };
 function sse(value: unknown) { return new Response(`data: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: { role: 'assistant', content: JSON.stringify(value) }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } }); }
 
+it('reports upload timeout for manual retry without switching models or replaying the request', async () => {
+  const urls: string[] = []; const entries: LocalDiagnostic[] = [];
+  const result = await solveOnDevice(input, settings, keys, async url => {
+    urls.push(String(url)); return new Response('private-upload-canary', { status: 408, headers: { 'x-solveflow-request-failure': 'upload-timeout' } });
+  }, new AbortController().signal, () => {}, entry => entries.push(entry));
+  expect(result).toMatchObject({ status: 'failed', error: { code: 'MODEL_UPLOAD_TIMEOUT', retryable: true, message: '题图上传超时，请检查网络后手动重试。' } });
+  expect(urls).toEqual(['https://primary.invalid/v1/chat/completions']);
+  expect(entries).toContainEqual(expect.objectContaining({ event: 'failure', httpStatus: 408, reason: 'upload_timeout' }));
+  expect(JSON.stringify(entries)).not.toContain('private-upload-canary');
+});
+
 it.each([false, true])('gives slow backup and verification full windows while keeping cancellation terminal: cancel=%s', async cancel => {
   let now = 0; const controller = new AbortController(); const entries: LocalDiagnostic[] = [];
   const timers = new Set<{ at: number; callback: () => void }>();

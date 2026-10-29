@@ -14,5 +14,6 @@ export const PrintImagePerspectiveSchema = z.tuple([PointSchema, PointSchema, Po
 export type PrintImagePerspective = z.infer<typeof PrintImagePerspectiveSchema>;
 // Account for cancellation error at an exact decimal 5% extent, not actual under-size crops.
 const minimumCropSpan = .05 - Number.EPSILON;
-export const PrintImageAdjustmentSchema = z.strictObject({ rotation: z.number().min(-15).max(15), crop: z.strictObject({ left: z.number().min(0).max(1), top: z.number().min(0).max(1), right: z.number().min(0).max(1), bottom: z.number().min(0).max(1) }).refine(value => value.right - value.left >= minimumCropSpan && value.bottom - value.top >= minimumCropSpan, '裁切范围过小。'), enhance: z.boolean(), perspective: PrintImagePerspectiveSchema.optional() });
+export const MAX_PRINT_ROTATION = 45;
+export const PrintImageAdjustmentSchema = z.strictObject({ rotation: z.number().min(-MAX_PRINT_ROTATION).max(MAX_PRINT_ROTATION), crop: z.strictObject({ left: z.number().min(0).max(1), top: z.number().min(0).max(1), right: z.number().min(0).max(1), bottom: z.number().min(0).max(1) }).refine(value => value.right - value.left >= minimumCropSpan && value.bottom - value.top >= minimumCropSpan, '裁切范围过小。'), enhance: z.boolean(), perspective: PrintImagePerspectiveSchema.optional() });
 export type PrintImageAdjustment = z.infer<typeof PrintImageAdjustmentSchema>;

@@ -1,4 +1,5 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import { request as httpRequest } from 'node:http';
 import { mkdtemp, readFile, rm, stat, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,7 +20,7 @@ async function fixture(transport: typeof fetch = async () => Response.json({ ok:
   const update = (): WebModelUpdate => ({ schemaVersion: 1, models: { solver: environment.roles.solver.profile, verifier: null, backup: null }, keys: { solver: null, verifier: null, backup: null } });
   const save = (value: unknown, token = environment.roles.solver.token, origin = base) => fetch(base + '/__solveflow/web-env/settings', { method: 'PUT', headers: { authorization: `Bearer ${token}`, origin }, body: JSON.stringify(value) });
   const preset = (path: string, method: string, value?: unknown, token = environment.roles.solver.token, origin = base) => fetch(base + '/__solveflow/web-env/presets' + path, { method, headers: { authorization: `Bearer ${token}`, origin }, ...(value === undefined ? {} : { body: JSON.stringify(value) }) });
-  return { directory, environment, file, manager, base, update, save, preset, async close() { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(directory, { recursive: true, force: true }); } };
+  return { directory, environment, file, manager, server, base, update, save, preset, async close() { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(directory, { recursive: true, force: true }); } };
 }
 it('persists editable profiles privately, rotates tokens and restores after restart without changing .env', async () => {
   const f = await fixture();
@@ -130,4 +131,41 @@ it('bounds preset names, count, authorization and preserves active configuration
     await writeFile(f.file + '.presets', '{broken');
     await expect(openWebModelSettings(f.environment, f.file)).rejects.toThrow('配置预设无法读取'); expect(await readFile(f.file + '.presets', 'utf8')).toBe('{broken');
   } finally { await f.close(); }
+});
+
+
+it('expires an incomplete settings body and releases dispatch without saving or contacting a model', async () => {
+  let calls = 0;
+  const f = await fixture(async () => { calls++; return Response.json({ ok: true }); });
+  const token = f.environment.roles.solver.token; let status: number | undefined;
+  const slow = httpRequest(f.base + '/__solveflow/web-env/settings', { method: 'PUT', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'content-length': 100 } }, response => { status = response.statusCode; response.resume(); });
+  slow.on('error', () => {});
+  try {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await new Promise<void>(resolve => { f.server.once('request', () => resolve()); slow.write('{'); });
+    const post = () => fetch(f.base + '/__solveflow/web-env/model/solver', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ model: 'primary', max_tokens: 8 }) });
+    await expect.poll(async () => (await post()).status).toBe(409);
+    await vi.advanceTimersByTimeAsync(10_001); vi.useRealTimers();
+    await expect.poll(() => status, { timeout: 1000 }).toBe(408);
+    expect(calls).toBe(0); expect(f.environment.roles.solver.token).toBe(token);
+    await expect(stat(f.file)).rejects.toMatchObject({ code: 'ENOENT' });
+    const result = await post(); expect(result.status).toBe(200); await result.text(); expect(calls).toBe(1);
+  } finally { vi.useRealTimers(); slow.destroy(); await f.close(); }
+});
+
+
+it('releases an interrupted settings body without changing configuration', async () => {
+  const f = await fixture(); const token = f.environment.roles.solver.token;
+  const slow = httpRequest(f.base + '/__solveflow/web-env/settings', { method: 'PUT', headers: { authorization: `Bearer ${token}`, 'content-length': 100 } });
+  slow.on('error', () => {});
+  try {
+    await new Promise<void>(resolve => { f.server.once('request', () => resolve()); slow.write('{'); });
+    await expect.poll(async () => (await f.save(f.update())).status).toBe(409);
+    slow.destroy();
+    await expect.poll(async () => {
+      const response = await fetch(f.base + '/__solveflow/web-env/model/solver', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ model: 'primary', max_tokens: 8 }) });
+      await response.text(); return response.status;
+    }).toBe(200);
+    expect(f.environment.roles.solver.token).toBe(token); await expect(stat(f.file)).rejects.toMatchObject({ code: 'ENOENT' });
+  } finally { slow.destroy(); await f.close(); }
 });

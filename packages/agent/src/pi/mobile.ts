@@ -6,7 +6,7 @@ import { Type } from '@earendil-works/pi-ai';
 import { stream } from '@earendil-works/pi-ai/api/openai-completions';
 import { stream as streamResponses } from '@earendil-works/pi-ai/api/openai-responses';
 import { z } from 'zod';
-import { DEVICE_RUN_DURATION_MS, MAX_DEVICE_PHASE_DURATION_MS, MAX_DEVICE_SOLVER_PHASE_MS, MAX_DEVICE_VERIFIER_PHASE_MS, MAX_DEVICE_BRIEF_THINKING_MS, MAX_VERIFIER_PHASE_ATTEMPTS, MAX_MODEL_STREAM_BYTES, MAX_SOLVER_MODEL_ATTEMPTS, MAX_VERIFIER_MODEL_ATTEMPTS, BriefSolverCandidateSchema, GeneratedSolverCandidateSchema, VerificationSchema, normalizeGeneratedCandidate, parseCandidateWithEvidence, parseCandidateForExam, parseVerificationForCandidate, type AgentInput, type AnswerCandidate, type PhaseResult, type SolverInput, type PublicAgentEvent } from '@solveflow/contracts/agent';
+import { DEVICE_RUN_DURATION_MS, MAX_DEVICE_PHASE_DURATION_MS, MAX_DEVICE_SOLVER_PHASE_MS, MAX_DEVICE_VERIFIER_PHASE_MS, MAX_DEVICE_BRIEF_THINKING_MS, MAX_VERIFIER_PHASE_ATTEMPTS, MAX_MODEL_STREAM_BYTES, MAX_SOLVER_MODEL_ATTEMPTS, MAX_VERIFIER_MODEL_ATTEMPTS, BriefSolverCandidateSchema, GeneratedSolverCandidateSchema, ClarificationCandidateSchema, ActTranscriptSchema, VerificationSchema, normalizeGeneratedCandidate, parseCandidateWithEvidence, parseCandidateForExam, parseVerificationForCandidate, type ActTranscript, type AgentInput, type AnswerCandidate, type PhaseResult, type SolverInput, type PublicAgentEvent } from '@solveflow/contracts/agent';
 import { MAX_QUESTION_IMAGE_BYTES, LocalDiagnosticSchema, ExamTypeSchema, type ExamType, type LocalDiagnostic, LocalSettingsSchema, LocalKeySchema, type LocalModelProfile, type LocalSettings } from '@solveflow/contracts/local';
 import { solve, SolvePhaseError, type SolveLifecycle } from '../orchestration/solve.js';
 import { assessVerificationCoverage } from './verification-coverage.js';
@@ -15,6 +15,10 @@ import { calculate } from '../tools/calculate.js';
 import { resources, skills, policies } from './mobile-resources.js';
 import { finishContext } from './finish-context.js';
 import { mobileModel, responsesModel, responsePayload, thinkingLevelOf, modelTransport } from './mobile-model.js';
+import { bindActSource } from './act-source.js';
+import { imageReviewRegions, prepareImageReview, type ImageReviewViews, type PrepareImageReviewViews } from './image-review.js';
+import type { ImageReviewRegion } from '@solveflow/contracts/agent';
+import { NormalizedImageSchema, type NormalizedImage } from '@solveflow/contracts/agent';
 export { thinkingLevelOf, modelTransport } from './mobile-model.js';
 export { analyzeBatchPrintQuestion } from './batch-print-layout.js';
 export type LocalCredentials = { solver: string; verifier: string | null; backup?: string | null };
@@ -108,7 +112,9 @@ export function parseModelJson(raw: string): unknown {
 }
 
 function encode(bytes: Uint8Array): string { let text = ''; for (let i = 0; i < bytes.length; i += 8192) text += String.fromCharCode(...bytes.subarray(i, i + 8192)); return btoa(text); }
-async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, settings: LocalSettings, keys: LocalCredentials, fetch: LocalFetch, onDiagnostic: (entry: LocalDiagnostic) => void, schedule: PhaseTimer, override?: { profile?: LocalModelProfile; key?: string; backup?: boolean; maxSolverMs?: number; allowThinkingTakeover?: boolean }): Promise<PhaseResult> {
+type PhaseOverride = { profile?: LocalModelProfile; key?: string; backup?: boolean; maxSolverMs?: number; allowThinkingTakeover?: boolean; captureAct?: boolean; actSource?: ActTranscript; views?: NormalizedImage[]; reviewRegions?: ImageReviewRegion[] };
+type DevicePhaseResult = PhaseResult | { role: 'transcriber'; source: ActTranscript };
+async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, settings: LocalSettings, keys: LocalCredentials, fetch: LocalFetch, onDiagnostic: (entry: LocalDiagnostic) => void, schedule: PhaseTimer, override?: PhaseOverride): Promise<DevicePhaseResult> {
   const profile = input.role === 'verifier' ? settings.verifier ?? settings.solver : override?.profile ?? settings.solver;
   const streaming = profile.streaming ?? (input.role === 'solver' && !override?.backup);
   const key = LocalKeySchema.parse(input.role === 'verifier' && settings.verifier ? keys.verifier : input.role === 'solver' ? override?.key ?? keys.solver : keys.solver);
@@ -152,19 +158,19 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
     return true;
   };
   const seenTools = new Map<string, number>();
-  let consecutiveToolErrors = 0; let finishOnly = input.role === 'verifier'; let finalAttempted = false;
+  let consecutiveToolErrors = 0; let finishOnly = input.role === 'verifier' || override?.captureAct === true; let finalAttempted = false;
   let toolStopReason: LocalDiagnostic['toolStopReason'];
   const finishTools = (reason: NonNullable<LocalDiagnostic['toolStopReason']>) => { finishOnly = true; toolStopReason ??= reason; };
-  const tools: AgentTool[] = input.role === 'solver' ? [
+  const tools: AgentTool[] = input.role === 'solver' && !override?.captureAct ? [
     { name: 'read', label: '读取解题方法', description: '读取内置白名单 Skill 或其参考资料；path 使用 /skills/ 开头的完整路径。', parameters: Type.Object({ path: Type.String({ maxLength: 160 }) }),
       execute: async (_id, args) => { const began = performance.now(); try { budget.reserveTool('file', controller.signal); const value = z.strictObject({ path: z.string().max(160) }).parse(args); const text = readMobileSkill(value.path); diagnostic({ event: 'tool', toolName: 'read', toolStatus: 'completed', resourcePath: value.path, durationMs: Math.round(performance.now() - began) }); return { content: [{ type: 'text', text }], details: {} }; } catch (error) { diagnostic({ event: 'tool', toolName: 'read', toolStatus: 'failed', durationMs: Math.round(performance.now() - began) }); throw error; } } },
     { name: 'calculate', label: '数值验算', description: '验算已列出的数值表达式：+ - * / **、括号、pi/e、sin/cos/tan/sqrt/abs/log/exp（单参数，log为自然对数）。乘法必须写*，乘方写**而不是^；先代入数字并换算单位，不传变量、等式、TeX或单位。angleUnit明确rad/deg。例如 expression="(10-2)/2"。返回近似数值不等于符号证明。', parameters: Type.Object({ schemaVersion: Type.Literal(1), expression: Type.String({ maxLength: 512 }), angleUnit: Type.Union([Type.Literal('rad'), Type.Literal('deg')]) }),
       execute: async (_id, args) => { const began = performance.now(); try { budget.reserveTool('business', controller.signal); const result = calculate(args, controller.signal); diagnostic({ event: 'tool', toolName: 'calculate', toolStatus: 'completed', durationMs: Math.round(performance.now() - began) }); return { content: [{ type: 'text', text: JSON.stringify(result) }], details: {} }; } catch (error) { diagnostic({ event: 'tool', toolName: 'calculate', toolStatus: 'failed', durationMs: Math.round(performance.now() - began) }); throw error; } } },
   ] : [];
-  const solverSchema = input.answerMode === 'brief' ? BriefSolverCandidateSchema : GeneratedSolverCandidateSchema;
-  const agent = new Agent({ initialState: { model, thinkingLevel: thinkingLevelOf(profile), tools, systemPrompt: policies.CONTENT_POLICY + '\n' + (input.role === 'solver' ? policies.SYSTEM : policies.VERIFIER)
+  const solverSchema = override?.captureAct ? z.discriminatedUnion('kind', [ActTranscriptSchema, ClarificationCandidateSchema]) : input.answerMode === 'brief' ? BriefSolverCandidateSchema : GeneratedSolverCandidateSchema;
+  const agent = new Agent({ initialState: { model, thinkingLevel: thinkingLevelOf(profile), tools, systemPrompt: policies.CONTENT_POLICY + '\n' + (override?.captureAct ? policies.ACT_TRANSCRIBER : input.role === 'solver' ? policies.SYSTEM : policies.VERIFIER)
     + '\n本机仅可使用列出的 read 与 calculate；没有搜索、Python、MCP、文件写入或其他宿主工具。不要声称调用它们。Skill相对参考路径需按其目录补全为 /skills/... 路径。\n'
-    + (input.role === 'solver' ? JSON.stringify(skills) : '') + preloadExamResources(input.exam) + '\nJSON Schema:\n' + JSON.stringify(z.toJSONSchema(input.role === 'solver' ? solverSchema : VerificationSchema)) },
+    + (input.role === 'solver' && !override?.captureAct ? JSON.stringify(skills) : '') + preloadExamResources(input.exam) + '\nJSON Schema:\n' + JSON.stringify(z.toJSONSchema(input.role === 'solver' ? solverSchema : VerificationSchema)) },
     toolExecution: 'sequential',
     beforeToolCall: async () => finishOnly ? { block: true, reason: '工具阶段已结束；请依据已有证据完成答案，缺少必要条件则明确澄清。' } : undefined,
     shouldStopAfterTurn: ({ message }) => finishOnly && (message.stopReason === 'toolUse' || message.content.some(part => part.type === 'toolCall')),
@@ -207,7 +213,7 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
       }
       catch (error) { failure = error; throw error; }
       clearThinkingTimer(); thinkingTimerStarted = false; visibleOutput = false; thinkingBytes = 0;
-      attemptNumber++; requestStarted = performance.now(); firstTokenMs = undefined; lastHttpStatus = null; diagnostic({ event: 'request', phaseMs: Math.max(1, Math.floor(phaseDeadline - performance.now())), streaming, imageCount: 1 + (input.materials?.length ?? 0), model: profile.model, maxTokens: profile.maxTokens, contextWindow: profile.contextWindow, ...(toolStopReason ? { toolStopReason } : {}) });
+      attemptNumber++; requestStarted = performance.now(); firstTokenMs = undefined; lastHttpStatus = null; diagnostic({ event: 'request', phaseMs: Math.max(1, Math.floor(phaseDeadline - performance.now())), streaming, imageCount: 1 + (input.materials?.length ?? 0) + (override?.views?.length ?? 0), model: profile.model, maxTokens: profile.maxTokens, contextWindow: profile.contextWindow, ...(toolStopReason ? { toolStopReason } : {}) });
       const streamOptions = { apiKey: key, fetch: modelTransport(profile, fetch, (status, error, reason, responseFormat) => { if (status !== null) lastHttpStatus = status; if (error) failure = error; diagnostic({ event: error ? 'failure' : 'response', ...(responseFormat ? { responseFormat } : {}), ...(status === null ? {} : { httpStatus: status }), ...(error ? { reason: reason ?? (status === null ? 'network' : 'http') } : {}) }); }, streaming), signal: controller.signal, maxTokens: profile.maxTokens, maxRetries: 0, timeoutMs: Math.max(1, Math.floor(Math.min(budget.remainingMs(), phaseDeadline - performance.now()))), env: {}, ...(effort ? { reasoningEffort: effort } : {}),
         ...(finishOnly ? { toolChoice: 'none' as const } : {}),
         onPayload: (payload: unknown) => { const value = model.api === 'openai-responses' ? responsePayload(payload) : payload; if (new TextEncoder().encode(JSON.stringify(value)).length > Math.ceil(MAX_QUESTION_IMAGE_BYTES / 3) * 4 + 1024 * 1024) throw new SolvePhaseError('INVALID_INPUT'); return value; } };
@@ -239,8 +245,16 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
   const cancel = () => agent.abort(); controller.signal.addEventListener('abort', cancel, { once: true });
   try {
     const { image, materials, identity: _identity, useBackup: _useBackup, ...data } = input;
-    await agent.prompt(JSON.stringify({ ...data, ...(materials?.length ? { materialOrder: materials.map(item => item.id) } : {}) }),
-      [image, ...(materials ?? []).map(item => item.image)].map(photo => ({ type: 'image', data: encode(photo.bytes), mimeType: photo.mimeType })));
+    // Decision: .agents/notes/implemented/agent/2026-10-26-act-material-source-isolation.md
+    // Question selection must survive without sending stale OCR back into capture.
+    const questionSource = input.exam === 'act' ? { imageIndex: 0, ...(input.focus?.questionNumber === undefined ? {} : { questionNumber: input.focus.questionNumber }) } : undefined;
+    const request = override?.captureAct ? { task: 'act-transcription', exam: 'act', message: input.message, ...(input.focus ? { focus: { kind: input.focus.kind } } : {}), ...(input.problemCorrection ? { problemCorrection: input.problemCorrection } : {}), ...(input.role === 'solver' && input.revision ? { transcriptionIssues: input.revision.issues.filter(issue => issue.code === 'TRANSCRIPTION') } : {}) }
+      : { ...data, ...(override?.actSource ? { actSource: override.actSource } : {}) };
+    const derivedViews = !override?.views?.length ? undefined : override.reviewRegions?.length
+      ? { count: override.views.length, source: 'issue-regions', regions: override.reviewRegions, description: '最后的图片依次是regions指定原图的局部放大；imageIndex从0起，0为主图，其余按materialOrder补图排列，不包含辅助图。只为精读核验疑点，原图和全部补图仍是完整依据；裁边不表示缺页，局部坐标不能作为主图illustrations坐标。' }
+      : { count: override.views.length, source: 'first-image', description: '最后的图片是第一张原图的旋转/放大辅助视图，不是新增材料页；用于辨认小字、标点和黄色范围，不能用辅助裁边推断原图缺失。' };
+    await agent.prompt(JSON.stringify({ ...request, ...(questionSource ? { questionSource } : {}), ...(materials?.length ? { materialOrder: materials.map(item => item.id) } : {}), ...(derivedViews ? { derivedViews } : {}) }),
+      [image, ...(materials ?? []).map(item => item.image), ...(override?.views ?? [])].map(photo => ({ type: 'image', data: encode(photo.bytes), mimeType: photo.mimeType })));
     for (let attempt = 0; attempt < 2; attempt++) {
       // Decision: .agents/notes/implemented/agent/2026-10-08-verifier-transport-degradation.md
       // Resume Pi from the last complete turn, retaining tool observations but
@@ -293,6 +307,12 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
       }
       if (input.role === 'solver') value = normalizeGeneratedCandidate(value);
       try {
+        if (override?.captureAct) {
+          const captured = solverSchema.parse(value);
+          if (captured.kind === 'act-transcript') return { role: 'transcriber', source: captured };
+          return { role: 'solver', candidate: ClarificationCandidateSchema.parse(captured), events: [] };
+        }
+        if (override?.actSource) value = bindActSource(value, override.actSource);
         if (input.role === 'solver' && input.focus?.kind === 'explanation') { const checked = GeneratedSolverCandidateSchema.parse(value); if (checked.kind === 'answer' && !checked.steps.length) throw new z.ZodError([{ code: 'custom', path: ['steps'], message: '详细步骤请求必须包含教学步骤' }]); }
         if (input.role === 'solver' && input.focus?.kind === 'knowledge-list') { const checked = GeneratedSolverCandidateSchema.parse(value); if (checked.kind === 'answer' && !(checked.knowledgeDetails ?? []).length) throw new z.ZodError([{ code: 'custom', path: ['knowledgeDetails'], message: '知识点请求必须包含知识点讲解' }]); }
         if (input.role === 'verifier' && value && typeof value === 'object' && !('schemaVersion' in value)) {
@@ -300,7 +320,7 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
         }
         return input.role === 'solver'
           ? { role: 'solver', candidate: parseCandidateWithEvidence(parseCandidateForExam(solverSchema.parse(value), input.exam), input.evidence), events: [] }
-          : { role: 'verifier', verification: assessVerificationCoverage(parseVerificationForCandidate(value, input.candidate), input.candidate), events: [] };
+          : { role: 'verifier', verification: assessVerificationCoverage(parseVerificationForCandidate(value, input.candidate), input.candidate, input.exam), events: [] };
       } catch (error) {
         const fields = error instanceof z.ZodError ? [...new Set(error.issues.map(issue => issue.path.join('.')).filter(path => /^[a-zA-Z0-9_.\[\]]{0,120}$/.test(path)))].slice(0, 24) : [];
         diagnostic({ event: 'validation', reason: 'schema', outputBytes, fields });
@@ -308,7 +328,9 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
         finishTools('format'); finalAttempted = false; // One existing, budgeted format repair may finish without tools.
         const errorMsg = error instanceof Error ? error.message : '';
         const constraints = error instanceof z.ZodError ? error.issues.filter(issue => issue.code === 'custom').slice(0, 4).map(issue => issue.message.slice(0, 300)).join('；') : '';
-        if (input.role === 'solver') {
+        if (override?.captureAct) {
+          await agent.prompt('ACT转录JSON未通过结构校验。只按转录Schema重发完整可见题面，不解题，不输出answer候选。检查字段：' + fields.join('、') + '。' + constraints + '。blocks保留原文，不加**；activeSpan的text须逐字出现在指定0起始block，不能用候选选项替换。只有本轮共用的一次格式修复机会。');
+        } else if (input.role === 'solver') {
           await agent.prompt('最终JSON未通过结构校验。请按系统Schema重新输出完整JSON，补齐必需字段，确保每个步骤/图示恰好归属一道题。需要检查的字段：' + fields.join('、') + '。题型约束：' + constraints + '。answer须为完整作答字符串，选择题selectedOptions须为原标签数组；不把正文写成对象，不把解释或编号当标签。仅修复表示，不能为通过校验擅改题意或删除必要作答。单题省略questions，不能填空数组、null或仅一项；同一道题的小问用problem.response.parts和parts逐项完整解答，不能凑成多道题。真正多题才填2–4项，每个步骤和图恰好归属一题。只有这一次格式修复机会。不要增加题目，不要省略原题小问。');
         } else {
           const detail = errorMsg === 'DIAGRAM_NOT_VERIFIED' ? '原题或候选包含图表，通过校验必须在checked数组中包含"diagram"。' : '必需包含verdict("pass"|"fail"|"unknown")、checked(核验项目数组)和issues(问题数组)；pass时issues必须为空。';
@@ -319,7 +341,7 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
     throw new SolvePhaseError('MODEL_OUTPUT_INVALID');
   } finally { unsubscribe(); clearThinkingTimer(); clearTimer(); signal.removeEventListener('abort', abort); controller.signal.removeEventListener('abort', cancel); agent.abort(); await agent.waitForIdle(); agent.reset(); }
 }
-export async function solveOnDevice(input: SolverInput, settingsValue: LocalSettings, keys: LocalCredentials, fetch: LocalFetch, signal: AbortSignal, onEvent: (event: PublicAgentEvent) => void, onDiagnostic: (entry: LocalDiagnostic) => void = () => {}, schedule: PhaseTimer = defaultTimer, lifecycle?: SolveLifecycle) {
+export async function solveOnDevice(input: SolverInput, settingsValue: LocalSettings, keys: LocalCredentials, fetch: LocalFetch, signal: AbortSignal, onEvent: (event: PublicAgentEvent) => void, onDiagnostic: (entry: LocalDiagnostic) => void = () => {}, schedule: PhaseTimer = defaultTimer, lifecycle?: SolveLifecycle, prepareActViews?: (input: SolverInput, signal: AbortSignal) => Promise<NormalizedImage[]>, prepareReviewViews?: PrepareImageReviewViews) {
   const settings = LocalSettingsSchema.parse(settingsValue);
   LocalKeySchema.parse(keys.solver); if (settings.verifier) LocalKeySchema.parse(keys.verifier);
   const backup = !input.verificationTarget && !['explanation', 'knowledge-list'].includes(input.focus?.kind ?? '') ? settings.backup : null;
@@ -327,9 +349,64 @@ export async function solveOnDevice(input: SolverInput, settingsValue: LocalSett
   const correctionProfile = backup ?? (!input.verificationTarget && !['explanation', 'knowledge-list'].includes(input.focus?.kind ?? '') ? settings.verifier : null);
   const correctionKey = backup ? backupKey : settings.verifier ? keys.verifier : undefined;
   if (input.useBackup && !backup) throw new SolvePhaseError('INVALID_INPUT');
+  // Decision: .agents/notes/implemented/agent/2026-10-23-act-source-capture.md
+  let actSource: ActTranscript | undefined;
+  let transcriptionRevision = false;
+  let actViews: NormalizedImage[] | undefined;
+  let reviewViews: ImageReviewViews | undefined;
+  const views = async (phaseSignal: AbortSignal) => {
+    if (!actViews) {
+      if (phaseSignal.aborted) throw new SolvePhaseError('CANCELLED');
+      const prepared = prepareActViews ? z.array(NormalizedImageSchema).max(2).parse(await prepareActViews(input, phaseSignal)) : [];
+      if (phaseSignal.aborted) throw new SolvePhaseError('CANCELLED');
+      let bytes = input.image.bytes.length + (input.materials ?? []).reduce((sum, item) => sum + item.image.bytes.length, 0);
+      actViews = prepared.filter(view => { if (bytes + view.bytes.length > MAX_QUESTION_IMAGE_BYTES) return false; bytes += view.bytes.length; return true; });
+    }
+    return actViews;
+  };
+  const execute = async (value: AgentInput, budget: RunBudget, phaseSignal: AbortSignal, override: PhaseOverride): Promise<PhaseResult> => {
+    const normal = (result: DevicePhaseResult): PhaseResult => { if (result.role === 'transcriber') throw new SolvePhaseError('MODEL_OUTPUT_INVALID'); return result; };
+    // Decision: .agents/notes/implemented/agent/2026-10-26-local-image-review.md
+    const started = performance.now();
+    const phaseMs = override.maxSolverMs ?? (value.verificationMode === 'manual' ? MAX_DEVICE_PHASE_DURATION_MS : MAX_DEVICE_SOLVER_PHASE_MS);
+    let preparedReview = false;
+    if (value.role === 'solver' && value.revision && !reviewViews) {
+      reviewViews = { views: [], regions: [] };
+      const regions = imageReviewRegions(value, value.revision.issues);
+      if (prepareReviewViews && regions.length) {
+        preparedReview = true;
+        try { reviewViews = await prepareImageReview(value, regions, prepareReviewViews, phaseSignal); }
+        catch (error) {
+          if (phaseSignal.aborted) throw error;
+          onDiagnostic(LocalDiagnosticSchema.parse({ schemaVersion: 1, runId: value.identity.runId, role: 'runtime', event: 'validation', attempt: 0, elapsedMs: Math.round(performance.now() - started), reason: 'image_review' }));
+        }
+        budget.assertActive(phaseSignal);
+      }
+    }
+    const focused = reviewViews?.views.length ? { views: reviewViews.views, reviewRegions: reviewViews.regions } : undefined;
+    if (value.role === 'verifier') return normal(await phase(value, budget, phaseSignal, settings, keys, fetch, onDiagnostic, schedule, { ...override, ...(focused ?? (value.exam === 'act' ? { views: await views(phaseSignal) } : {})) }));
+    if (value.exam !== 'act' || value.focus && value.focus.kind !== 'regenerate') {
+      const remaining = phaseMs - (performance.now() - started);
+      if (preparedReview && remaining <= 0) throw new SolvePhaseError('MODEL_TIMEOUT');
+      return normal(await phase(value, budget, phaseSignal, settings, keys, fetch, onDiagnostic, schedule, { ...override, ...focused, ...(preparedReview ? { maxSolverMs: remaining } : {}) }));
+    }
+    if (value.revision?.issues.some(issue => issue.code === 'TRANSCRIPTION') && !transcriptionRevision) { actSource = undefined; transcriptionRevision = true; }
+    if (!actSource) {
+      const visual = focused ?? { views: await views(phaseSignal) };
+      const captureMs = phaseMs - (performance.now() - started);
+      if (captureMs <= 0) throw new SolvePhaseError('MODEL_TIMEOUT');
+      const captured = await phase(value, budget, phaseSignal, settings, keys, fetch, onDiagnostic, schedule, { ...override, captureAct: true, ...visual, maxSolverMs: captureMs });
+      budget.assertActive(phaseSignal);
+      if (captured.role !== 'transcriber') return normal(captured);
+      actSource = captured.source;
+    }
+    const remaining = phaseMs - (performance.now() - started);
+    if (remaining <= 0) throw new SolvePhaseError('MODEL_TIMEOUT');
+    return normal(await phase(value, budget, phaseSignal, settings, keys, fetch, onDiagnostic, schedule, { ...override, ...focused, actSource, maxSolverMs: remaining }));
+  };
   // Decision: .agents/notes/implemented/agent/2026-10-08-explicit-backup-solver.md
-  return solve(input, (value, budget, phaseSignal) => phase(value, budget, phaseSignal, settings, keys, fetch, onDiagnostic, schedule, { ...(backup ? { maxSolverMs: MAX_DEVICE_SOLVER_PHASE_MS } : {}), allowThinkingTakeover: !!correctionProfile && !!correctionKey }), new RunBudget(undefined, DEVICE_RUN_DURATION_MS), signal, onEvent,
-    correctionProfile && correctionKey ? { prefer: !!input.useBackup, execute: (value, budget, phaseSignal) => phase({ ...value, verificationMode: 'automatic' }, budget, phaseSignal, settings, keys, fetch, onDiagnostic, schedule, { profile: correctionProfile, key: correctionKey, backup: true, maxSolverMs: MAX_DEVICE_PHASE_DURATION_MS }) } : undefined, lifecycle);
+  return solve(input, (value, budget, phaseSignal) => execute(value, budget, phaseSignal, { ...(backup ? { maxSolverMs: MAX_DEVICE_SOLVER_PHASE_MS } : {}), allowThinkingTakeover: !!correctionProfile && !!correctionKey }), new RunBudget(undefined, DEVICE_RUN_DURATION_MS), signal, onEvent,
+    correctionProfile && correctionKey ? { prefer: !!input.useBackup, execute: (value, budget, phaseSignal) => execute({ ...value, verificationMode: 'automatic' }, budget, phaseSignal, { profile: correctionProfile, key: correctionKey, backup: true, maxSolverMs: MAX_DEVICE_PHASE_DURATION_MS }) } : undefined, lifecycle);
 }
 export async function testModelConnection(profile: LocalModelProfile, key: string, fetch: LocalFetch, signal: AbortSignal): Promise<void> {
   profile = LocalSettingsSchema.shape.solver.parse(profile);

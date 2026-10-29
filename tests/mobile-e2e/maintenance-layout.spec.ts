@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { configureLocalModel } from './local-fixture.js';
-import { LocalHistorySummarySchema } from '../../packages/contracts/src/local.js';
+import { LOCAL_HISTORY_ANSWER_STATE_VERSION, LocalHistorySummarySchema } from '../../packages/contracts/src/local.js';
 test.use({ reducedMotion: 'reduce' });
 test('legacy errors stay readable and genuine damage has compact aligned maintenance actions', async ({ page }, info) => {
   let modelRequests = 0;
@@ -24,7 +24,7 @@ test('legacy errors stay readable and genuine damage has compact aligned mainten
   });
   await page.getByRole('tab', { name: '历史题目', exact: true }).click(); await page.getByRole('tab', { name: '批量记录', exact: true }).click(); await page.getByRole('button', { name: '打开批量', exact: true }).click();
   await expect(page.getByText('模型服务暂时无法完成请求，请检查连接或模型配置。', { exact: true }).first()).toBeVisible();
-  await expect(page.getByTestId('batch-read-error')).toHaveCount(0);
+  await expect(page.locator('[data-testid="batch-read-error"]:visible')).toHaveCount(0);
   await page.getByRole('tab', { name: '跳转第2题', exact: true }).click();
   const error = page.getByTestId('batch-read-error'); const notice = page.getByTestId('storage-maintenance-notice');
   await expect(error).toBeVisible(); await expect(notice).toContainText('1 处本地记录需要处理');
@@ -42,13 +42,30 @@ test('legacy errors stay readable and genuine damage has compact aligned mainten
   await page.getByRole('button', { name: '查看记录维护', exact: true }).click(); await expect(page.getByRole('heading', { name: '记录维护', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '返回', exact: true }).click();
   await page.getByRole('tab', { name: '跳转第3题', exact: true }).click(); await expect(page.getByLabel('批量待解题原图', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('batch-pending-card')).toBeVisible({ timeout: 1000 });
+  for (const scheme of ['light', 'dark'] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    for (const width of [390, 1280, 1920]) {
+      await page.setViewportSize({ width, height: 900 });
+      const image = (await page.getByRole('button', { name: '查看题目图片', exact: true }).boundingBox())!;
+      const card = (await page.getByTestId('batch-pending-card').boundingBox())!;
+      const hint = (await page.getByTestId('batch-pending-status').boundingBox())!;
+      const materials = (await page.getByRole('button', { name: '同题材料 / 补图', exact: true }).boundingBox())!;
+      expect(card.x).toBeCloseTo(materials.x, 0); expect(card.width).toBeCloseTo(materials.width, 0);
+      expect(image.x).toBeGreaterThan(card.x); expect(image.x + image.width).toBeLessThan(card.x + card.width);
+      expect(hint.x).toBeGreaterThan(card.x); expect(hint.x + hint.width).toBeLessThan(card.x + card.width);
+      await expect(page.getByTestId('batch-pending-status')).toHaveText('待解题');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.screenshot({ path: info.outputPath(`pending-${width}-${scheme}.png`) });
+    }
+  }
   const after = await page.evaluate(async entries => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => { const r = indexedDB.open('solveflow-local', 1); r.onsuccess = () => resolve(r.result); r.onerror = reject; });
     const keys = [...entries.map(([key]) => key), 'image.79000000-0000-4000-8000-000000000002'];
     const actual = await Promise.all(keys.map(key => new Promise<[string, unknown]>((resolve, reject) => { const r = db.transaction('documents', 'readonly').objectStore('documents').get(key); r.onsuccess = () => resolve([key, r.result]); r.onerror = reject; })));
     db.close(); return actual;
   }, before);
-  // Summaries are derived caches: old entries gain only the explicit answer state.
+  // Derived caches gain a versioned answer state; original records stay intact.
   expect(after.filter(([key]) => !key.startsWith('summary.') && key !== 'image.79000000-0000-4000-8000-000000000002')).toEqual(before.filter(([key]) => !key.startsWith('summary.')));
   expect(after.find(([key]) => key === 'image.79000000-0000-4000-8000-000000000002')).toEqual(['image.79000000-0000-4000-8000-000000000002', undefined]);
   const summaries = after.filter(([key]) => key.startsWith('summary.'));
@@ -58,7 +75,7 @@ test('legacy errors stay readable and genuine damage has compact aligned mainten
     const previous = before.find(([originalKey]) => originalKey === key); if (!previous) throw new Error('MISSING_ORIGINAL_SUMMARY');
     const legacy = LocalHistorySummarySchema.parse(JSON.parse(previous[1]));
     expect(legacy.answerState).toBeUndefined();
-    expect(LocalHistorySummarySchema.parse(JSON.parse(raw))).toEqual({ ...legacy, answerState: legacy.batch?.position === 1 ? 'failed' : 'unanswered' });
+    expect(LocalHistorySummarySchema.parse(JSON.parse(raw))).toEqual({ ...legacy, answerState: legacy.batch?.position === 1 ? 'failed' : 'unanswered', answerStateVersion: LOCAL_HISTORY_ANSWER_STATE_VERSION });
   }
   await expect(notice).toContainText('1 处本地记录需要处理'); expect(modelRequests).toBe(0);
 });

@@ -9,6 +9,69 @@ async function openBatchCamera(page: Page) {
   await page.getByRole('button', { name: '允许使用相机' }).evaluateAll(nodes => { for (const node of nodes) if (node instanceof HTMLElement) node.click(); });
   await expect(page.getByRole('dialog').getByRole('button', { name: '重命名批次', exact: true })).toContainText(/\d{4}-\d{2}-\d{2} \d{2}时 · \d{2}/);
 }
+test('continuous capture buffers three photos during normalization, keeps durable counts and waits on finish', async ({ page }) => {
+  await page.addInitScript(() => {
+    const original = HTMLCanvasElement.prototype.toBlob;
+    HTMLCanvasElement.prototype.toBlob = function(callback, type, quality) {
+      return original.call(this, value => {
+        if (quality !== .92) { callback(value); return; }
+        const pending = Number(document.documentElement.dataset.capturePending ?? '0') + 1;
+        document.documentElement.dataset.capturePending = String(pending);
+        window.addEventListener('test:release-capture-normalization', () => callback(value), { once: true });
+      }, type, quality);
+    };
+  });
+  let solves = 0;
+  await page.route('https://fixture-model.invalid/v1/chat/completions', async route => {
+    const request: unknown = route.request().postDataJSON(); const input = lastModelInput(request); if (!input || typeof input !== 'object' || !('role' in input)) throw new Error('INPUT');
+    if (input.role !== 'verifier') solves++;
+    await route.fulfill({ contentType: 'text/event-stream', body: modelSse(input.role === 'verifier' ? modelPass : { schemaVersion: 1, kind: 'answer', problem: { text: 'buffered camera fixture', subject: 'math', uncertainties: [] }, answer: '2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] }, request) });
+  });
+  await page.goto('/'); await configureLocalModel(page); await openBatchCamera(page);
+  const shutter = page.getByRole('button', { name: '拍摄', exact: true });
+  try {
+    await shutter.click(); await expect(page.locator('html')).toHaveAttribute('data-capture-pending', '1'); await expect(shutter).toBeEnabled();
+    await shutter.click(); await shutter.click(); await expect(page.locator('html')).toHaveAttribute('data-capture-pending', '3');
+    await expect(shutter).toBeDisabled(); await expect(page.getByText('已保存 0 张 · 待保存 3 张', { exact: true })).toBeVisible(); expect(solves).toBe(0);
+    expect(await page.evaluate(() => { const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented; })).toBe(true);
+    await page.getByRole('button', { name: '完成拍摄', exact: true }).click(); await expect(page.getByTestId('current-batch')).toHaveCount(0);
+  } finally { await page.evaluate(() => window.dispatchEvent(new Event('test:release-capture-normalization'))); }
+  await expect(page.getByTestId('current-batch')).toBeVisible(); await expect(page.getByText('3 张题图', { exact: true })).toBeVisible(); await expect.poll(() => solves).toBe(3);
+  expect(await page.evaluate(() => { const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented; })).toBe(false);
+  const positions = await page.evaluate(() => new Promise<number[]>((resolve, reject) => { const request = indexedDB.open('solveflow-local'); request.onerror = () => reject(request.error); request.onsuccess = () => { const db = request.result, tx = db.transaction('documents'), get = tx.objectStore('documents').getAll(); tx.oncomplete = () => { db.close(); resolve(get.result.filter((value: unknown): value is string => typeof value === 'string').flatMap(value => { const parsed: unknown = JSON.parse(value); return parsed && typeof parsed === 'object' && 'session' in parsed && 'batch' in parsed && parsed.batch && typeof parsed.batch === 'object' && 'position' in parsed.batch && typeof parsed.batch.position === 'number' ? [parsed.batch.position] : []; }).sort((a, b) => a - b)); }; }; }));
+  expect(positions).toEqual([1, 2, 3]);
+});
+test('continuous capture retains a failed save for explicit retry without recounting, reprocessing or duplicate model dispatch', async ({ page }) => {
+  await page.addInitScript(() => {
+    const put = IDBObjectStore.prototype.put, toBlob = HTMLCanvasElement.prototype.toBlob;
+    IDBObjectStore.prototype.put = function(value, key) {
+      if (document.documentElement.dataset.failCaptureSave === 'true' && typeof key === 'string' && key.startsWith('record.') && typeof value === 'string') {
+        const record: unknown = JSON.parse(value);
+        if (record && typeof record === 'object' && 'session' in record && record.session && typeof record.session === 'object' && 'runs' in record.session && Array.isArray(record.session.runs) && record.session.runs.length === 0) throw new DOMException('synthetic capture storage failure', 'QuotaExceededError');
+      }
+      return key === undefined ? put.call(this, value) : put.call(this, value, key);
+    };
+    HTMLCanvasElement.prototype.toBlob = function(callback, type, quality) {
+      if (quality === .92) document.documentElement.dataset.captureNormalizations = String(Number(document.documentElement.dataset.captureNormalizations ?? '0') + 1);
+      return toBlob.call(this, callback, type, quality);
+    };
+  });
+  let solves = 0;
+  await page.route('https://fixture-model.invalid/v1/chat/completions', async route => {
+    const body: unknown = route.request().postDataJSON(), input = lastModelInput(body); if (!input || typeof input !== 'object' || !('role' in input)) throw new Error('INPUT');
+    if (input.role !== 'verifier') solves++;
+    await route.fulfill({ contentType: 'text/event-stream', body: modelSse(input.role === 'verifier' ? modelPass : { schemaVersion: 1, kind: 'answer', problem: { text: 'capture retry fixture', subject: 'math', uncertainties: [] }, answer: '2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] }, body) });
+  });
+  await page.goto('/'); await configureLocalModel(page); await openBatchCamera(page);
+  const shutter = page.getByRole('button', { name: '拍摄', exact: true }); await shutter.click(); await expect(page.getByText('已保存 1 张', { exact: true })).toBeVisible(); await expect.poll(() => solves).toBe(1);
+  await page.evaluate(() => { document.documentElement.dataset.failCaptureSave = 'true'; }); await shutter.click();
+  await expect(page.getByRole('button', { name: '重试保存待存照片', exact: true })).toBeVisible(); await expect(shutter).toBeDisabled();
+  await expect(page.getByText('已保存 1 张 · 待保存 1 张', { exact: true })).toBeVisible(); expect(solves).toBe(1);
+  await page.getByRole('button', { name: '完成拍摄', exact: true }).click(); await expect(page.getByRole('button', { name: '重试保存待存照片', exact: true })).toBeEnabled();
+  await page.evaluate(() => { document.documentElement.dataset.failCaptureSave = 'false'; }); await page.getByRole('button', { name: '重试保存待存照片', exact: true }).click();
+  await expect(page.getByText('已保存 2 张', { exact: true })).toBeVisible(); await expect.poll(() => solves).toBe(2); await expect(page.locator('html')).toHaveAttribute('data-capture-normalizations', '2');
+  await page.getByRole('button', { name: '完成拍摄', exact: true }).click(); await expect(page.getByTestId('current-batch')).toBeVisible(); await expect(page.getByText('2 张题图', { exact: true })).toBeVisible();
+});
 test('camera gallery queues three background solves; compact history searches, renames and deletes their batch', async ({ page }) => {
   const releases: (() => void)[] = []; let solvers = 0; let verifiers = 0;
   await page.route('https://fixture-model.invalid/v1/chat/completions', async route => {
@@ -24,7 +87,7 @@ test('camera gallery queues three background solves; compact history searches, r
   const buffer = Buffer.from(await page.evaluate(() => { const canvas = document.createElement('canvas'); canvas.width = 600; canvas.height = 300; const ctx = canvas.getContext('2d')!; ctx.fillStyle = 'white'; ctx.fillRect(0, 0, 600, 300); ctx.fillStyle = 'black'; ctx.fillText('19. x+1=3', 40, 100); return canvas.toDataURL('image/jpeg').split(',')[1]!; }), 'base64');
   for (let index = 1; index <= 3; index++) {
     const chooser = page.waitForEvent('filechooser'); await page.getByRole('dialog').getByRole('button', { name: '从相册选择', exact: true }).click(); await (await chooser).setFiles({ name: `batch-${index}.jpg`, mimeType: 'image/jpeg', buffer });
-    await expect(page.getByRole('heading', { name: '确认图片顺序', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: index === 1 ? '确认图片顺序' : '新增题图工作台', exact: true })).toBeVisible();
     await page.getByRole('button', { name: '导入并解题（1张）', exact: true }).click();
     await expect(page.getByText(`已保存 ${index} 张`, { exact: true })).toBeVisible();
   }
@@ -59,7 +122,7 @@ test('camera gallery queues three background solves; compact history searches, r
   for (const [index, number] of ['19', '7', '11'].entries()) { await page.getByRole('tab', { name: `跳转第${index + 1}题`, exact: true }).click(); await expect(page.getByText(`题目 · 原题号 ${number}`, { exact: true })).toBeVisible(); await expect(page.getByRole('button', { name: '校验通过', exact: true })).toBeVisible(); }
   await page.getByRole('navigation', { name: '主导航' }).getByRole('tab', { name: '题目', exact: true }).click();
   await expect(page.getByText('全部题目', { exact: true })).toBeVisible();
-  await expect(page.getByText('共 3 题 · 点击快速跳转', { exact: true })).toBeVisible();
+  await expect(page.getByText('共 3 题', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '快速跳转第2题', exact: true }).click();
   await expect(page.getByText('全部题目', { exact: true })).toHaveCount(0);
   await expect(page.getByText('题目 · 原题号 7', { exact: true })).toBeVisible();

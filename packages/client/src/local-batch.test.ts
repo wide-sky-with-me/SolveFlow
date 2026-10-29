@@ -193,7 +193,8 @@ it.each([52, 100])('solves the whole %i-photo batch while verification is blocke
   expect(engine.actives).toHaveLength(count); expect(engine.batchSolvingIds).toHaveLength(0); expect(checks).toBe(1);
   if (count === 100) {
     const extra = await engine.create('data:image/jpeg;base64,AQID', 30, 20, 'sat', { id: randomUUID(), title: 'Another batch', createdAt: new Date().toISOString(), exam: 'sat', position: 1 });
-    await expect(queue.enqueue(extra.session.id, execute)).rejects.toThrow('批量队列已满');
+    await expect(queue.enqueue(extra.session.id, execute)).resolves.toBeUndefined();
+    expect(queue.getSnapshot().tasks.find(row => row.sessionId === extra.session.id)?.phase).toBe('waiting');
     await expect(engine.start(extra.session.id, '', undefined, execute)).rejects.toThrow('批量队列已满');
     expect((await engine.repository.read(extra.session.id)).session.runs).toHaveLength(0);
   }
@@ -220,7 +221,7 @@ it('releases verification admission when a platform diagnostic hook fails', asyn
   } finally { await queue.stop(); }
 });
 
-it.each([{ solver: 5, verifier: 3 }, { solver: 2, verifier: 4 }, { solver: 8, verifier: 8 }, { solver: 32, verifier: 32 }])('honors independent $solver/$verifier limits and rejects changing active queues', async limits => {
+it.each([{ solver: 5, verifier: 3 }, { solver: 2, verifier: 4 }, { solver: 8, verifier: 8 }, { solver: 32, verifier: 32 }, { solver: 48, verifier: 16 }, { solver: 64, verifier: 64 }])('honors independent $solver/$verifier limits and rejects changing active queues', async limits => {
   const { create, queue, engine } = setup(limits);
   const records = await Promise.all(Array.from({ length: Math.max(limits.solver, limits.verifier) + 4 }, (_, i) => create(i + 1)));
   const solveReleases: (() => void)[] = []; const checkReleases: (() => void)[] = [];

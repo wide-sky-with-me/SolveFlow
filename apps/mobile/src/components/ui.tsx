@@ -9,7 +9,14 @@ export function Button({ title, onPress, disabled = false, secondary = false, da
   return <Pressable accessibilityRole="button" accessibilityLabel={title} aria-pressed={selected} accessibilityState={{ disabled, ...(selected === undefined ? {} : { selected }) }} disabled={disabled} onPress={onPress} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)} testID={testID} style={({ pressed }) => [s.button, secondary ? s.secondary : s.primary, compact && s.compact, danger && (secondary ? s.dangerSecondary : s.danger), focused && { borderColor: '#7ba7f0' }, pressed && !disabled && { backgroundColor: danger ? secondary ? '#fbe2df' : '#a92323' : secondary ? '#deebff' : '#2058c2' }, disabled && { opacity: .4 }]}>{icon && <Text accessible={false} style={{ color: secondary ? danger ? '#b33939' : colors.blue : '#fff', fontSize: 21, lineHeight: 24 }}>↻</Text>}<Text style={[s.buttonText, compact && { fontSize: 13 }, secondary && { color: danger ? '#b33939' : colors.blue }]}>{title}</Text></Pressable>;
 }
 export function Card({ children, style, label }: { children: ReactNode; style?: ViewStyle; label?: string }) { return <View role={label ? "region" : undefined} accessibilityLabel={label} style={[s.card, style]}>{children}</View>; }
-export function Notice({ text, error = false }: { text: string; error?: boolean }) { return <View accessibilityRole={error ? 'alert' : 'text'} accessibilityLiveRegion="polite" style={[s.notice, error && { backgroundColor: '#fff0ee' }]}><Text style={{ color: error ? '#a33229' : colors.muted, lineHeight: 22 }}>{text}</Text></View>; }
+export function Notice({ text, error = false, onDismiss }: { text: string; error?: boolean; onDismiss?: () => void }) {
+  const [focused, setFocused] = useState(false);
+  return <View accessibilityRole={error ? 'alert' : onDismiss ? undefined : 'text'} accessibilityLiveRegion="polite" style={[s.notice, error && { backgroundColor: '#fff0ee' }, onDismiss && { flexDirection: 'row', alignItems: 'center', gap: 8 }]}>
+    <Text style={{ color: error ? '#a33229' : colors.muted, lineHeight: 22, ...(onDismiss ? { flex: 1 } : {}) }}>{text}</Text>
+    {onDismiss && <Pressable accessibilityRole="button" accessibilityLabel="关闭提示" hitSlop={6} onPress={onDismiss} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+      style={{ width: 28, height: 28, alignItems: 'center', justifyContent: 'center', borderRadius: 6, borderWidth: 1, borderColor: focused ? colors.blue : 'transparent' }}><Text accessible={false} style={{ fontSize: 20, lineHeight: 24, color: error ? '#a33229' : colors.muted }}>×</Text></Pressable>}
+  </View>;
+}
 export function MenuLabel({ children }: { children: ReactNode }) {
   return <Text style={[s.label, { flex: 1, minWidth: 0, lineHeight: 24, includeFontPadding: false }]}>{children}</Text>;
 }

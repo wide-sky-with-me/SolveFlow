@@ -102,3 +102,45 @@ test('verified and unverified status text remains readable in both themes', asyn
     }
   }
 });
+
+test('model switches use the blue theme and preserve keyboard and disabled states', async ({ page }, info) => {
+  const requests: string[] = [];
+  await page.route('**/*', route => {
+    const request = route.request(); const path = new URL(request.url()).pathname;
+    if (path.startsWith('/__solveflow/web-env')) return route.fulfill({ status: 404, json: {} });
+    if (!['GET', 'HEAD'].includes(request.method())) { requests.push(request.method()); return route.abort(); }
+    return route.continue();
+  });
+  await page.goto('/'); await configureLocalModel(page);
+  await page.getByRole('tab', { name: '我的', exact: true }).click();
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  const toggle = page.getByRole('switch', { name: '使用独立校验模型', exact: true });
+  for (const scheme of ['light', 'dark'] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    await toggle.scrollIntoViewIfNeeded(); await toggle.focus();
+    await expect(toggle).not.toBeChecked(); await page.keyboard.press('Space'); await expect(toggle).toBeChecked();
+    await expect.poll(() => toggle.evaluate(node => getComputedStyle(node.parentElement!.children[0]!).backgroundColor)).toBe(scheme === 'light' ? 'rgb(40, 103, 221)' : 'rgb(139, 181, 255)');
+    await expect.poll(() => toggle.evaluate(node => getComputedStyle(node.parentElement!.children[1]!).backgroundColor)).toBe(scheme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(24, 34, 50)');
+    await page.screenshot({ path: info.outputPath(`model-switch-${scheme}.png`) });
+    await page.keyboard.press('Space'); await expect(toggle).not.toBeChecked();
+    await page.getByRole('button', { name: '解题高级参数', exact: true }).click();
+    await page.getByRole('button', { name: 'Responses', exact: true }).first().click();
+    await expect(page.getByRole('switch', { name: '解题使用max_completion_tokens', exact: true })).toBeDisabled();
+    await page.getByRole('button', { name: 'Chat Completions', exact: true }).first().click();
+    await page.getByRole('button', { name: '解题高级参数', exact: true }).click();
+  }
+  expect(requests).toEqual([]);
+});
+
+test('manual model fixtures refuse an environment service before opening settings or writing', async ({ page }) => {
+  const writes: string[] = [];
+  await page.route('**/*', route => {
+    const request = route.request();
+    if (!['GET', 'HEAD'].includes(request.method())) { writes.push(request.method()); return route.abort(); }
+    if (new URL(request.url()).pathname === '/__solveflow/web-env') return route.fulfill({ json: {} });
+    return route.continue();
+  });
+  await page.goto('/'); await expect(page.getByTestId('launch-screen')).toBeHidden();
+  await expect(configureLocalModel(page)).rejects.toThrow('LOCAL_FIXTURE_REQUIRES_UNMANAGED_SERVICE');
+  await expect(page.getByRole('dialog')).toHaveCount(0); expect(writes).toEqual([]);
+});

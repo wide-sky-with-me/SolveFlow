@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
 import { LocalRecordSchema, StoredLocalRecordSchema, StoredLocalImageSchema, BatchPrintLayoutInputSchema, parsePreparedPrintRecord, type LocalRecord } from '../../packages/contracts/src/local.js';
 import { questionsForBatchQuestionPrint } from '../../packages/client/src/batch-print-variants.js';
-import { configureLocalModel, modelSse } from './local-fixture.js';
+import { configureLocalModel, lastModelInput, modelSse } from './local-fixture.js';
 
 test.use({ reducedMotion: 'reduce' });
 async function seed(page: Page, configured = false, batch = false) {
@@ -32,7 +33,9 @@ async function seedPreparedPaper(page: Page, record: LocalRecord) {
   const sources = (record.activeImageIds ?? available.map(source => source.id)).map(id => { const source = available.find(source => source.id === id); if (!source) throw new Error('MISSING_CURRENT_IMAGE'); return source; });
   const input = BatchPrintLayoutInputSchema.parse({ purpose: 'reference', questions: questions.map(({ key, problem }) => ({ key, problem })), sources });
   const assets = sources.map(({ id }, index) => ({ key: `${questions[0]!.key}/${id}/current`, sourceId: id, alt: `Current synthetic diagram ${index + 1}`, role: 'question' }));
-  const prepared = parsePreparedPrintRecord({ schemaVersion: 1, layouts: Object.fromEntries(questions.map(question => [question.key, { problem: question.problem, assets, warnings: [] }])), images: Object.fromEntries(assets.map((asset, index) => [asset.key, sources[index]!.image])), sources: assets.map((asset, index) => ({ key: asset.key, image: sources[index]!.image, label: asset.alt, region: true })), adjustments: {} }, input);
+  // This fixture checks source ownership; an explicit opt-out keeps byte equality independent of enhancement.
+  const adjustments = Object.fromEntries(assets.map(asset => [asset.key, { rotation: 0, crop: { left: 0, top: 0, right: 1, bottom: 1 }, enhance: false }]));
+  const prepared = parsePreparedPrintRecord({ schemaVersion: 1, layouts: Object.fromEntries(questions.map(question => [question.key, { problem: question.problem, assets, warnings: [] }])), images: Object.fromEntries(assets.map((asset, index) => [asset.key, sources[index]!.image])), sources: assets.map((asset, index) => ({ key: asset.key, image: sources[index]!.image, label: asset.alt, region: true })), adjustments }, input);
   // Independent versioned-storage fixture avoids importing the mobile Web/JSX graph.
   // Browser ready-state and ordered-pixel assertions verify this persisted protocol against the app.
   const key = `prepared-paper-1-sharpen-1:${createHash('sha256').update(JSON.stringify({ questions: input.questions, sources: input.sources })).digest('hex')}`;
@@ -105,4 +108,65 @@ test('correction also accepts multiple pictures and can crop a saved picture bef
   await page.getByRole('button', { name: '裁剪图片1', exact: true }).click(); await crop(page); expect(await readDocument(page, `record.${source.id}`)).toBe(rawBefore); expect(calls).toHaveLength(0);
   await page.getByLabel('更正后的题干', { exact: true }).fill('x+2=6'); await page.getByRole('button', { name: '按更正重新解答', exact: true }).click(); await expect(page.locator('.final-answer')).toContainText('x=4'); expect(calls).toHaveLength(1);
   const saved = StoredLocalRecordSchema.parse(JSON.parse(await readDocument(page, `record.${source.id}`))); expect(saved.activeImageIds).toHaveLength(4); expect(saved.activeImageIds?.[0]).not.toBe(source.id); expect(saved.session.runs[0]).toEqual(before.session.runs[0]); expect(saved.session.runs.at(-1)?.imageIds).toEqual(saved.activeImageIds);
+});
+
+for (const layout of ['快速原文（最快）', '整理后的试卷', '已保存内容']) test(`supplemented question downloads a complete PDF in ${layout} without changing saved evidence`, async ({ page }, info) => {
+  let calls = 0; const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.route('https://**', route => { calls++; return route.abort(); });
+  await page.route('**/__solveflow/web-env/model/**', route => { calls++; return route.abort(); });
+  const source = await seed(page, false, true);
+  await page.getByRole('button', { name: '同题材料 / 补图', exact: true }).click();
+  await select(page, '从相册补图', 2);
+  await page.getByRole('button', { name: '保存补图（2张）', exact: true }).click();
+  await expect(page.getByRole('button', { name: '查看材料 3', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '返回题目', exact: true }).click();
+  const before = await readDocument(page, `record.${source.id}`);
+  await page.getByRole('button', { name: '批次操作', exact: true }).click();
+  await page.getByRole('button', { name: '导出本批 PDF', exact: true }).click();
+  await page.getByRole('button', { name: layout, exact: true }).click();
+  const pending = page.waitForEvent('download');
+  await page.getByRole('button', { name: '下载 PDF', exact: true }).click();
+  const download = await pending; const path = info.outputPath('supplemented.pdf');
+  await download.saveAs(path);
+  expect((await readFile(path)).subarray(0, 5).toString()).toBe('%PDF-');
+  expect(await readDocument(page, `record.${source.id}`)).toBe(before);
+  expect(errors).toEqual([]); expect(calls).toBe(0);
+});
+
+for (const layout of ['快速原文（最快）', '整理后的试卷', '已保存内容']) test(`supplemented correction downloads a complete PDF in ${layout} after replacing its primary image`, async ({ page }, info) => {
+  let calls = 0; let unexpected = 0;
+  await page.route('https://**', route => { unexpected++; return route.abort(); });
+  await page.route('https://fixture-model.invalid/v1/chat/completions', async route => {
+    calls++;
+    const body: unknown = route.request().postDataJSON();
+    const input = lastModelInput(body);
+    const verifier = typeof input === 'object' && input !== null && 'role' in input && input.role === 'verifier';
+    const checked = ['transcription', 'logic', 'arithmetic', 'diagram'];
+    const value = verifier ? { schemaVersion: 1, verdict: 'pass', checked, issues: [], coverage: [{ verdict: 'pass', checked }], evidenceStatus: 'sufficient' } : { schemaVersion: 1, kind: 'answer', problem: { text: 'CORRECTED_SOURCE: x+2=6', subject: 'math', uncertainties: [] }, answer: 'CORRECTED_ANSWER: x=4', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] };
+    await route.fulfill({ contentType: 'text/event-stream', body: modelSse(value, body) });
+  });
+  const source = await seed(page, true, true);
+  await page.getByRole('button', { name: '识别有误？更正题干', exact: true }).click();
+  await select(page, '添加图片', 2);
+  await page.getByRole('button', { name: '保存补图（2张）', exact: true }).click();
+  await page.getByRole('button', { name: '裁剪图片1', exact: true }).click(); await crop(page);
+  await page.getByLabel('更正后的题干', { exact: true }).fill('x+2=6');
+  await page.getByRole('button', { name: '按更正重新解答', exact: true }).click();
+  await expect(page.locator('.final-answer').last()).toContainText('CORRECTED_ANSWER: x=4');
+  await expect.poll(async () => StoredLocalRecordSchema.parse(JSON.parse(await readDocument(page, `record.${source.id}`))).session.runs.at(-1)?.status).toBe('completed');
+  const before = await readDocument(page, `record.${source.id}`);
+  const saved = StoredLocalRecordSchema.parse(JSON.parse(before));
+  expect(saved.session.runs.at(-1)?.imageIds).toEqual(saved.activeImageIds);
+  expect(saved.activeImageIds?.[0]).not.toBe(source.id);
+  await page.getByRole('button', { name: '批次操作', exact: true }).click();
+  await page.getByRole('button', { name: '导出本批 PDF', exact: true }).click();
+  await page.getByRole('button', { name: layout, exact: true }).click();
+  const waiting = page.waitForEvent('download');
+  await page.getByRole('button', { name: '下载 PDF', exact: true }).click();
+  const download = await waiting; const path = info.outputPath('corrected-supplemented.pdf');
+  await download.saveAs(path);
+  expect((await readFile(path)).subarray(0, 5).toString()).toBe('%PDF-');
+  expect(await readDocument(page, `record.${source.id}`)).toBe(before);
+  expect(calls).toBe(2); expect(unexpected).toBe(0);
 });

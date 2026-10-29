@@ -1,5 +1,6 @@
 import { ExportTaskFailure } from '@solveflow/client/local';
-import { fitBatchPrintQuestionPage, fitBatchPrintQuestionPages } from './print-question-pages.web';
+import { MAX_BATCH_PRINT_PAGES } from '@solveflow/contracts/local';
+import { paginateQuestionPage } from './paginate-question-pages.web';
 
 /** Fit long unbroken math locally so Chromium does not shrink the entire booklet. */
 export function fitBatchPrintMath(doc: Document) {
@@ -17,8 +18,10 @@ export interface BatchPrintFrame { doc: Document; target: Window; content: HTMLE
 // Decision: .agents/notes/implemented/storage/2026-10-13-batch-pdf-variants-and-image-layout.md
 // Decision: .agents/notes/implemented/storage/2026-10-18-pdf-resource-handoff.md
 // Decision: .agents/notes/implemented/storage/2026-10-19-pdf-fragment-source-ownership.md
-export async function createBatchPrintFrame(element: Element, title: string, signal: AbortSignal, options?: { questionPages?: boolean }): Promise<BatchPrintFrame> {
+export async function createBatchPrintFrame(element: Element, title: string, signal: AbortSignal, options?: { questionPages?: boolean; lifetimeMs?: number }): Promise<BatchPrintFrame> {
   if (signal.aborted) throw new Error('导出已取消。');
+  const lifetimeMs = options?.lifetimeMs ?? 120000;
+  if (!Number.isSafeInteger(lifetimeMs) || lifetimeMs < 120000 || lifetimeMs > 330000) throw new Error('打印文档时限无效。');
   const frame = document.createElement('iframe'); frame.title = '批次 PDF 打印'; frame.style.cssText = 'position:fixed;left:-10000px;top:0;width:800px;height:1100px;border:0';
   document.body.append(frame);
   let disposed = false;
@@ -29,11 +32,15 @@ export async function createBatchPrintFrame(element: Element, title: string, sig
     disposed = true; clearTimeout(timer); signal.removeEventListener('abort', dispose);
     cancelResources?.(); releaseContents(); frame.remove();
   };
-  const timer = setTimeout(dispose, 120000); signal.addEventListener('abort', dispose, { once: true });
+  const timer = setTimeout(dispose, lifetimeMs); signal.addEventListener('abort', dispose, { once: true });
   const assertActive = () => { if (signal.aborted) throw new Error('导出已取消。'); if (disposed) throw new Error('打印文档已关闭。'); };
   try {
     assertActive();
     const doc = frame.contentDocument; const target = frame.contentWindow; if (!doc || !target) throw new Error('无法打开打印窗口。');
+    // Parse only the fixed document declaration. All question content remains cloned DOM.
+    // Without it, about:blank can measure tables in quirks mode while capture uses standards mode.
+    // Decision: .agents/notes/implemented/storage/2026-10-22-print-document-mode.md
+    doc.open(); doc.write('<!doctype html>'); doc.close();
     const base = doc.createElement('base'); base.href = document.baseURI; doc.head.append(base);
     doc.title = title.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-').slice(0, 120);
     const stylesReady: Promise<void>[] = [];
@@ -84,7 +91,22 @@ export async function createBatchPrintFrame(element: Element, title: string, sig
     assertActive();
     content.style.width = '178mm'; content.style.maxWidth = '178mm'; content.style.padding = '0';
     fitBatchPrintMath(doc);
-    if (pages[0]) fitBatchPrintQuestionPage(pages[0]); else fitBatchPrintQuestionPages(doc);
+    // Decision: .agents/notes/implemented/storage/2026-10-21-question-continuation-pages.md
+    const preparePage = async (page: HTMLElement, index?: number) => {
+      assertActive();
+      const count = content.querySelectorAll('[data-pdf-question]').length;
+      if (count > MAX_BATCH_PRINT_PAGES) throw new ExportTaskFailure(`PDF 页数超过上限（每份 ${MAX_BATCH_PRINT_PAGES} 页），请拆分批次。`);
+      const sheets = await paginateQuestionPage(page, MAX_BATCH_PRINT_PAGES - count + 1, assertActive);
+      assertActive();
+      if (index !== undefined && sheets.length > 1) {
+        const added = sheets.slice(1); const frozen = added.map(sheet => {
+          const fragment = doc.createDocumentFragment(); while (sheet.firstChild) fragment.append(sheet.firstChild); return fragment;
+        });
+        pages.splice(index + 1, 0, ...added); questionContents.splice(index + 1, 0, ...frozen);
+      }
+    };
+    if (pages[0]) await preparePage(pages[0], 0);
+    else for (const page of content.querySelectorAll<HTMLElement>('[data-pdf-question]')) await preparePage(page);
     let activeIndex = 0; let activating = false;
     const activateQuestionPage = async (index: number) => {
       assertActive();
@@ -97,7 +119,8 @@ export async function createBatchPrintFrame(element: Element, title: string, sig
         pages[activeIndex]?.replaceChildren(); next.append(fragment); activeIndex = index;
         await waitForResources();
         assertActive();
-        fitBatchPrintMath(doc); fitBatchPrintQuestionPage(next);
+        fitBatchPrintMath(doc);
+        await preparePage(next, index);
       } catch (error) { dispose(); throw error; }
       finally { activating = false; }
     };

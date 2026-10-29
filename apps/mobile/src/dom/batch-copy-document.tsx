@@ -20,24 +20,26 @@ function Option({ option, assets, images }: { option: PrintOption; assets: Print
   </li>;
 }
 
-/** Every question owns one page; answer fields are inaccessible in the pure projection. */
-export function BatchCopyDocument(props: { snapshot: BatchPrintSnapshot; problems: BatchPrintProblem[]; layouts: PrintLayouts; images: PrintImages } & ({ mode: 'questions'; copy?: never; questions?: never } | { mode?: 'answers'; copy: BatchPrintCopy; questions: BatchPrintQuestion[] })) {
+/** Each question owns its sheets; answer fields are inaccessible in the pure projection. */
+export function BatchCopyDocument(props: { snapshot: BatchPrintSnapshot; problems: BatchPrintProblem[]; layouts: PrintLayouts; images: PrintImages } & ({ mode: 'questions'; copy?: never; questions?: never } | { mode?: 'answers'; copy: BatchPrintCopy; questions: BatchPrintQuestion[]; markIncorrect?: boolean })) {
   const { snapshot, problems, layouts, images } = props;
   const copy = props.mode === 'questions' ? null : props.copy;
   return <main className="batch-print-document print-copy-document" data-testid="batch-copy-document" data-pdf-content={copy ? 'answers' : 'questions'}>
     {problems.map(question => {
       const answer = copy?.answers.find(item => item.key === question.key);
+      const incorrect = props.mode !== 'questions' && props.markIncorrect === true && answer?.incorrect === true;
       const original = props.mode === 'questions' ? undefined : props.questions.find(item => item.key === question.key);
       const layout = layouts[question.key];
       const problem = layout?.problem ?? question.problem;
       const assets = layout?.assets ?? [];
       const figures = assets.filter(asset => asset.role !== 'option');
       const reviewNotes = [
+        assets.some(asset => asset.role === 'source') ? '图示待核对：已保留原图，未省略待确认内容。' : '',
         problem?.uncertainties.length ? `识别待核对：${problem.uncertainties.join('；')}` : '',
         layout?.warnings.length ? `整理待核对：${layout.warnings.join('；')}` : '',
       ].filter(Boolean);
-      return <article key={question.key} className="print-copy-question print-question-page" data-testid="copy-question" data-pdf-question={question.ordinal}>
-        <header className="print-page-heading"><span>QUESTION {String(question.ordinal).padStart(2, '0')}</span><h2>第 {question.ordinal} 题</h2><span>{problem ? subjectLabel(problem.subject) : ''}</span></header>
+      return <article key={question.key} className="print-copy-question print-question-page" data-testid="copy-question" data-pdf-question={question.ordinal} data-answer-incorrect={incorrect ? 'true' : undefined}>
+        <header className="print-page-heading"><span>QUESTION {String(question.ordinal).padStart(2, '0')}</span><h2>第 {question.ordinal} 题{incorrect && <span className="print-wrong-mark">× 作答错误</span>}</h2><span>{problem ? subjectLabel(problem.subject) : ''}</span></header>
         <div className="print-page-body"><div className="print-page-inner">
           {problem ? <>
             <div className="print-page-stem"><MathText text={problem.text} /></div>
@@ -45,7 +47,7 @@ export function BatchCopyDocument(props: { snapshot: BatchPrintSnapshot; problem
             {problem.options && <ol className={`print-copy-options${assets.some(asset => asset.role === 'option') ? ' has-diagrams' : ''}`}>{problem.options.map(option => <Option key={option.label} option={option} assets={assets} images={images} />)}</ol>}
           </> : <p className="print-warning">题干尚待提取。</p>}
           {!!reviewNotes.length && <div className="print-warning">{reviewNotes.map(text => <MathText key={text} text={text} />)}</div>}
-          {copy && <div className="print-copy-answer" data-testid="copy-answer" data-adjusted={answer?.changed ? 'true' : 'false'}><strong>作答：</strong>{answer?.selectedOptions ? <span>{answer.selectedOptions.join('、')}</span> : answer?.answer ? <MathText text={!answer.changed && original?.candidate.responseValue ? original.candidate.responseValue : answer.answer} /> : <span>未作答</span>}</div>}
+          {copy && <div className={`print-copy-answer${incorrect ? ' is-incorrect' : ''}`} data-testid="copy-answer" data-adjusted={answer?.changed ? 'true' : 'false'}><strong>作答：</strong>{answer?.selectedOptions ? <span>{answer.selectedOptions.join('、')}</span> : answer?.answer ? <MathText text={!answer.changed && original?.candidate?.responseValue ? original.candidate?.responseValue : answer.answer} /> : <span>{original?.candidate ? '未作答' : '未保存作答'}</span>}</div>}
           {answer && !answer.changed && answer.selectedOptions?.some(label => !problem?.options?.some(option => option.label === label)) && <p className="print-warning">原作答选项未见于整理内容，请核对；原回答保留。</p>}
         </div></div>
         <footer className="print-page-footer"><span>{snapshot.batch.title}</span><span>{copy ? `第${String(copy.copyIndex).padStart(2, '0')}份 · 对${copy.correct} / 错${copy.incorrect}` : '题目'} · {question.ordinal} / {problems.length}</span></footer>

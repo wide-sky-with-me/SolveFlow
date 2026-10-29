@@ -15,6 +15,6 @@ for (const [name, paths] of Object.entries(manifest)) {
   }
 }
 const policy = {};
-for (const name of ['SYSTEM', 'VERIFIER', 'CONTENT_POLICY']) policy[name] = await readFile(new URL(`resources/${name}.md`, root), 'utf8');
+for (const name of ['SYSTEM', 'VERIFIER', 'CONTENT_POLICY', 'ACT_TRANSCRIBER']) policy[name] = await readFile(new URL(`resources/${name}.md`, root), 'utf8');
 await writeFile(new URL('src/pi/mobile-resources.ts', root), `// Generated from reviewed student resources by scripts/prepare-mobile-agent.mjs.\nexport const resources: Readonly<Record<string, string>> = ${JSON.stringify(files)};\nexport const skills = ${JSON.stringify(skills)};\nexport const policies = ${JSON.stringify(policy)};\n`);
 console.log('Prepared reviewed mobile skills and student policies.');

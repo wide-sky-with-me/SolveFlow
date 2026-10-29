@@ -23,3 +23,14 @@ it.each(['text/event-stream', 'application/json'])('rejects oversized %s, cancel
   expect(cancelled).toBe(1); expect(upstream.body?.locked).toBe(false);
   expect(failures).toEqual([{ status: 200, code: 'MODEL_OUTPUT_INVALID', reason: 'output_limit' }]);
 });
+it('identifies an explicitly marked upload timeout without exposing the response body', async () => {
+  const failures: unknown[] = []; let calls = 0;
+  const transport = modelTransport(profile, async () => { calls++; return new Response('private-upload-canary', { status: 408, headers: { 'x-solveflow-request-failure': 'upload-timeout' } }); }, (status, error, reason) => failures.push({ status, code: error?.code, reason }));
+  await expect(transport(url, { method: 'POST' })).rejects.toMatchObject({ code: 'MODEL_UPLOAD_TIMEOUT' });
+  expect(calls).toBe(1); expect(failures).toEqual([{ status: 408, code: 'MODEL_UPLOAD_TIMEOUT', reason: 'upload_timeout' }]);
+  expect(JSON.stringify(failures)).not.toContain('private-upload-canary');
+});
+it.each([{ status: 408, headers: {} }, { status: 400, headers: { 'x-solveflow-request-failure': 'upload-timeout' } }])('does not reinterpret an unmarked or mismatched HTTP failure: $status', async ({ status, headers }) => {
+  const transport = modelTransport(profile, async () => new Response('', { status, headers }));
+  await expect(transport(url, { method: 'POST' })).rejects.toMatchObject({ code: 'MODEL_REQUEST_REJECTED' });
+});

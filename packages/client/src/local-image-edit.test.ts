@@ -38,6 +38,54 @@ it('correction replaces active images while old and new auxiliary requests keep 
   const appended = await engine.addMaterial(record.session.id, jpeg, 2, 2);
   expect(appended.activeImageIds).toEqual([added.id, appended.materials!.at(-1)!.id]);
 });
+const actAnswer: SolveOutcome = { ...answer, candidate: { ...answer.candidate, problem: { text: 'Which original value is supported?', subject: 'math', exam: 'act', module: 'Mathematics', uncertainties: [], options: [{ label: 'F', text: '6' }, { label: 'H', text: '10' }, { label: 'J', text: '14' }] }, selectedOptions: ['H'], answer: 'The original value is 10.' } };
+const laterCorrection = 'LATER_SAT_CORRECTION: this is SAT, not ACT; the revised value is 20.';
+it.each(['verification', 'explanation', 'knowledge-list'] as const)('binds ACT %s text and evidence to the selected answer before later corrections', async kind => {
+  const { engine, repository } = setup();
+  const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20, 'act');
+  await engine.addMaterial(record.session.id, jpeg, 2, 2);
+  const original = await engine.start(record.session.id, '', undefined, async () => actAnswer);
+  await engine.waitForIdle();
+  const replacement = material();
+  const corrected = await engine.start(record.session.id, '', { kind: 'correction', sourceRunId: original.id, text: laterCorrection }, async () => answer, { imageIds: [replacement.id], additions: [replacement] });
+  await engine.waitForIdle();
+  const saved = await repository.read(record.session.id);
+  // Persisted order is authoritative even when a later run has an earlier wall clock.
+  saved.session.runs[0]!.createdAt = '2026-10-20T12:00:02.000Z';
+  saved.session.runs[1]!.createdAt = '2026-10-20T12:00:01.000Z';
+  const before = JSON.stringify(saved);
+  const oldRequest = prepareLocalRunRequest(saved, '', { kind, sourceRunId: original.id });
+  expect(oldRequest.problemCorrection).toBeUndefined();
+  expect(JSON.stringify(oldRequest.history)).not.toContain(laterCorrection);
+  expect(oldRequest.imageIds).toEqual(original.imageIds);
+  expect([...oldRequest.image.bytes]).toEqual([1, 2, 3]);
+  expect(oldRequest.materials).toHaveLength(1);
+  if (kind === 'verification') expect(oldRequest.verificationTarget).toMatchObject({ problem: { exam: 'act', options: actAnswer.candidate.problem.options }, selectedOptions: ['H'] });
+  const currentRequest = prepareLocalRunRequest(saved, '', { kind, sourceRunId: corrected.id });
+  expect(currentRequest.problemCorrection).toBe(laterCorrection);
+  expect(JSON.stringify(currentRequest.history)).toContain(laterCorrection);
+  expect(currentRequest.imageIds).toEqual([replacement.id]);
+  // Ordinary replies and explicit regeneration still use the latest conditions/images.
+  for (const followUp of ['reply', 'regenerate'] as const) {
+    const request = prepareLocalRunRequest(saved, '', { kind: followUp, sourceRunId: original.id });
+    expect(request.problemCorrection).toBe(laterCorrection);
+    expect(request.imageIds).toEqual([replacement.id]);
+  }
+  expect(JSON.stringify(saved)).toBe(before);
+});
+it('does not reintroduce a later correction through an auxiliary answer created after that correction', async () => {
+  const { engine, repository } = setup();
+  const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20, 'act');
+  const original = await engine.start(record.session.id, '', undefined, async () => actAnswer); await engine.waitForIdle();
+  await engine.start(record.session.id, '', { kind: 'correction', sourceRunId: original.id, text: laterCorrection }, async () => answer); await engine.waitForIdle();
+  const explanation = await engine.start(record.session.id, '', { kind: 'explanation', sourceRunId: original.id }, async () => actAnswer); await engine.waitForIdle();
+  const saved = await repository.read(record.session.id);
+  const request = prepareLocalRunRequest(saved, '', { kind: 'knowledge-list', sourceRunId: explanation.id });
+  expect(request.problemCorrection).toBeUndefined();
+  expect(JSON.stringify(request.history)).not.toContain(laterCorrection);
+  expect(request.focus).toMatchObject({ sourceRunId: explanation.id, answer: actAnswer.candidate.answer });
+  expect(request.imageIds).toEqual(original.imageIds);
+});
 it('a failed correction transaction saves neither images nor a run and does not dispatch', async () => {
   const { engine, repository, values, fail } = setup(); const record = await engine.create(jpeg, 2, 2);
   const source = await engine.start(record.session.id, '', undefined, async () => answer); await engine.waitForIdle();

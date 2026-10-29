@@ -27,7 +27,8 @@ export function resolveQuestionThread(runs: readonly RunView[], context: RunCont
     const parent = source.context ? visit(source.context, source.sessionId) : null;
     if (source.context && !parent) return null;
     // A reply's generated headings cannot move it out of the user's original question.
-    if (parent?.number !== undefined) return parent;
+    // Auxiliary examples cannot become new question roots for later step/verification requests.
+    if (parent && (parent.number !== undefined || isAuxiliaryContext(source.context?.kind))) return parent;
     if (sections) return number === undefined ? null : { rootRunId: source.id, number };
     const preceding = runs.slice(0, runs.findIndex(run => run.id === source.id) + 1).filter(run => run.sessionId === source.sessionId);
     const singleHistory = !preceding.some(run => run.outcome?.status === "completed" && questionSections(run.outcome.candidate));

@@ -1,7 +1,8 @@
+import { requireExportQuestions, exportStorageBlock } from './export-preflight';
 import { readFileSync } from 'node:fs';
 import { JsxEmit, ModuleKind, ScriptTarget, transpileModule } from 'typescript';
 import { afterEach, expect, it, vi } from 'vitest';
-import { LocalExportTasks, type ExportArtifact, type LocalExportTaskStore } from '@solveflow/client/local';
+import { ExportTaskFailure, LocalExportTasks, type ExportArtifact, type LocalExportTaskStore } from '@solveflow/client/local';
 import { BatchPrintCopySchema, LocalRecordSchema, MAX_EXPORT_TASK_TIMEOUT_MS, type ExportTask } from '@solveflow/contracts/local';
 import { planBatchPrintCopies, questionsForBatchPrint, questionsForBatchQuestionPrint, questionsForCapturedBatchQuestionPrint, questionsForCollectedBatchQuestionPrint, projectCapturedBatchPrintSnapshot } from '@solveflow/client/presentation';
 import { waitForExportInitialization } from './export-admission.web';
@@ -18,11 +19,12 @@ function fixture(mode = 'answers', realQueue = false, accounting: { maximumBytes
   };
   const gates: Array<() => void> = [];
   const sequence: string[] = [];
+  const usage = vi.fn(async () => ({ usedBytes: 0, limitBytes: 536870912, availableBytes: 536870912, fileCount: 0, browserAvailableBytes: null as number | null }));
   const turn = vi.fn((signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
     sequence.push('turn'); gates.push(() => signal?.aborted ? reject(signal.reason) : resolve());
   }));
   const initialize = vi.fn(async () => {});
-  const enqueue = vi.fn(async (metadata: unknown, runner: unknown, _signal?: AbortSignal) => ({ id: 'accepted', metadata, runner }));
+  const enqueue = vi.fn(async (metadata: unknown, runner: unknown, _signal?: AbortSignal) => ({ id: 'accepted', title: typeof metadata === 'object' && metadata !== null && 'title' in metadata ? metadata.title : undefined, metadata, runner }));
   const unsubscribe = vi.fn();
   const subscribe = vi.fn(() => unsubscribe);
   const questions = vi.fn((snapshot: { pages: number; invalid?: boolean }) => {
@@ -35,10 +37,11 @@ function fixture(mode = 'answers', realQueue = false, accounting: { maximumBytes
   const bytes = vi.fn((input: { bytes: number }) => { sequence.push('bytes'); return accounting.countBytes ? accounting.countBytes(input) : input.bytes; });
   const run = vi.fn(async (_runtime: unknown, _input: typeof input, _signal: AbortSignal, _progress: (value: string) => void, _checkpoint: () => Promise<void>) => ({ name: 'export.pdf', mimeType: 'application/pdf', data: new Uint8Array([1, 2, 3]) }));
   const dependencies: Record<string, unknown> = {
-    '@solveflow/client/local': { ExportTaskFailure: Error, LocalExportTasks: realQueue ? LocalExportTasks : class { initialize = initialize; enqueue = enqueue; subscribe = subscribe; getSnapshot = () => []; } },
+    '@solveflow/client/local': { ExportTaskFailure, LocalExportTasks: realQueue ? LocalExportTasks : class { initialize = initialize; enqueue = enqueue; subscribe = subscribe; getSnapshot = () => []; } },
     '@solveflow/contracts/local': { MAX_BATCH_PRINT_BYTES: accounting.maximumBytes ?? 100 },
     '@solveflow/client/presentation': { questionsForBatchQuestionPrint: questions, questionsForCapturedBatchQuestionPrint: capturedQuestions, questionsForCollectedBatchQuestionPrint: collectedQuestions },
-    './export-task-store.web': { createExportTaskStore: () => store },
+    './export-task-store.web': { createExportTaskStore: () => Object.assign(store, { usage }) },
+    './export-preflight': { requireExportQuestions, exportStorageBlock },
     './run-batch-export.web': { runCapturedBatchExport: run, runBatchExport: () => { throw new Error('GENERIC_RENDERER_USED_FOR_CAPTURE'); } },
     './download-batch-pdfs.web': { requireBatchPdfPageCount: pageCount },
     './export-input-bytes': { exportInputBytes: bytes },
@@ -61,10 +64,35 @@ function fixture(mode = 'answers', realQueue = false, accounting: { maximumBytes
   };
   const start = (signal?: AbortSignal) => manager.submit(input, undefined, signal);
   const startCollected = (signal?: AbortSignal) => manager.submitCollected(input, undefined, signal);
-  const advance = async () => { const gate = gates.shift(); if (!gate) throw new Error('TURN_MISSING'); gate(); await flush(); };
+  const advance = async () => {
+    // Storage inspection adds promise continuations, not a new browser task; wait for the requested gate.
+    for (let index = 0; !gates.length && index < 100; index++) await Promise.resolve();
+    const gate = gates.shift(); if (!gate) throw new Error('TURN_MISSING'); gate(); await flush(); };
   const finish = async () => { for (let index = 0; index < 4; index++) await advance(); };
-  return { manager, input, start, startCollected, advance, finish, gates, turn, sequence, initialize, enqueue, unsubscribe, subscribe, questions, capturedQuestions, collectedQuestions, pageCount, bytes, run, store, records, files };
+  return { usage, manager, input, start, startCollected, advance, finish, gates, turn, sequence, initialize, enqueue, unsubscribe, subscribe, questions, capturedQuestions, collectedQuestions, pageCount, bytes, run, store, records, files };
 }
+
+it('expires export notices and resets the lifetime for a newer notice', async () => {
+  vi.useFakeTimers(); const f = fixture();
+  const first = f.start(); await flush(); await f.finish(); await first;
+  expect(f.manager.getSnapshot().notice).toContain('已加入后台导出');
+  await vi.advanceTimersByTimeAsync(7000);
+  f.input.snapshot.batch.title = 'newer export';
+  const second = f.start(); await flush(); await f.finish(); await second;
+  await vi.advanceTimersByTimeAsync(1000); expect(f.manager.getSnapshot().notice).toContain('newer export');
+  await vi.advanceTimersByTimeAsync(7000); expect(f.manager.getSnapshot().notice).toBe('');
+  const third = f.start(); await flush(); await f.finish(); await third;
+  f.manager.dismiss(); expect(f.manager.getSnapshot().notice).toBe(''); expect(vi.getTimerCount()).toBe(0);
+});
+
+it('captures wrong-answer marking with the accepted plan before later dialog edits', async () => {
+  const f = fixture(); const input = { ...f.input, markIncorrect: true };
+  const pending = f.manager.submit(input); await flush(); await f.advance(); await f.advance(); input.markIncorrect = false;
+  await f.advance(); await f.advance(); await pending;
+  expect(f.enqueue.mock.calls[0]?.[0]).toMatchObject({ markIncorrect: true });
+  const runner = f.enqueue.mock.calls[0]?.[1]; if (typeof runner !== 'function') throw new Error('QUEUED_RUNNER');
+  await runner(new AbortController().signal, vi.fn()); expect(f.run.mock.calls[0]?.[1]).toMatchObject({ markIncorrect: true });
+});
 
 it.each(['synchronous', 'microtask'].flatMap(phase => [false, true].map(storageFault => ({ phase, storageFault }))))('real queue skips Web preparation on $phase pre-dispatch cancellation (storage fault: $storageFault)', async ({ phase, storageFault }) => {
   const f = fixture('answers', true); const prepare = vi.fn(async () => ({})); const cancellations: Promise<void>[] = []; let requested = false;
@@ -259,7 +287,7 @@ it('passes admission cancellation to the queue and retains ownership until its w
   await expect(f.start()).rejects.toThrow('正在加入导出队列');
   release(); expect(await outcome).toBe(reason); expect(f.unsubscribe).toHaveBeenCalledTimes(1);
   expect(f.manager.getSnapshot().notice).toBe('');
-  f.enqueue.mockImplementation(async (metadata, runner) => ({ id: 'accepted', metadata, runner }));
+  f.enqueue.mockImplementation(async (metadata, runner) => ({ id: 'accepted', title: 'title', metadata, runner }));
   f.input.bytes = 100; const next = f.start(); await flush(); await f.finish(); await expect(next).resolves.toHaveProperty('id', 'accepted');
 });
 
@@ -606,4 +634,17 @@ it.each([1, 2].flatMap(stop => [
   expect(f.render).not.toHaveBeenCalled(); expect(f.build).not.toHaveBeenCalled(); expect(f.dispose).not.toHaveBeenCalled();
   expect(write).not.toHaveBeenCalled(); expect(f.files.size).toBe(0); expect(f.manager.tasks.pendingSaveIds).toEqual([]); expect(f.manager.tasks.storageBlocked).toBe(false);
   await recoverRealCapturedRunner(f); expect(write).toHaveBeenCalledTimes(1); expect(parse).toHaveBeenCalledTimes(2 + stop - 1 + 4);
+});
+
+it('rejects a full cache before capture, preparation or PDF generation', async () => {
+  const f = fixture(); f.usage.mockResolvedValue({ usedBytes: 536870912, limitBytes: 536870912, availableBytes: 0, fileCount: 1, browserAvailableBytes: null });
+  const pending = f.start().catch((cause: unknown) => cause); await f.advance();
+  expect(await pending).toBeInstanceOf(Error); expect(f.enqueue).not.toHaveBeenCalled(); expect(f.run).not.toHaveBeenCalled(); expect(f.bytes).not.toHaveBeenCalled();
+});
+it('rechecks storage when queued work dispatches, before expensive preparation starts', async () => {
+  const f = fixture('answers', true); const prepare = vi.fn(async () => ({}));
+  f.usage.mockResolvedValueOnce({ usedBytes: 0, limitBytes: 536870912, availableBytes: 536870912, fileCount: 0, browserAvailableBytes: null }).mockResolvedValue({ usedBytes: 536870912, limitBytes: 536870912, availableBytes: 0, fileCount: 1, browserAvailableBytes: null });
+  const pending = f.manager.submit(f.input, prepare); await f.finish(); const accepted = await pending; await f.manager.tasks.waitForIdle();
+  expect(f.manager.tasks.getSnapshot().find((task: ExportTask) => task.id === accepted.id)).toMatchObject({ status: 'failed', error: expect.stringContaining('缓存已满') });
+  expect(prepare).not.toHaveBeenCalled(); expect(f.run).not.toHaveBeenCalled(); expect(f.files.size).toBe(0);
 });

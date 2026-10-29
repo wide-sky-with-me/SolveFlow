@@ -2,11 +2,16 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { ExportTaskFailure } from '@solveflow/client/local';
 import type { BatchPdfDownloadProgress } from './download-batch-pdfs.web';
+import { directAnswerGroups, DIRECT_ANSWER_GROUP_SIZE, type DirectPrintBlock } from './direct-batch-content';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const source = readFileSync(new URL('./download-batch-pdfs.web.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
-function fixture(options: { capability?: number; limit?: number; jpeg?: string; lateRender?: boolean; renderClock?: number; abortDuringRender?: 'resolve' | 'reject'; lateOutput?: boolean; zipBytes?: number; renderError?: boolean; cloneError?: boolean; abortAfterZipResolve?: boolean; deferredRender?: boolean; releaseDuringDispose?: boolean; pdfSizes?: number[]; abortAfterEstimate?: boolean; deferredBlob?: boolean; deferredRead?: boolean; nullBlob?: boolean; blobSize?: number; mimeType?: string; blobError?: boolean; readError?: boolean; lateBlob?: boolean; lateRead?: boolean; abortAfterRead?: boolean; abortAfterBlob?: boolean; blobClock?: number; cleanupError?: boolean; frameCleanupError?: boolean; undefinedCleanup?: boolean; renderAfterClone?: boolean } = {}) {
+const directSource = readFileSync(new URL('./direct-batch-pdf.web.ts', import.meta.url), 'utf8');
+const directCompiled = ts.transpileModule(directSource, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+const resourcesSource = readFileSync(new URL('./direct-pdf-resources.web.ts', import.meta.url), 'utf8');
+const resourcesCompiled = ts.transpileModule(resourcesSource, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+function fixture(options: { capability?: number; limit?: number; artifactLimit?: number; jpeg?: string; lateRender?: boolean; renderClock?: number; abortDuringRender?: 'resolve' | 'reject'; lateOutput?: boolean; zipBytes?: number; renderError?: boolean; cloneError?: boolean; abortAfterZipResolve?: boolean; deferredRender?: boolean; releaseDuringDispose?: boolean; pdfSizes?: number[]; abortAfterEstimate?: boolean; deferredBlob?: boolean; deferredRead?: boolean; nullBlob?: boolean; blobSize?: number; mimeType?: string; blobError?: boolean; readError?: boolean; lateBlob?: boolean; lateRead?: boolean; abortAfterRead?: boolean; abortAfterBlob?: boolean; blobClock?: number; cleanupError?: boolean; frameCleanupError?: boolean; undefinedCleanup?: boolean; renderAfterClone?: boolean } = {}) {
   let clock = 0; let disposed = 0; let encoded = 0; let outputs = 0; let fits = 0; let cleanupCalls = 0;
   const cleanupError = new Error('UNTRUSTED_CLEANUP_DETAIL');
   const controller = new AbortController(); const progress: number[] = []; const details: BatchPdfDownloadProgress[] = []; const elements: unknown[] = [];
@@ -18,6 +23,7 @@ function fixture(options: { capability?: number; limit?: number; jpeg?: string; 
   const frame = { content: root, doc: { querySelectorAll: () => [] }, dispose: () => { disposed++; if (options.frameCleanupError && disposed === 1) throw cleanupError; if (options.releaseDuringDispose && release) { const complete = release; release = undefined; complete(); } } };
   let releaseBlob: (() => void) | undefined; let releaseRead: (() => void) | undefined; let reads = 0;
   const requests: Array<[string | undefined, unknown]> = []; const imageData: unknown[] = []; const imageCalls: unknown[][] = [];
+  const outlines: { title: string; pageNumber: number }[] = []; const links: { pageNumber: number; top: number }[] = [];
   const blobBytes = Uint8Array.from({ length: options.blobSize ?? 3 }, (_, index) => (index * 37 + 17) % 256);
   const blob = new Blob([blobBytes], { type: options.mimeType ?? 'image/jpeg' });
   vi.spyOn(blob, 'arrayBuffer').mockImplementation(() => {
@@ -33,21 +39,28 @@ function fixture(options: { capability?: number; limit?: number; jpeg?: string; 
     toBlob: (callback: BlobCallback, type?: string, quality?: unknown) => {
       encoded++; requests.push([type, quality]);
       if (options.blobError) throw new Error('UNTRUSTED_ENCODER_DETAIL');
-      const complete = () => { if (options.lateBlob) clock = 60000; if (options.blobClock !== undefined) clock = options.blobClock; callback(options.nullBlob ? null : blob); if (options.abortAfterBlob) queueMicrotask(() => controller.abort()); };
+      const complete = () => { if (options.lateBlob) clock = 60000; if (options.blobClock !== undefined) clock = options.blobClock; callback(options.nullBlob ? null : type === 'image/png' && !options.mimeType ? new Blob([blobBytes], { type }) : blob); if (options.abortAfterBlob) queueMicrotask(() => controller.abort()); };
       if (options.deferredBlob) releaseBlob = complete; else queueMicrotask(complete);
     },
   };
   let release: (() => void) | undefined;
   const fit = () => { fits++; if (options.cloneError) throw new Error('UNTRUSTED_CLONE_DETAIL'); };
   class Pdf {
-    addPage() {} addImage(data: unknown, ...args: unknown[]) { imageData.push(data); imageCalls.push([data, ...args]); } setFontSize() {} setTextColor() {} text() {}
+    pages = 1;
+    outline = { add: (_parent: unknown, title: string, options: { pageNumber: number }) => outlines.push({ title, ...options }) };
+    link(_x: number, _y: number, _width: number, _height: number, target: { pageNumber: number; top: number }) { links.push(target); }
+    setDisplayMode() {}
+    setFont() {} getTextWidth(text: string) { return text.length * 8; } setFillColor() {} rect() {}
+    addPage() { this.pages++; } getNumberOfPages() { return this.pages; } setPage() {} addImage(data: unknown, ...args: unknown[]) { imageData.push(data); imageCalls.push([data, ...args]); } setFontSize() {} setTextColor() {} text() {}
     output() { outputs++; if (options.lateOutput) clock = 60000; return new ArrayBuffer(options.pdfSizes?.[outputs - 1] ?? 4); }
   }
   const dependencies: Record<string, object> = {
-    '@solveflow/contracts/local': { MAX_BATCH_PRINT_BYTES: options.limit ?? 1000, MAX_BATCH_PRINT_COPIES: 20, MAX_BATCH_PRINT_PAGES: 300 },
+    '@solveflow/contracts/local': { MAX_BATCH_PRINT_BYTES: options.limit ?? 1000, MAX_EXPORT_PDF_BYTES: options.limit ?? 1000, MAX_EXPORT_ARTIFACT_BYTES: options.artifactLimit ?? options.limit ?? 1000, MAX_BATCH_PRINT_COPIES: 20, MAX_BATCH_PRINT_PAGES: 300 },
     '@solveflow/client/local': { ExportTaskFailure },
     './print-batch.web.ts': { createBatchPrintFrame: async (element: unknown) => { elements.push(element); return frame; }, fitBatchPrintMath: () => {} },
     './print-question-pages.web': { fitBatchPrintQuestionPages: fit, fitBatchPrintQuestionPage: fit },
+    './reading-pdf-scope.web': { createReadingPdfScope: () => null },
+    './direct-batch-content': { directAnswerGroups, DIRECT_ANSWER_GROUP_SIZE },
     './pdf-render-lifecycle.web': {
       createPdfRenderLifecycle: (_doc: object, check: () => void) => {
         let closed = false; const cleanups = new Set<() => void>();
@@ -81,10 +94,26 @@ function fixture(options: { capability?: number; limit?: number; jpeg?: string; 
   if (typeof build !== 'function') throw new Error('BUILD_MISSING');
   const format = (value: BatchPdfDownloadProgress): string => { const formatter = exported.formatBatchPdfProgress; if (typeof formatter !== 'function') throw new Error('FORMAT_MISSING'); const result: unknown = formatter(value); if (typeof result !== 'string') throw new Error('FORMAT_INVALID'); return result; };
   const report = (value: BatchPdfDownloadProgress) => { progress.push(value.page); details.push(value); if (options.abortAfterEstimate && value.estimatedBytes !== undefined) controller.abort(); };
-  return { cleanupError, build: (copies = 1) => build(Array.from({ length: copies }, (_, index) => ({ element: root, name: `copy-${index + 1}.pdf` })), 'batch.zip', controller.signal, report), buildWithElement: (element: unknown) => build([{ element, name: 'copy.pdf' }], 'batch.zip', controller.signal, report), element: root, elements, format, details, canvas, counts: () => ({ disposed, encoded, outputs }), fits: () => fits, progress, waiting: () => !!release, release: () => { if (!release) throw new Error('RENDER_NOT_WAITING'); release(); }, requests, imageData, imageCalls, setClock: (value: number) => { clock = value; }, reads: () => reads, cancel: () => controller.abort(), waitingBlob: () => !!releaseBlob, completeBlob: () => { if (!releaseBlob) throw new Error('ENCODER_NOT_WAITING'); releaseBlob(); }, waitingRead: () => !!releaseRead, completeRead: () => { if (!releaseRead) throw new Error('READ_NOT_WAITING'); releaseRead(); } };
+  const directExports: Record<string, unknown> = {};
+  const context = { measureText: (text: string) => ({ width: text.length * 8 }), setTransform() {}, fillRect() {}, fillText() {} };
+  const doc = { createElement: () => Object.assign(canvas, { getContext: () => context }) };
+  const resourcesExports: Record<string, unknown> = {};
+  const loadDependency = (name: string) => name === './download-batch-pdfs.web' ? exported : name === './direct-pdf-resources.web' ? resourcesExports : dependencies[name] ?? {};
+  new Function('require', 'exports', 'document', resourcesCompiled)(loadDependency, resourcesExports, doc);
+  new Function('require', 'exports', 'document', directCompiled)(loadDependency, directExports, doc);
+  const directBuild = directExports.buildDirectBatchPdfs;
+  if (typeof directBuild !== 'function') throw new Error('DIRECT_BUILD_MISSING');
+  const buildDirect = (copies = 1, blocks: DirectPrintBlock[] = [{ kind: 'text', text: 'Saved question and answer' }]) => directBuild(Array.from({ length: copies }, (_, index) => ({ name: `copy-${index + 1}.pdf`, blocks })), 'batch.zip', controller.signal, report, () => {});
+  return { cleanupError, outlines, links, buildDirect, build: (copies = 1) => build(Array.from({ length: copies }, (_, index) => ({ element: root, name: `copy-${index + 1}.pdf` })), 'batch.zip', controller.signal, report), buildWithElement: (element: unknown) => build([{ element, name: 'copy.pdf' }], 'batch.zip', controller.signal, report), element: root, elements, format, details, canvas, counts: () => ({ disposed, encoded, outputs }), fits: () => fits, progress, waiting: () => !!release, release: () => { if (!release) throw new Error('RENDER_NOT_WAITING'); release(); }, requests, imageData, imageCalls, setClock: (value: number) => { clock = value; }, reads: () => reads, cancel: () => controller.abort(), waitingBlob: () => !!releaseBlob, completeBlob: () => { if (!releaseBlob) throw new Error('ENCODER_NOT_WAITING'); releaseBlob(); }, waitingRead: () => !!releaseRead, completeRead: () => { if (!releaseRead) throw new Error('READ_NOT_WAITING'); releaseRead(); } };
 }
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 describe('PDF resource limits and classified failures', () => {
+  it('does not present an unfinished pagination estimate as the final page total', () => {
+    const f = fixture();
+    const progress = { copy: 1, copies: 2, page: 3, pages: 27, pagesFinal: false };
+    expect(f.format(progress)).toBe('生成第 1 / 2 份 · 第 3 页（总页数统计中）');
+    expect(f.format({ ...progress, page: 31, pages: 31, pagesFinal: true })).toBe('生成第 1 / 2 份 · 第 31 / 31 页');
+  });
   it.each([0, 1, 3])('fails before creating a frame for renderer capability %s', async capability => {
     const f = fixture({ capability }); const outcome = f.build();
     await expect(outcome).rejects.toBeInstanceOf(ExportTaskFailure);
@@ -194,7 +223,7 @@ describe('PDF resource limits and classified failures', () => {
     try {
       expect(timerError).toBeUndefined(); expect(settled).toBe(true);
       expect(failure).toBeInstanceOf(ExportTaskFailure);
-      expect(failure).toMatchObject({ message: 'PDF 资源处理超时，请重试。', cause: expect.objectContaining({ errors: expect.arrayContaining([f.cleanupError]) }) });
+      expect(failure).toMatchObject({ message: '第 1 / 1 份，第 1 / 1 页：PDF 资源处理超时，请重试。', cause: expect.objectContaining({ errors: expect.arrayContaining([f.cleanupError]) }) });
       expect(f.counts().disposed).toBeGreaterThan(0); expect(f.counts().outputs).toBe(0);
       complete(); await vi.advanceTimersByTimeAsync(0);
       expect(f.canvas.width).toBe(0); expect(f.canvas.height).toBe(0); expect(f.imageData).toEqual([]);
@@ -213,7 +242,8 @@ describe('PDF resource limits and classified failures', () => {
     const result = await observed; expect(result).toHaveProperty('error');
     if (!('error' in result)) throw new Error('EXPECTED_FAILURE');
     const message = ending === 'cancel' ? '导出已取消。' : 'PDF 资源处理超时，请重试。';
-    expect(result.error).toMatchObject({ message, cause: expect.objectContaining({ errors: [expect.objectContaining({ message }), expect.objectContaining({ errors: [undefinedCleanup ? undefined : f.cleanupError, f.cleanupError] })] }) });
+    const contextualMessage = ending === 'cancel' ? message : `第 1 / 1 份，第 1 / 1 页：${message}`;
+    expect(result.error).toMatchObject({ message: contextualMessage, cause: expect.objectContaining({ errors: [expect.objectContaining({ message }), expect.objectContaining({ errors: [undefinedCleanup ? undefined : f.cleanupError, f.cleanupError] })] }) });
     expect(result.error instanceof ExportTaskFailure).toBe(ending === 'timer'); expect(f.counts().disposed).toBeGreaterThan(0);
     f.release(); await vi.advanceTimersByTimeAsync(0);
     expect(f.canvas.width).toBe(0); expect(f.canvas.height).toBe(0); expect(f.counts().outputs).toBe(0); expect(f.imageData).toEqual([]);
@@ -246,6 +276,68 @@ describe('PDF resource limits and classified failures', () => {
   it('checks the complete archive as well as its constituent PDFs', async () => {
     const f = fixture({ limit: 100, zipBytes: 101 });
     await expect(f.build(2)).rejects.toBeInstanceOf(ExportTaskFailure); expect(f.counts().outputs).toBe(2);
+  });
+  it('exports ten copies whose aggregate exceeds the single-PDF budget', async () => {
+    const f = fixture({ limit: 100, artifactLimit: 1000, pdfSizes: Array.from({ length: 10 }, () => 80), zipBytes: 820 });
+    const file = await f.build(10);
+    expect(file).toMatchObject({ mimeType: 'application/zip' }); expect(file.data).toHaveLength(820);
+    expect(f.counts()).toEqual({ disposed: 10, encoded: 10, outputs: 10 });
+  });
+  it('keeps the single-PDF boundary despite a larger archive allowance', async () => {
+    const f = fixture({ limit: 100, artifactLimit: 1000, pdfSizes: [101] });
+    await expect(f.build()).rejects.toBeInstanceOf(ExportTaskFailure);
+    expect(f.counts()).toEqual({ disposed: 1, encoded: 1, outputs: 1 });
+  });
+  it('still rejects an aggregate above its own archive allowance', async () => {
+    const f = fixture({ limit: 100, artifactLimit: 150, pdfSizes: [80, 80] });
+    await expect(f.build(2)).rejects.toBeInstanceOf(ExportTaskFailure);
+    expect(f.counts()).toEqual({ disposed: 2, encoded: 2, outputs: 2 });
+  });
+  it('uses the archive budget for ten direct copies and reports measured estimates', async () => {
+    const f = fixture({ limit: 100, artifactLimit: 1000, pdfSizes: Array.from({ length: 10 }, () => 80), zipBytes: 820 });
+    const file = await f.buildDirect(10);
+    expect(file).toMatchObject({ mimeType: 'application/zip' }); expect(file.data).toHaveLength(820);
+    expect(f.counts()).toEqual({ disposed: 0, encoded: 0, outputs: 10 }); expect(f.canvas.width).toBe(0);
+    expect(f.details[0]?.estimatedBytes).toBeUndefined(); expect(f.details[1]?.estimatedBytes).toBe(800 + 2048 * 10);
+  });
+  it('reuses one encoded Unicode line across ten direct copies', async () => {
+    const f = fixture({ limit: 100, artifactLimit: 1000, pdfSizes: Array.from({ length: 10 }, () => 80), zipBytes: 820 });
+    const file = await f.buildDirect(10, [{ kind: 'text', text: '合成练习' }]);
+    expect(file).toMatchObject({ mimeType: 'application/zip' }); expect(file.data).toHaveLength(820);
+    expect(f.counts()).toEqual({ disposed: 0, encoded: 1, outputs: 10 }); expect(f.canvas.width).toBe(0);
+  });
+  it('points the answer table and unique bookmarks at the actual question pages after a long continuation', async () => {
+    const f = fixture({ limit: 100000 });
+    await f.buildDirect(1, [
+      { kind: 'text', text: 'ACT', heading: true },
+      { kind: 'answer-table', entries: [1, 2].map(ordinal => ({ key: `q${ordinal}`, ordinal, answer: '（D）', incorrect: false })) },
+      { kind: 'text', text: '第 1 题', heading: true, anchor: { key: 'q1', title: '第 1 题' } },
+      { kind: 'text', text: 'Original sentence.\n'.repeat(100) },
+      { kind: 'text', text: '第 2 题', heading: true, anchor: { key: 'q2', title: '第 2 题' } },
+    ]);
+    expect(f.outlines[0]).toEqual({ title: '答案表', pageNumber: 1 });
+    expect(f.outlines[1]).toEqual({ title: '第 1 题', pageNumber: 2 });
+    expect(f.outlines[2]?.pageNumber).toBeGreaterThan(3);
+    expect(f.links.map(link => link.pageNumber)).toEqual(f.outlines.slice(1).map(outline => outline.pageNumber));
+    expect(f.links.every(link => link.top >= 0 && link.top < 297)).toBe(true);
+  });
+  it.each([{ answer: '（J）', firstQuestionPage: 2, linksPerAnswer: 1 }, { answer: '（J）'.repeat(6), firstQuestionPage: 3, linksPerAnswer: 2 }])('starts question destinations on page $firstQuestionPage after a 100-entry overview', async ({ answer, firstQuestionPage, linksPerAnswer }) => {
+    const f = fixture({ limit: 100000 });
+    await f.buildDirect(1, [
+      { kind: 'answer-table', entries: Array.from({ length: 100 }, (_, index) => ({ key: `q${index + 1}`, ordinal: index + 1, answer, incorrect: false })) },
+      ...Array.from({ length: 100 }, (_, index): DirectPrintBlock => ({ kind: 'text', text: `第 ${index + 1} 题`, heading: true, anchor: { key: `q${index + 1}`, title: `第 ${index + 1} 题` } })),
+    ]);
+    expect(f.outlines).toHaveLength(101); expect(f.links).toHaveLength(100 * linksPerAnswer);
+    expect(f.outlines[1]).toEqual({ title: '第 1 题', pageNumber: firstQuestionPage });
+    expect(f.links.map(link => link.pageNumber)).toEqual(f.outlines.slice(1).flatMap(outline => Array.from({ length: linksPerAnswer }, () => outline.pageNumber)));
+  });
+  it.each([{ limit: 100, artifactLimit: 1000, pdfSizes: [101], copies: 1 }, { limit: 100, artifactLimit: 150, pdfSizes: [80, 80], copies: 2 }])('retains direct single and aggregate boundaries %j', async ({ copies, ...options }) => {
+    const f = fixture(options); await expect(f.buildDirect(copies)).rejects.toBeInstanceOf(ExportTaskFailure);
+    expect(f.canvas.width).toBe(0); expect(f.counts().outputs).toBe(copies);
+  });
+  it('cancels direct exports at their first measured estimate without starting later copies', async () => {
+    const f = fixture({ abortAfterEstimate: true }); await expect(f.buildDirect(10)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(f.counts()).toEqual({ disposed: 0, encoded: 0, outputs: 1 }); expect(f.canvas.width).toBe(0);
   });
   it('does not classify arbitrary third-party renderer details as trusted UI messages', async () => {
     const f = fixture({ renderError: true });

@@ -51,3 +51,18 @@ it('retains explicit selected labels in single and multi-question conversation c
   expect(candidateHistoryAnswer({ answer: 'A short reason.', selectedOptions: ['H'] })).toBe('答案：H\n\nA short reason.');
   expect(candidateHistoryAnswer({ answer: 'Summary', questions: [{ number: 2, selectedOptions: ['C'], answer: 'Reason for this question.' }] })).toContain('第2题：答案：C');
 });
+it.each(['verification', 'explanation', 'knowledge-list'] as const)('uses the shared answer-version boundary for server %s context', async kind => {
+  const { answerContextHistory, conversationHistory, resolveLearningContext } = await import('./history.js');
+  const { RunViewSchema } = await import('@solveflow/contracts/http');
+  const root = RunViewSchema.parse({ schemaVersion: 1, id: '00000000-0000-4000-8000-000000000001', sessionId: '00000000-0000-4000-8000-000000000002', createdAt: '2026-10-20T12:00:02.000Z', status: 'completed', seq: 1, message: '', outcome: { schemaVersion: 1, status: 'completed', verified: false, verificationStatus: 'not_requested', verification: null, warning: null, candidate: { schemaVersion: 1, kind: 'answer', problem: { text: 'Original ACT grammar task.', exam: 'act', subject: 'english', uncertainties: [] }, answer: 'Original ACT answer.', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] } } });
+  const later = RunViewSchema.parse({ ...root, id: '00000000-0000-4000-8000-000000000003', createdAt: '2026-10-20T12:00:01.000Z', context: { kind: 'correction', sourceRunId: root.id, text: 'LATER_CORRECTION' }, message: 'Changed question.' });
+  const previous = [root, later];
+  const context = { kind, sourceRunId: root.id };
+  const learning = resolveLearningContext(previous, context);
+  const history = conversationHistory(answerContextHistory(previous, context), learning.focus ? 4096 : 12288);
+  expect(learning.problemCorrection).toBeUndefined();
+  expect(history).toHaveLength(1);
+  expect(JSON.stringify(history)).not.toContain('LATER_CORRECTION');
+  const currentContext = { kind, sourceRunId: later.id };
+  expect(resolveLearningContext(previous, currentContext).problemCorrection).toBe('LATER_CORRECTION');
+});

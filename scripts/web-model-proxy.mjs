@@ -6,6 +6,7 @@ import { pipeline } from 'node:stream/promises';
 import { MAX_DEVICE_PHASE_DURATION_MS, MAX_MODEL_STREAM_BYTES, MAX_MODEL_JSON_BYTES } from '../packages/contracts/dist/agent.js';
 import { MAX_LOCAL_MODEL_RUNS } from '../packages/contracts/dist/local.js';
 import { WebModelUpdateSchema, WebModelTestSchema, WebModelPresetCreateSchema } from '../packages/contracts/dist/local.js';
+import { WEB_CONFIG_BODY_TIMEOUT_MS, WEB_MODEL_BODY_TIMEOUT_MS, WEB_MODEL_BODY_IDLE_TIMEOUT_MS } from './web-request-limits.mjs';
 const json = (res, status, message) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify({ error: { message } })); };
 function localRequest(req) {
   try {
@@ -17,14 +18,36 @@ function localRequest(req) {
 }
 // Decision: .agents/notes/implemented/architecture/2026-10-08-local-web-environment.md
 // Decision: .agents/notes/implemented/agent/2026-10-08-device-time-and-stream-budget.md
-async function readBody(req, limit) {
-  const chunks = []; let size = 0;
-  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
-    size += chunk.length;
-    if (size > limit) { req.resume(); throw new Error('REQUEST_TOO_LARGE'); }
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
+async function readBody(req, limit, timeoutMs = WEB_CONFIG_BODY_TIMEOUT_MS, idleTimeoutMs = null) {
+  // Decision: .agents/notes/implemented/architecture/2026-10-21-web-request-body-deadline.md
+  // Decision: .agents/notes/implemented/architecture/2026-10-22-remote-web-upload-budget.md
+  return new Promise((resolve, reject) => {
+    const chunks = []; let size = 0; let idleTimer;
+    const finish = error => {
+      clearTimeout(timer); clearTimeout(idleTimer); req.off('data', data); req.off('end', end); req.off('error', failed); req.off('close', closed);
+      if (error) { req.resume(); reject(Object.assign(error, { receivedBytes: size })); } else resolve(Buffer.concat(chunks));
+    };
+    const refreshIdle = () => { if (idleTimeoutMs !== null) { clearTimeout(idleTimer); idleTimer = setTimeout(() => finish(new Error('REQUEST_TIMEOUT')), idleTimeoutMs); } };
+    const data = chunk => {
+      size += chunk.length;
+      if (size > limit) finish(new Error('REQUEST_TOO_LARGE')); else { chunks.push(chunk); if (chunk.length) refreshIdle(); }
+    };
+    const end = () => finish();
+    const failed = () => finish(new Error('REQUEST_INTERRUPTED'));
+    const closed = () => finish(new Error('REQUEST_INTERRUPTED'));
+    const timer = setTimeout(() => finish(new Error('REQUEST_TIMEOUT')), timeoutMs);
+    refreshIdle();
+    req.on('data', data); req.once('end', end); req.once('error', failed); req.once('close', closed);
+    if (req.destroyed) closed();
+  });
+}
+function bodyTimeout(req, res, error) {
+  if (error?.message !== 'REQUEST_TIMEOUT') return false;
+  // A partial request cannot be safely reused for another HTTP request.
+  res.setHeader('Connection', 'close');
+  res.setHeader('X-SolveFlow-Request-Failure', 'upload-timeout');
+  res.once('finish', () => req.destroy());
+  json(res, 408, '请求上传超时，请重试。'); return true;
 }
 export function webModelProxy(environment, transport = fetch, observe = () => {}, modelSettings = null) {
   let active = 0; let changing = false;
@@ -49,6 +72,7 @@ export function webModelProxy(environment, transport = fetch, observe = () => {}
           : await modelSettings.save(WebModelUpdateSchema.parse(JSON.parse((await readBody(req, 32768)).toString('utf8'))));
         res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(result));
       } catch (error) {
+        if (bodyTimeout(req, res, error)) return true;
         const missingKey = error.message === '请为新增或更换服务的模型填写 API Key。';
         const presetError = ['配置预设不存在，请刷新设置。', '配置预设已满，请先移除不用的预设。', '预设名称已存在，请使用其他名称。', '本机配置存储容量不足，请精简配置。'].includes(error.message);
         const invalid = error.name === 'ZodError' || error instanceof SyntaxError || missingKey || presetError;
@@ -66,11 +90,12 @@ export function webModelProxy(environment, transport = fetch, observe = () => {}
     if (changing) { json(res, 409, '正在保存模型配置，请稍后重试。'); return true; }
     if (active >= MAX_LOCAL_MODEL_RUNS) { json(res, 429, '本地模型请求繁忙。'); return true; }
     active++;
-    const started = performance.now(); let received = 0; let dispatched = false; let upstreamStatus; let upstreamHeadersMs; let firstByteMs; let reason = 'completed'; let transportCode;
+    const started = performance.now(); let received = 0; let dispatched = false; let upstreamStatus; let upstreamHeadersMs; let firstByteMs; let reason = 'completed'; let transportCode; let requestBytes; let httpStatus;
     const controller = new AbortController(); const abort = () => { if (!res.writableFinished && reason === 'completed') reason = 'client_disconnect'; controller.abort(); if (!req.complete) req.destroy(); };
     const timer = setTimeout(() => { reason = 'timeout'; abort(); }, MAX_DEVICE_PHASE_DURATION_MS); req.on('aborted', abort); res.on('close', abort);
     try {
-      let body = await readBody(req, testing ? 65536 : 16 * 1024 * 1024); let payload;
+      let body = await readBody(req, testing ? 65536 : 16 * 1024 * 1024, WEB_MODEL_BODY_TIMEOUT_MS, WEB_MODEL_BODY_IDLE_TIMEOUT_MS); let payload;
+      requestBytes = body.length;
       try { payload = JSON.parse(body.toString('utf8')); } catch { json(res, 400, '模型请求格式无效。'); return true; }
       if (testing) {
         try { const draft = WebModelTestSchema.parse(payload); role = modelSettings.resolveRole(roleName, draft.profile, draft.key, draft.presetId); payload = draft.request; body = Buffer.from(JSON.stringify(payload)); }
@@ -94,6 +119,8 @@ export function webModelProxy(environment, transport = fetch, observe = () => {}
       const bound = new Transform({ transform(chunk, _encoding, callback) { if (chunk.length) firstByteMs ??= Math.round(performance.now() - started); received += chunk.length; if (received > responseLimit) { reason = 'response_limit'; callback(new Error('MODEL_RESPONSE_TOO_LARGE')); } else callback(null, chunk); } });
       await pipeline(source, bound, res);
     } catch (error) {
+      if (error?.message === 'REQUEST_TIMEOUT' && !dispatched) { reason = 'upload_timeout'; requestBytes = error.receivedBytes; httpStatus = 408; }
+      if (bodyTimeout(req, res, error)) return true;
       if (error?.message === 'REQUEST_TOO_LARGE') { json(res, 413, '请求超过大小限制。'); return true; }
       if (reason === 'completed') reason = 'upstream_network';
       const code = error?.cause?.code ?? error?.code;
@@ -102,7 +129,7 @@ export function webModelProxy(environment, transport = fetch, observe = () => {}
     }
     finally {
       controller.abort(); clearTimeout(timer); req.off('aborted', abort); res.off('close', abort); active--;
-      if (dispatched) observe({ type: 'web.model', timestamp: new Date().toISOString(), role: roleName, status: reason === 'completed' ? 'completed' : ['client_disconnect', 'timeout'].includes(reason) ? 'cancelled' : 'failed', reason, ...(upstreamStatus === undefined ? {} : { upstreamStatus }), ...(upstreamHeadersMs === undefined ? {} : { upstreamHeadersMs }), ...(firstByteMs === undefined ? {} : { firstByteMs }), receivedBytes: received, elapsedMs: Math.round(performance.now() - started), ...(transportCode ? { transportCode } : {}) });
+      if (dispatched || reason === 'upload_timeout') observe({ type: 'web.model', timestamp: new Date().toISOString(), role: roleName, status: reason === 'completed' ? 'completed' : ['client_disconnect', 'timeout'].includes(reason) ? 'cancelled' : 'failed', reason, dispatched, ...(httpStatus === undefined ? {} : { httpStatus }), ...(requestBytes === undefined ? {} : { requestBytes }), ...(upstreamStatus === undefined ? {} : { upstreamStatus }), ...(upstreamHeadersMs === undefined ? {} : { upstreamHeadersMs }), ...(firstByteMs === undefined ? {} : { firstByteMs }), receivedBytes: received, elapsedMs: Math.round(performance.now() - started), ...(transportCode ? { transportCode } : {}) });
     }
     return true;
   };

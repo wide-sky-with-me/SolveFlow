@@ -29,4 +29,4 @@
 
 [CI](../.github/workflows/ci.yml) 分为文档、依赖审计、离线代码与构建三个作业。审计不设忽略名单，也不以 `continue-on-error` 放行；现有未修复通告会保持该作业失败，具体状态见 [发布待办](project-status.md)。其余作业仍独立执行类型、单元与三端 JS 导出。CI 不提供模型凭据、不部署、不编译商店签名包，远端执行与本地通过分开报告。
 
-保留服务路径仅在任务涉及它时启动，见 [服务说明](subsystems/legacy-server.md)。后台测试服务必须记录 PID/URL，结束后清理本次进程。
+保留服务路径仅在任务涉及它时启动，见 [服务说明](subsystems/legacy-server.md)。后台测试服务必须记录 PID/URL，结束后清理本次进程。临时构建与缓存按[开发产物清理](cookbook/development-cleanup.md)处理，运行服务、题图和验收证据须先识别归属。

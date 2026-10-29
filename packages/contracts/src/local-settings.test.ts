@@ -8,7 +8,11 @@ it('reads old settings without concurrency and gives new queues independent defa
   expect(LocalConcurrencySchema.parse({ solver: 1, verifier: 32 })).toEqual({ solver: 1, verifier: 32 });
 });
 
-it.each([0, -1, 33, 1.5, '3', Infinity, NaN])('rejects invalid concurrency %s rather than silently clamping it', value => {
+it.each([33, 48, 64])('accepts an explicit higher concurrency of %i without changing old defaults', value => {
+  expect(LocalConcurrencySchema.parse({ solver: value, verifier: value })).toEqual({ solver: value, verifier: value });
+});
+
+it.each([0, -1, 65, 1.5, '3', Infinity, NaN])('rejects invalid concurrency %s rather than silently clamping it', value => {
   expect(LocalConcurrencySchema.safeParse({ solver: value, verifier: 3 }).success).toBe(false);
   expect(LocalConcurrencySchema.safeParse({ solver: 5, verifier: value }).success).toBe(false);
 });

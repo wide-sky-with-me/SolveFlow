@@ -52,6 +52,43 @@ async function process(page: Page) { await page.getByRole('button', { name: '整
 async function preview(page: Page) { await page.getByText('预览导出内容', { exact: true }).click(); await expect(page.getByTestId('batch-copy-document')).toBeVisible(); }
 async function history(page: Page) { return page.evaluate(() => new Promise<string[]>((resolve, reject) => { const request = indexedDB.open('solveflow-local'); request.onerror = () => reject(request.error); request.onsuccess = () => { const db = request.result; const tx = db.transaction('documents'); const read = tx.objectStore('documents').getAll(); tx.oncomplete = () => { db.close(); resolve(read.result.filter((value: unknown): value is string => typeof value === 'string' && value.includes('"session"'))); }; tx.onerror = () => { db.close(); reject(tx.error); }; }; })); }
 
+test('pending illustrations do not block a multi-copy reference export or dispatch extraction', async ({ page }, info) => {
+  const f = await setup(page); const before = await history(page); await open(page);
+  await page.getByLabel('导出份数', { exact: true }).fill('2');
+  await expect(page.getByRole('button', { name: '下载 PDF 压缩包', exact: true })).toBeEnabled();
+  await expect(page.getByRole('status', { name: '试卷整理状态' })).toContainText('待整理');
+  const pending = page.waitForEvent('download'); await page.getByRole('button', { name: '下载 PDF 压缩包', exact: true }).click();
+  const file = await pending; await file.saveAs(info.outputPath('pending-reference.zip'));
+  expect((await readFile(info.outputPath('pending-reference.zip'))).subarray(0, 2).toString()).toBe('PK');
+  expect(f.calls()).toBe(0); expect(f.unexpected()).toBe(0); expect(await history(page)).toEqual(before);
+  await preview(page); await expect(page.getByTestId('batch-copy-document').locator('img')).toHaveCount(2);
+  await expect(page.getByTestId('batch-copy-document')).toContainText('图示待核对');
+});
+test('batch image automation recalculates a saved angle locally without repeating extraction', async ({ page }) => {
+  const f = await setup(page, undefined, undefined, false, false, 22); const before = await history(page);
+  await open(page); await process(page); await perspectiveChart(page);
+  await page.getByLabel('导出题图旋转角度').fill('15');
+  await page.getByRole('button', { name: '更新图像预览', exact: true }).click();
+  await expect(page.getByRole('button', { name: '更新图像预览', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: '自动整理本批图示', exact: true }).click();
+  await expect(page.getByRole('button', { name: '自动整理本批图示', exact: true })).toBeEnabled();
+  const rotation = Number(await page.getByLabel('导出题图旋转角度').inputValue());
+  expect(rotation).toBeGreaterThan(20); expect(rotation).toBeLessThan(24);
+  expect(f.calls()).toBe(2); expect(await history(page)).toEqual(before); expect(f.errors).toEqual([]);
+});
+test('pending reference images also export two copies in the background without extraction', async ({ page }, info) => {
+  const f = await setup(page); const before = await history(page); await open(page);
+  await page.getByLabel('导出份数', { exact: true }).fill('2');
+  await page.getByRole('button', { name: '后台导出', exact: true }).click();
+  await page.getByRole('tab', { name: '我的', exact: true }).click();
+  await page.getByRole('button', { name: /^导出记录/ }).click();
+  const record = page.getByTestId('export-record').first(); await expect(record).toHaveAttribute('data-status', 'succeeded');
+  const pending = page.waitForEvent('download'); await record.getByRole('button', { name: '下载文件', exact: true }).click();
+  const file = info.outputPath('background-reference.zip'); await (await pending).saveAs(file);
+  expect((await readFile(file)).subarray(0, 2).toString()).toBe('PK');
+  expect(f.calls()).toBe(0); expect(await history(page)).toEqual(before); expect(f.errors).toEqual([]);
+});
+
 test('manual text confirmation keeps doubt but removes obsolete retained-source claims', async ({ page }) => {
   const f = await setup(page, undefined, value => { const parsed = BatchPrintLayoutSchema.parse(value); return { ...parsed, questions: parsed.questions.map(question => ({ ...question, confidence: .8, sources: question.sources.map(source => ({ ...source, kind: 'text-only', regions: [] })) })) }; });
   const before = await history(page); await open(page); await page.getByRole('button', { name: '整理题目与图示', exact: true }).click();
@@ -112,6 +149,35 @@ test('structured tables keep every row and unit in the print projection', async 
   await expect(printed.locator('tbody tr')).toHaveCount(4); await expect(printed.locator('thead')).toContainText('one-minute interval');
   await expect(printed.locator('tbody td:nth-child(2)')).toHaveText(['473', '470', '23', '20']); expect(f.calls()).toBe(2); expect(f.errors).toEqual([]);
 });
+
+test('table-rich pages keep standards mode from preflight through actual PDF generation', async ({ page }, info) => {
+  await page.addInitScript(() => new MutationObserver(records => {
+    for (const record of records) for (const node of record.addedNodes) if (node instanceof HTMLIFrameElement && node.title === '批次 PDF 打印' && node.contentWindow && node.contentDocument) {
+      const doc = node.contentDocument;
+      node.contentWindow.print = () => {
+        const pages = [...doc.querySelectorAll('[data-pdf-question]')];
+        document.documentElement.dataset.tableMode = JSON.stringify({ mode: doc.compatMode, doctype: doc.doctype?.name, pages: pages.length, text: pages.map(page => page.querySelector('.print-page-inner')?.textContent ?? '').join('') });
+        node.contentWindow?.dispatchEvent(new Event('afterprint'));
+      };
+    }
+  }).observe(document, { childList: true, subtree: true }));
+  const table = (count: number, prefix: string) => '| Trial | Measurement / cm |\n| --- | --- |\n' + Array.from({ length: count }, (_, index) => `| ${prefix}-${index + 1} | ${index + 2} |`).join('\n');
+  const f = await setup(page, undefined, value => {
+    const parsed = BatchPrintLayoutSchema.parse(value);
+    return BatchPrintLayoutSchema.parse({ ...parsed, questions: parsed.questions.map(question => question.problem.text.includes('Question 1') ? { ...question, problem: { ...question.problem, text: 'Use every measurement in both experiments.\n\n' + table(6, 'trial-A') + '\n\nCompare these observations with the second table.\n\n' + table(8, 'trial-B') + '\n\nChoose the result consistent with every row and unit.' } } : question) });
+  });
+  await open(page); await process(page); await preview(page);
+  const expected = await page.getByTestId('batch-copy-document').evaluate(root => [...root.querySelectorAll('.print-page-inner')].map(inner => inner.textContent ?? '').join(''));
+  await page.getByRole('button', { name: '打印 / 保存 PDF', exact: true }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-table-mode', /.+/);
+  const result: unknown = JSON.parse(await page.locator('html').getAttribute('data-table-mode') ?? 'null');
+  if (!object(result)) throw new Error('TABLE_MODE_RESULT');
+  expect(result.mode).toBe('CSS1Compat'); expect(result.doctype).toBe('html'); expect(result.text).toBe(expected);
+  const waiting = page.waitForEvent('download'); await page.getByRole('button', { name: '下载 PDF', exact: true }).click();
+  const file = info.outputPath('standard-table-pages.pdf'); await (await waiting).saveAs(file);
+  const bytes = await readFile(file); expect(bytes.toString('latin1').match(/\/Type \/Page\b/g)).toHaveLength(Number(result.pages));
+  expect(f.calls()).toBe(2); expect(f.unexpected()).toBe(0); expect(f.errors).toEqual([]);
+});
 test('print stems preserve explicit statement lines without rewriting saved content', async ({ page }, info) => {
   const text = 'Question 1: select the correct statements.\n\n1  Primary current is $I$.\n2  Secondary turns are 100.\n3  Resistance is 3 ohms.\n\n- Keep the original units.\n- Keep the original numbering.';
   const f = await setup(page, undefined, value => { const parsed = BatchPrintLayoutSchema.parse(value); return { ...parsed, questions: parsed.questions.map((question, index) => index ? question : { ...question, problem: { ...question.problem, text } }) }; });
@@ -145,6 +211,138 @@ test('print notes render formulas and option fractions retain readable numerator
   const noteText = await question.locator('.print-warning').first().evaluate(node => { const clone = node.cloneNode(true); if (!(clone instanceof Element)) throw new Error('NOTE_MISSING'); clone.querySelectorAll('.katex').forEach(math => math.remove()); return clone.textContent; }); expect(noteText).not.toContain('\\frac');
   const sizes = await question.locator('.print-copy-options li').first().evaluate(option => { const label = option.querySelector('strong'); const numerator = Array.from(option.querySelectorAll('.mfrac .mord')).find(node => node.textContent === '25'); if (!label || !numerator) throw new Error('FRACTION_MISSING'); return { label: parseFloat(getComputedStyle(label).fontSize), numerator: parseFloat(getComputedStyle(numerator).fontSize) }; });
   expect(sizes.numerator).toBeGreaterThanOrEqual(sizes.label * .95);
+});
+test('long preview notes stay above their footer and the next question', async ({ page }, info) => {
+  const notes = Array.from({ length: 8 }, (_, index) => [0, 1].map(part => `Review ${index * 2 + part + 1}: The circuit options A to H are diagram labels; retain all source details and verify the incomplete caption before using the answer.`).join(' '));
+  const f = await setup(page, undefined, value => { const parsed = BatchPrintLayoutSchema.parse(value); return BatchPrintLayoutSchema.parse({ ...parsed, questions: parsed.questions.map(question => ({ ...question, problem: { ...question.problem, uncertainties: notes }, sources: question.sources.map(source => ({ ...source, kind: 'text-only', regions: [] })) })) }); });
+  await open(page); await process(page); await preview(page);
+  const geometry = await page.getByTestId('copy-question').evaluateAll(pages => pages.map((page, index) => {
+    const inner = page.querySelector('.print-page-inner')?.getBoundingClientRect(); const footer = page.querySelector('.print-page-footer')?.getBoundingClientRect(); const next = pages[index + 1]?.getBoundingClientRect();
+    if (!inner || !footer) throw new Error('PREVIEW_PAGE_BOUNDS');
+    return { footerGap: footer.top - inner.bottom, nextPageGap: next ? next.top - footer.bottom : null };
+  }));
+  for (const page of geometry) { expect(page.footerGap).toBeGreaterThanOrEqual(12); if (page.nextPageGap !== null) expect(page.nextPageGap).toBeGreaterThanOrEqual(0); }
+  await expect(page.getByTestId('copy-question').first().locator('.print-warning')).toContainText('Review 16:');
+  await page.getByTestId('copy-question').first().locator('.print-page-footer').scrollIntoViewIfNeeded(); await page.screenshot({ path: info.outputPath('preview-page-boundary.png') });
+  expect(f.calls()).toBe(2); expect(f.unexpected()).toBe(0); expect(f.errors).toEqual([]);
+});
+for (const textFlow of ['paragraphs', 'single paragraph']) test(`a later long question continues automatically in print and PDF without repeating models (${textFlow})`, async ({ page }, info) => {
+  await page.addInitScript(() => new MutationObserver(records => {
+    for (const record of records) for (const node of record.addedNodes) if (node instanceof HTMLIFrameElement && node.title === '批次 PDF 打印' && node.contentWindow && node.contentDocument) {
+      const doc = node.contentDocument;
+      node.contentWindow.print = () => {
+        const sheets = [...doc.querySelectorAll<HTMLElement>('[data-pdf-question]')];
+        const bodyText = sheets.map(sheet => sheet.querySelector('.print-page-inner')?.textContent ?? '').join('');
+        const geometry = sheets.map(sheet => {
+          const inner = sheet.querySelector('.print-page-inner')?.getBoundingClientRect(), footer = sheet.querySelector('.print-page-footer')?.getBoundingClientRect(); if (!inner || !footer) throw new Error('PRINT_BOUNDS');
+          return { question: sheet.dataset.pdfQuestion, part: sheet.dataset.pdfPart, gap: footer.top - inner.bottom, points: Number(sheet.dataset.pdfFit) * 10.5, heading: sheet.querySelector('.print-page-heading')?.textContent, marked: sheet.dataset.answerIncorrect === 'true' };
+        });
+        document.documentElement.dataset.autoPages = JSON.stringify({ bodyText, geometry, images: doc.images.length, formulas: doc.querySelectorAll('.print-page-inner .katex').length });
+        node.contentWindow?.dispatchEvent(new Event('afterprint'));
+      };
+    }
+  }).observe(document, { childList: true, subtree: true }));
+  const text = Array.from({ length: 58 }, (_, index) => `Statement ${index + 1}: Keep the complete material and units（完整🙂）. The pulse travels through the medium with $x_${index + 1}=2$.`).join(textFlow === 'paragraphs' ? '\n\n' : ' ');
+  const f = await setup(page, undefined, value => { const parsed = BatchPrintLayoutSchema.parse(value); return BatchPrintLayoutSchema.parse({ ...parsed, questions: parsed.questions.map(question => question.problem.text.includes('Question 2') ? { ...question, problem: { ...question.problem, text } } : question) }); });
+  const before = await history(page); await open(page); await process(page); await page.getByLabel('第1份答错题数').fill(textFlow === 'single paragraph' ? '2' : '1'); await preview(page);
+  if (textFlow === 'single paragraph') await page.getByRole('button', { name: '标记错题', exact: true }).click();
+  const expected = await page.getByTestId('batch-copy-document').evaluate(root => ({ bodyText: [...root.querySelectorAll('.print-page-inner')].map(inner => inner.textContent ?? '').join(''), formulas: root.querySelectorAll('.print-page-inner .katex').length }));
+  await page.getByRole('button', { name: '打印 / 保存 PDF', exact: true }).click(); await expect(page.locator('html')).toHaveAttribute('data-auto-pages', /.+/);
+  const raw: unknown = JSON.parse(await page.locator('html').getAttribute('data-auto-pages') ?? 'null');
+  if (!object(raw) || !Array.isArray(raw.geometry)) throw new Error('PRINT_RESULT');
+  expect(raw.bodyText).toBe(expected.bodyText); expect(raw.formulas).toBe(expected.formulas); expect(raw.images).toBe(1);
+  const continued = raw.geometry.filter((sheet: unknown) => object(sheet) && sheet.question === '2'); expect(continued.length).toBeGreaterThan(1);
+  for (const [index, sheet] of continued.entries()) { if (!object(sheet)) throw new Error('SHEET'); expect(sheet.part).toBe(String(index + 1)); expect(sheet.marked).toBe(textFlow === 'single paragraph'); if (textFlow === 'single paragraph') expect(sheet.heading).toContain('× 作答错误'); if (index) expect(sheet.heading).toContain(`续 ${index + 1}`); }
+  for (const sheet of raw.geometry) { if (!object(sheet)) throw new Error('SHEET'); expect(sheet.gap).toBeGreaterThanOrEqual(12); expect(sheet.points).toBeGreaterThanOrEqual(8); }
+  const waiting = page.waitForEvent('download'); await page.getByRole('button', { name: '下载 PDF', exact: true }).click(); const download = await waiting;
+  const path = info.outputPath('automatic-continuation.pdf'); await download.saveAs(path); const bytes = await readFile(path); const count = bytes.toString('latin1').match(/\/Type \/Page\b/g)?.length ?? 0;
+  const jpegPages: string[] = [];
+  for (let offset = 0; offset < bytes.length;) {
+    const start = bytes.indexOf(Buffer.from([255, 216]), offset); if (start < 0) break;
+    const end = bytes.indexOf(Buffer.from([255, 217]), start + 2); if (end < 0) throw new Error('PDF_JPEG_END');
+    jpegPages.push(`data:image/jpeg;base64,${bytes.subarray(start, end + 2).toString('base64')}`); offset = end + 2;
+  }
+  expect(jpegPages).toHaveLength(count);
+  // Check pixels in the downloaded artifact as well as complete text in the print DOM.
+  const headerDifferences = await page.evaluate(async urls => {
+    const pixels: Uint8ClampedArray[] = [];
+    for (const url of urls.slice(1)) {
+      const image = new Image(); image.src = url; await image.decode();
+      const canvas = document.createElement('canvas'); canvas.width = Math.floor(image.width * .12); canvas.height = Math.floor(image.height * .035);
+      const context = canvas.getContext('2d'); if (!context) throw new Error('PDF_HEADER_CANVAS'); context.drawImage(image, 0, 0);
+      pixels.push(context.getImageData(0, 0, canvas.width, canvas.height).data); canvas.width = 0;
+    }
+    const first = pixels[0]; if (!first) throw new Error('PDF_QUESTION_HEADER');
+    return pixels.slice(1).map(value => { if (value.length !== first.length) throw new Error('PDF_HEADER_SIZE'); let difference = 0; for (let i = 0; i < first.length; i++) difference += Math.abs((first[i] ?? 0) - (value[i] ?? 0)); return difference / first.length; });
+  }, jpegPages);
+  for (const difference of headerDifferences) expect(difference).toBeLessThan(4);
+  expect(count).toBe(raw.geometry.length); expect(count).toBeGreaterThan(2); expect(f.calls()).toBe(2); expect(f.unexpected()).toBe(0); expect(f.errors).toEqual([]); expect(await history(page)).toEqual(before);
+});
+
+test('long diagram choices continue without accepting a DOM boundary below an overflowing grid sibling', async ({ page }, info) => {
+  await page.addInitScript(() => new MutationObserver(records => {
+    for (const record of records) for (const node of record.addedNodes) if (node instanceof HTMLIFrameElement && node.title === '批次 PDF 打印' && node.contentWindow && node.contentDocument) {
+      const doc = node.contentDocument;
+      node.contentWindow.print = () => {
+        document.documentElement.dataset.longChoiceText = [...doc.querySelectorAll('.print-page-inner')].map(inner => inner.textContent ?? '').join('');
+        document.documentElement.dataset.longChoicePages = String(doc.querySelectorAll('[data-pdf-question]').length);
+        node.contentWindow?.dispatchEvent(new Event('afterprint'));
+      };
+    }
+  }).observe(document, { childList: true, subtree: true }));
+  const f = await setup(page, undefined, value => {
+    const parsed = BatchPrintLayoutSchema.parse(value);
+    return BatchPrintLayoutSchema.parse({ ...parsed, questions: parsed.questions.map(question => question.problem.text.includes('Question 1') ? {
+      ...question, problem: { ...question.problem, options: question.problem.options?.map(option => ({ ...option, text: `${option.label}开始：` + '选项材料需要完整保留。'.repeat(130) + `${option.label}结尾。` })) },
+      sources: question.sources.map(source => ({ ...source, kind: 'illustrations', regions: ['A', 'B', 'C'].map((optionLabel, index) => ({ id: `choice-${optionLabel}`, alt: `Diagram ${optionLabel}`, role: 'option', optionLabel, x: .52, y: .3 + index * .1, width: .2, height: .08 })) })),
+    } : question) });
+  });
+  await open(page); await process(page); await preview(page);
+  const expected = await page.getByTestId('batch-copy-document').evaluate(root => [...root.querySelectorAll('.print-page-inner')].map(inner => inner.textContent ?? '').join(''));
+  await page.getByRole('button', { name: '打印 / 保存 PDF', exact: true }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-long-choice-pages', /\d+/);
+  expect(await page.locator('html').getAttribute('data-long-choice-text')).toBe(expected);
+  expect(Number(await page.locator('html').getAttribute('data-long-choice-pages'))).toBeGreaterThan(2);
+  const waiting = page.waitForEvent('download'); await page.getByRole('button', { name: '下载 PDF', exact: true }).click(); const download = await waiting;
+  const file = info.outputPath('long-grid-options.pdf'); await download.saveAs(file); expect((await readFile(file)).subarray(0, 5).toString()).toBe('%PDF-'); expect(f.calls()).toBe(2);
+});
+test('long tables continue with repeated headers and every original data row', async ({ page }) => {
+  await page.addInitScript(() => new MutationObserver(records => {
+    for (const record of records) for (const node of record.addedNodes) if (node instanceof HTMLIFrameElement && node.title === '批次 PDF 打印' && node.contentWindow && node.contentDocument) {
+      const doc = node.contentDocument;
+      node.contentWindow.print = () => {
+        const tables = [...doc.querySelectorAll('.print-page-inner table')];
+        document.documentElement.dataset.tablePages = JSON.stringify({ headers: tables.map(table => table.querySelectorAll('thead tr').length), rows: [...doc.querySelectorAll('.print-page-inner tbody tr')].map(row => row.textContent), fits: [...doc.querySelectorAll('.print-page-inner tbody tr')].every(row => { const body = row.closest('.print-page-body'); return !!body && row.getBoundingClientRect().bottom <= body.getBoundingClientRect().bottom + 1; }) });
+        node.contentWindow?.dispatchEvent(new Event('afterprint'));
+      };
+    }
+  }).observe(document, { childList: true, subtree: true }));
+  const table = '| Position | Measurement / cm |\n| --- | --- |\n' + Array.from({ length: 80 }, (_, index) => `| row-${index + 1} | measured-value-${index + 1} |`).join('\n');
+  const f = await setup(page, undefined, value => { const parsed = BatchPrintLayoutSchema.parse(value); return BatchPrintLayoutSchema.parse({ ...parsed, questions: parsed.questions.map(question => question.problem.text.includes('Question 1') ? { ...question, problem: { ...question.problem, text: `Use all measurements.\n\n${table}` } } : question) }); });
+  const before = await history(page); await open(page); await process(page); await preview(page);
+  const rows = await page.getByTestId('batch-copy-document').locator('tbody tr').allTextContents();
+  await page.getByRole('button', { name: '打印 / 保存 PDF', exact: true }).click(); await expect(page.locator('html')).toHaveAttribute('data-table-pages', /.+/);
+  const result: unknown = JSON.parse(await page.locator('html').getAttribute('data-table-pages') ?? 'null'); if (!object(result) || !Array.isArray(result.headers)) throw new Error('TABLE_RESULT');
+  expect(result.headers.length).toBeGreaterThan(1); expect(result.headers.every(value => value === 1)).toBe(true); expect(result.rows).toEqual(rows); expect(result.fits).toBe(true);
+  expect(f.calls()).toBe(2); expect(f.errors).toEqual([]); expect(f.unexpected()).toBe(0); expect(await history(page)).toEqual(before);
+});
+test('cancelling during continuation planning releases the frame and preserves the saved batch', async ({ page }) => {
+  await page.addInitScript(() => {
+    const schedule = window.setTimeout;
+    window.setTimeout = new Proxy(schedule, { apply(target, self, args) {
+      const frame = document.querySelector<HTMLIFrameElement>('iframe[title="批次 PDF 打印"]');
+      if (args[1] === 0 && !document.documentElement.dataset.pagingDelay && frame?.contentDocument?.querySelector('[data-pdf-part="2"]')) {
+        document.documentElement.dataset.pagingDelay = '1'; return Reflect.apply(target, self, [args[0], 1000, ...args.slice(2)]);
+      }
+      return Reflect.apply(target, self, args);
+    } });
+  });
+  const text = Array.from({ length: 70 }, (_, index) => `Paragraph ${index + 1}: Retain the complete source material when it is longer than one sheet.`).join('\n\n');
+  const f = await setup(page, undefined, value => { const parsed = BatchPrintLayoutSchema.parse(value); return BatchPrintLayoutSchema.parse({ ...parsed, questions: parsed.questions.map(question => question.problem.text.includes('Question 2') ? { ...question, problem: { ...question.problem, text } } : question) }); });
+  const before = await history(page); await open(page); await process(page);
+  await page.getByRole('button', { name: '打印 / 保存 PDF', exact: true }).click(); await expect(page.locator('html')).toHaveAttribute('data-paging-delay', '1');
+  await page.getByRole('button', { name: '取消导出', exact: true }).click(); await expect(page.getByText('导出已取消。', { exact: true })).toBeVisible();
+  await expect(page.locator('iframe[title="批次 PDF 打印"]')).toHaveCount(0); expect(f.calls()).toBe(2); expect(f.errors).toEqual([]); expect(f.unexpected()).toBe(0); expect(await history(page)).toEqual(before);
 });
 test('a fitted question keeps readable text and a clear footer gap', async ({ page }) => {
   await page.addInitScript(() => new MutationObserver(records => {
@@ -208,7 +406,7 @@ test('explicit refinement uses only the configured verifier for the selected rec
   expect(f.calls()).toBe(3); expect(await history(page)).toEqual(before); expect(f.errors).toEqual([]); expect(f.unexpected()).toBe(0);
 });
 test('explicit first preparation stores necessary-only graphics and reuses identical pixels after reopening and reload', async ({ page }, info) => {
-  const f = await setup(page); const before = await history(page); await open(page); expect(f.calls()).toBe(0); await expect(page.getByRole('button', { name: '下载 PDF', exact: true })).toBeDisabled();
+  const f = await setup(page); const before = await history(page); await open(page); expect(f.calls()).toBe(0); await expect(page.getByRole('button', { name: '下载 PDF', exact: true })).toBeEnabled();
   await process(page); expect(f.calls()).toBe(2); await preview(page);
   const questions = page.getByTestId('copy-question'); await expect(questions.nth(0).locator('img')).toHaveCount(0); await expect(questions.nth(1).locator('img')).toHaveCount(1); await expect(questions.nth(1)).toContainText('Original question has a cropped caption.');
   const image = await page.getByAltText('Necessary colour chart', { exact: true }).getAttribute('src'); expect(image?.startsWith('data:image/jpeg;base64,')).toBe(true);
@@ -235,6 +433,45 @@ async function markerSlopes(page: Page) {
     canvas.width = 0; return result;
   });
 }
+test('opening a complete legacy crop refreshes preview and print pixels locally before any download', async ({ page }) => {
+  await page.addInitScript(() => new MutationObserver(records => {
+    for (const record of records) for (const node of record.addedNodes) if (node instanceof HTMLIFrameElement && node.title === '批次 PDF 打印' && node.contentWindow && node.contentDocument) {
+      const doc = node.contentDocument;
+      node.contentWindow.print = () => {
+        const printed = doc.querySelector<HTMLImageElement>('img[alt="Necessary colour chart"]');
+        const preview = document.querySelector<HTMLImageElement>('[data-testid="batch-copy-document"] img[alt="Necessary colour chart"]');
+        document.documentElement.dataset.printedCurrentCrop = String(!!printed && printed.src === preview?.src);
+        node.contentWindow?.dispatchEvent(new Event('afterprint'));
+      };
+    }
+  }).observe(document, { subtree: true, childList: true }));
+  const f = await setup(page, undefined, undefined, false, false, 8); await open(page); await process(page);
+  await page.getByRole('button', { name: '关闭导出', exact: true }).click();
+  await page.evaluate(() => new Promise<void>((resolve, reject) => {
+    const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+    const request = indexedDB.open('solveflow-print-cache'); request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result, tx = db.transaction('entries', 'readwrite'), read = tx.objectStore('entries').openCursor();
+      read.onsuccess = () => {
+        const row = read.result; if (!row) return; const value: unknown = row.value;
+        if (String(row.key).startsWith('prepared-paper-') && object(value) && object(value.images) && Array.isArray(value.sources)) {
+          for (const key of Object.keys(value.images)) {
+            const source: unknown = value.sources.find((source: unknown) => object(source) && source.key === key);
+            if (object(source) && typeof source.image === 'string') value.images[key] = source.image;
+          }
+          row.update(value);
+        }
+        row.continue();
+      };
+      tx.oncomplete = () => { db.close(); resolve(); }; tx.onerror = () => { db.close(); reject(tx.error); };
+    };
+  }));
+  await page.reload(); await expect(page.getByTestId('current-batch')).toBeVisible(); await open(page);
+  await preview(page); expect(Math.abs((await markerSlopes(page))[0] ?? 1)).toBeLessThan(.03);
+  await page.getByRole('button', { name: '打印 / 保存 PDF', exact: true }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-printed-current-crop', 'true');
+  expect(f.calls()).toBe(2); expect(f.unexpected()).toBe(0); expect(f.errors).toEqual([]);
+});
 test('first preparation straightens colour-cast cropped figures, preserves deliberate slopes and reuses the exact exported pixels', async ({ page }, info) => {
   const f = await setup(page, undefined, undefined, false, false, 8); const before = await history(page); await open(page); await process(page); await preview(page);
   const slopes = await markerSlopes(page); expect(Math.abs(slopes[0] ?? 1)).toBeLessThan(.03); expect(slopes[1]).toBeCloseTo(1 / 6, 1);
@@ -247,8 +484,11 @@ test('first preparation straightens colour-cast cropped figures, preserves delib
   expect(await page.getByAltText('Necessary colour chart', { exact: true }).getAttribute('src')).toBe(image); expect(await markerSlopes(page)).toEqual(slopes); expect(await history(page)).toEqual(before); expect(f.calls()).toBe(2); expect(f.errors).toEqual([]); expect(f.unexpected()).toBe(0);
 });
 
-test('legacy prepared crops can be straightened locally once without replacing saved questions or calling a model', async ({ page }) => {
-  const f = await setup(page, undefined, undefined, false, false, 8); await open(page); await process(page); const before = await history(page);
+test('legacy prepared crops can be straightened locally once without replacing saved questions or calling a model', async ({ page }, info) => {
+  const f = await setup(page, undefined, value => { const parsed = BatchPrintLayoutSchema.parse(value); return { ...parsed, questions: parsed.questions.map(question => question.problem.text.includes('Question 1') ? { ...question, problem: { ...question.problem, optionsComplete: false, uncertainties: ['Synthetic incomplete choices.'] } } : question) }; }, false, false, 8);
+  await open(page); await page.getByRole('button', { name: '整理题目与图示', exact: true }).click(); await expect(page.getByRole('status', { name: '试卷整理状态' })).toHaveText('已整理，1 题内容待核对'); const before = await history(page);
+  const saved = page.getByRole('status').filter({ hasText: /^整理结果已保存$/ }); await expect(saved).toBeVisible();
+  await page.screenshot({ path: info.outputPath('preparation-saved.png') });
   await page.getByRole('button', { name: '关闭导出', exact: true }).click();
   await page.evaluate(() => new Promise<void>((resolve, reject) => {
     const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -264,7 +504,16 @@ test('legacy prepared crops can be straightened locally once without replacing s
       tx.oncomplete = () => { db.close(); resolve(); }; tx.onerror = () => { db.close(); reject(tx.error); };
     };
   }));
-  await page.reload(); await expect(page.getByTestId('current-batch')).toBeVisible(); await open(page); await preview(page);
+  await page.reload(); await expect(page.getByTestId('current-batch')).toBeVisible(); await open(page);
+  const toolbar = page.locator('.pdf-preparation-controls'); await expect(toolbar.getByRole('button')).toHaveCount(3);
+  const geometry = await toolbar.getByRole('button').evaluateAll(buttons => buttons.map(button => {
+    const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT); const text = walker.nextNode(); if (!text) throw new Error('BUTTON_TEXT');
+    const range = document.createRange(); range.selectNodeContents(text); const rects = [...range.getClientRects()]; const bounds = button.getBoundingClientRect(); const parent = button.parentElement?.getBoundingClientRect(); if (!parent) throw new Error('TOOLBAR_BOUNDS');
+    return { lines: rects.length, left: bounds.left - parent.left, overflow: bounds.right - parent.right, textFits: rects.every(rect => rect.left >= bounds.left && rect.right <= bounds.right) };
+  }));
+  for (const button of geometry) { expect(button.lines).toBe(1); expect(button.left).toBeGreaterThanOrEqual(0); expect(button.overflow).toBeLessThanOrEqual(1); expect(button.textFits).toBe(true); }
+  await page.screenshot({ path: info.outputPath('preparation-three-actions.png') });
+  await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' }); await page.screenshot({ path: info.outputPath('preparation-three-actions-dark.png') }); await page.emulateMedia({ colorScheme: 'light' }); await preview(page);
   expect(Math.abs((await markerSlopes(page))[0] ?? 0)).toBeGreaterThan(.1);
   await page.getByRole('button', { name: '摆正本批图示', exact: true }).click(); await expect(page.getByText('已摆正 1 张图示，已有旋转和裁切保持不变。', { exact: true })).toBeVisible();
   const slopes = await markerSlopes(page); expect(Math.abs(slopes[0] ?? 1)).toBeLessThan(.03); expect(slopes[1]).toBeCloseTo(1 / 6, 1); const image = await page.getByAltText('Necessary colour chart', { exact: true }).getAttribute('src');
@@ -277,9 +526,9 @@ test('manual decisions and crop adjustments survive a dialog reopening without a
   const f = await setup(page); await open(page); await process(page); await page.getByText('图片整理', { exact: true }).click();
   await page.getByRole('button', { name: '当前题目', exact: true }).click(); await page.getByRole('option', { name: '第 2 题', exact: true }).click();
   await page.getByRole('button', { name: '图片来源', exact: true }).click(); await page.getByRole('option', { name: /Necessary colour chart/ }).click();
-  await page.getByLabel('导出题图旋转角度').fill('2'); await page.getByRole('button', { name: '更新图像预览', exact: true }).click(); await expect(page.getByText('整理结果已保存，后续导出可复用。', { exact: true })).toBeVisible();
+  await page.getByLabel('导出题图旋转角度').fill('2'); await page.getByRole('button', { name: '更新图像预览', exact: true }).click(); await expect(page.getByText('整理结果已保存', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '关闭导出', exact: true }).click(); await open(page); await page.getByText('图片整理', { exact: true }).click(); await page.getByRole('button', { name: '当前题目', exact: true }).click(); await page.getByRole('option', { name: '第 2 题', exact: true }).click(); await page.getByRole('button', { name: '图片来源', exact: true }).click(); await page.getByRole('option', { name: /Necessary colour chart/ }).click(); await expect(page.getByLabel('导出题图旋转角度')).toHaveValue('2');
-  await page.getByRole('button', { name: '本题仅保留文字', exact: true }).click(); await expect(page.getByText('整理结果已保存，后续导出可复用。', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '本题仅保留文字', exact: true }).click(); await expect(page.getByText('整理结果已保存', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '关闭导出', exact: true }).click(); await page.reload(); await expect(page.getByTestId('current-batch')).toBeVisible(); await open(page); await preview(page); await expect(page.getByTestId('copy-question').nth(1).locator('img')).toHaveCount(0); expect(f.calls()).toBe(2); expect(f.errors).toEqual([]);
 });
 
@@ -315,10 +564,16 @@ test('prepared pixels do not expire by age and copies or content-mode changes do
     request.onsuccess = () => { const db = request.result; const tx = db.transaction('metadata', 'readwrite'); const store = tx.objectStore('metadata'); const cursor = store.openCursor(); cursor.onsuccess = () => { const row = cursor.result; if (row) { const value: unknown = row.value; if (value && typeof value === 'object' && 'key' in value && 'bytes' in value) row.update({ key: value.key, bytes: value.bytes, usedAt: 0 }); row.continue(); } }; tx.oncomplete = () => { db.close(); resolve(); }; tx.onerror = () => { db.close(); reject(tx.error); }; };
   }));
   await page.addInitScript(() => { let count = 0; const publish = () => document.documentElement?.setAttribute('data-paper-draws', String(count)); document.addEventListener('DOMContentLoaded', publish, { once: true }); const draw = CanvasRenderingContext2D.prototype.drawImage; CanvasRenderingContext2D.prototype.drawImage = new Proxy(draw, { apply(target, context, args) { count++; publish(); return Reflect.apply(target, context, args); } }); });
-  await page.reload(); await expect(page.getByTestId('current-batch')).toBeVisible(); await open(page); await expect(page.getByText('已整理，可直接复用', { exact: true })).toBeVisible(); await preview(page);
+  await page.reload(); await expect(page.getByTestId('current-batch')).toBeVisible(); await open(page); await expect(page.getByText('已整理，可直接复用', { exact: true })).toBeVisible();
+  expect(await page.locator('html').getAttribute('data-paper-draws')).toBe('0');
+  // Opening reads cache only; the first preview runs the automatic local pixel stage once.
+  await preview(page); const previewDraws = await page.locator('html').getAttribute('data-paper-draws'); expect(Number(previewDraws)).toBeGreaterThan(0);
   expect(await page.getByAltText('Necessary colour chart', { exact: true }).getAttribute('src')).toBe(pixels);
   await page.getByLabel('导出份数', { exact: true }).fill('2'); await page.getByRole('button', { name: '纯题目', exact: true }).click(); await page.getByRole('button', { name: '题目与作答', exact: true }).click();
-  expect(f.calls()).toBe(2); expect(await page.locator('html').getAttribute('data-paper-draws')).toBe('0'); expect(f.errors).toEqual([]);
+  const disclosure = page.getByText('预览导出内容', { exact: true });
+  await disclosure.focus(); await disclosure.press('Enter'); await expect(page.getByTestId('batch-copy-document')).toBeHidden();
+  await disclosure.press('Space'); await expect(page.getByTestId('batch-copy-document')).toBeVisible();
+  expect(f.calls()).toBe(2); expect(await page.locator('html').getAttribute('data-paper-draws')).toBe(previewDraws); expect(f.errors).toEqual([]);
 });
 
 test('changed source pixels invalidate only their own prepared record and opening still makes no model request', async ({ page }) => {
@@ -327,7 +582,7 @@ test('changed source pixels invalidate only their own prepared record and openin
   const record: unknown = JSON.parse((await history(page))[1] ?? 'null'); if (!object(record) || !object(record.session) || record.session.id !== ids[1]) throw new Error('RECORD'); record.image = image;
   const id = ids[1]; if (!id) throw new Error('ID');
   await page.evaluate(({ id, value }) => new Promise<void>((resolve, reject) => { const request = indexedDB.open('solveflow-local'); request.onerror = () => reject(request.error); request.onsuccess = () => { const db = request.result; const tx = db.transaction('documents', 'readwrite'); tx.objectStore('documents').put(value, `record.${id}`); tx.oncomplete = () => { db.close(); resolve(); }; tx.onerror = () => { db.close(); reject(tx.error); }; }; }), { id, value: JSON.stringify(record) });
-  await page.reload(); await expect(page.getByTestId('current-batch')).toBeVisible(); await open(page); expect(f.calls()).toBe(2); await expect(page.getByRole('button', { name: '下载 PDF', exact: true })).toBeDisabled();
+  await page.reload(); await expect(page.getByTestId('current-batch')).toBeVisible(); await open(page); expect(f.calls()).toBe(2); await expect(page.getByRole('button', { name: '下载 PDF', exact: true })).toBeEnabled();
   await process(page); expect(f.calls()).toBe(3); await preview(page); await expect(page.getByTestId('copy-question').nth(0).locator('img')).toHaveCount(0); await expect(page.getByTestId('copy-question').nth(1).locator('img')).toHaveCount(1); expect(f.errors).toEqual([]);
 });
 
@@ -338,8 +593,7 @@ test('preparation action and live status share the batch header without starting
   await expect(action).toBeEnabled(); await expect(status).toHaveText('2 题待整理'); expect(f.calls()).toBe(0); await expect(page.getByRole('button', { name: '整理题目与图示', exact: true })).toHaveCount(1);
   const title = await header.locator('.pdf-batch-info').boundingBox(); const button = await action.boundingBox(); const bounds = await header.boundingBox(); const viewport = page.viewportSize();
   if (!title || !button || !bounds || !viewport) throw new Error('HEADER_BOUNDS');
-  if (viewport.width > 600) { expect(button.x).toBeGreaterThanOrEqual(title.x + title.width); expect(button.y).toBeLessThan(title.y + title.height); }
-  else { expect(button.y).toBeGreaterThanOrEqual(title.y + title.height); expect(button.x).toBeGreaterThanOrEqual(bounds.x); }
+  expect(button.y).toBeGreaterThanOrEqual(title.y + title.height); expect(button.x).toBeGreaterThanOrEqual(bounds.x);
   expect(button.x + button.width).toBeLessThanOrEqual(bounds.x + bounds.width + 1); await page.screenshot({ path: info.outputPath('preparation-header-pending.png') });
   await action.focus(); await page.keyboard.press('Enter'); await expect.poll(f.calls).toBe(1); await expect(status).toHaveText('整理题目与图示 1 / 2 · 第 1 / 3 次尝试'); await expect(action).toBeDisabled(); await expect(header.locator('.pdf-preparation')).toHaveAttribute('data-state', 'working'); await expect(page.getByText('整理题目与图示 1 / 2 · 第 1 / 3 次尝试', { exact: true })).toHaveCount(1); await page.screenshot({ path: info.outputPath('preparation-header-working.png') });
   release(); await expect(status).toHaveText('已整理，可直接复用'); await expect(header.locator('.pdf-preparation')).toHaveAttribute('data-state', 'ready'); expect(f.calls()).toBe(2);
@@ -511,7 +765,9 @@ test('disconnected unanswered text extraction resumes only remaining work and ex
     return id === ids[1] && !recovered ? route.abort('connectionreset') : route.fallback();
   });
   await page.reload(); await expect(page.getByTestId('current-batch')).toBeVisible(); const before = await history(page); await open(page);
-  await expect(page.getByRole('button', { name: '纯题目', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: '题目与作答', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByLabel('第1份答错题数')).toHaveValue('0');
+  await page.getByRole('button', { name: '纯题目', exact: true }).click();
   await page.getByRole('button', { name: '整理题目与图示', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('已尝试 3 次，连接异常');
   await expect(page.getByRole('status', { name: '试卷整理状态' })).toHaveText('1 题待整理');
@@ -555,10 +811,16 @@ test('distinguishes retained diagrams and opens their review without another mod
   expect(f.calls()).toBe(2); expect(f.errors).toEqual([]); expect(f.unexpected()).toBe(0);
 });
 
-test('reprocesses only the current record and preserves the saved batch history', async ({ page }) => {
+test('reprocesses only the current record and preserves the saved batch history', async ({ page }, info) => {
   const f = await setup(page); const before = await history(page);
   await open(page); await process(page); expect(f.calls()).toBe(2);
   await page.getByText('图片整理', { exact: true }).click();
+  const controls = page.locator('.pdf-image-controls'); const batchTools = page.getByRole('group', { name: '本批图片操作' });
+  await expect(controls.getByRole('button', { name: '当前题目', exact: true })).toBeVisible(); await expect(batchTools.getByRole('button', { name: '重新整理本批', exact: true })).toBeVisible();
+  const currentBounds = await controls.boundingBox(), batchBounds = await batchTools.boundingBox(); if (!currentBounds || !batchBounds) throw new Error('IMAGE_TOOLS_BOUNDS');
+  expect(batchBounds.y).toBeGreaterThan(currentBounds.y + currentBounds.height); expect(await page.locator('.pdf-dialog-body').evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+  await controls.scrollIntoViewIfNeeded(); await page.screenshot({ path: info.outputPath('image-tools-groups.png') });
+  await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' }); await page.screenshot({ path: info.outputPath('image-tools-groups-dark.png') }); await page.emulateMedia({ colorScheme: 'light' });
   page.once('dialog', dialog => void dialog.accept());
   await page.getByRole('button', { name: '重新整理当前题', exact: true }).click();
   await expect(page.getByRole('button', { name: '重新整理当前题', exact: true })).toBeEnabled();
@@ -609,7 +871,7 @@ for (const storageFault of [false, true]) test(`explicit enhancement preserves m
   await page.getByRole('button', { name: '当前题目', exact: true }).click(); await page.getByRole('option', { name: '第 2 题', exact: true }).click();
   await page.getByRole('button', { name: '图片来源', exact: true }).click(); await page.getByRole('option').filter({ hasText: 'Necessary colour chart' }).click();
   await page.getByLabel('导出题图旋转角度', { exact: true }).fill('6'); await page.getByLabel('导出裁切left', { exact: true }).fill('5');
-  await page.getByRole('button', { name: '更新图像预览', exact: true }).click(); await expect(page.getByText('整理结果已保存，后续导出可复用。', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '更新图像预览', exact: true }).click(); await expect(page.getByText('整理结果已保存', { exact: true })).toBeVisible();
   const cached = await page.evaluate(() => new Promise<{ key: string; value: unknown }[]>((resolve, reject) => { const request = indexedDB.open('solveflow-print-cache'); request.onerror = () => reject(request.error); request.onsuccess = () => { const db = request.result, tx = db.transaction('entries'), values = tx.objectStore('entries').getAll(), keys = tx.objectStore('entries').getAllKeys(); tx.oncomplete = () => { db.close(); resolve(keys.result.map((key, index) => { if (typeof key !== 'string') throw new Error('CACHE_KEY'); return { key, value: values.result[index] }; })); }; tx.onerror = () => reject(tx.error); }; }));
   const candidates = cached.map(row => ({ key: row.key, value: PreparedPrintRecordSchema.parse(row.value) })); const saved = candidates.find(row => Object.values(row.value.layouts).some(layout => layout.assets.length)); if (!saved) throw new Error('PREPARED_CROP');
   const asset = Object.values(saved.value.layouts).flatMap(layout => layout.assets)[0]; if (!asset) throw new Error('ASSET'); const expected = saved.value.images[asset.key]; if (!expected) throw new Error('IMAGE');
@@ -622,19 +884,22 @@ for (const storageFault of [false, true]) test(`explicit enhancement preserves m
     return legacy;
   }, { saved, assetKey: asset.key });
   await page.addInitScript(() => { let count = 0; const publish = () => document.documentElement?.setAttribute('data-enhancement-draws', String(count)); document.addEventListener('DOMContentLoaded', publish, { once: true }); const draw = CanvasRenderingContext2D.prototype.drawImage; CanvasRenderingContext2D.prototype.drawImage = new Proxy(draw, { apply(target, context, args) { count++; publish(); return Reflect.apply(target, context, args); } }); });
-  await page.reload(); await expect(page.getByTestId('current-batch')).toBeVisible(); await open(page); await page.getByRole('button', { name: '纯题目', exact: true }).click(); await preview(page);
-  await expect(page.getByAltText('Necessary colour chart', { exact: true })).toHaveAttribute('src', legacy); expect(await page.locator('html').getAttribute('data-enhancement-draws')).toBe('0'); expect(f.calls()).toBe(2);
-  await page.getByText('图片整理', { exact: true }).click();
+  await page.reload(); await expect(page.getByTestId('current-batch')).toBeVisible(); await open(page); await page.getByRole('button', { name: '纯题目', exact: true }).click();
+  // Inspect persisted pixels before preview's automatic processing, then explicitly update them.
+  await perspectiveChart(page);
+  await expect(page.getByAltText('整理后题图', { exact: true })).toHaveAttribute('src', legacy); expect(await page.locator('html').getAttribute('data-enhancement-draws')).toBe('0'); expect(f.calls()).toBe(2);
   if (storageFault) await page.evaluate(() => { const put = IDBObjectStore.prototype.put; let fault = true; IDBObjectStore.prototype.put = function(this: IDBObjectStore, value, key) { if (fault && this.transaction.db.name === 'solveflow-print-cache' && this.name === 'entries' && typeof key === 'string' && key.startsWith('prepared-paper-')) { fault = false; throw new DOMException('Synthetic enhancement quota', 'QuotaExceededError'); } return Reflect.apply(put, this, [value, key]); }; });
   await page.getByRole('button', { name: '更新本批清晰化', exact: true }).click();
   if (storageFault) {
     await expect(page.getByText(/清晰化结果尚未保存/)).toBeVisible(); for (const name of ['下载 PDF', '打印 / 保存 PDF', '后台导出']) await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
     const draws = await page.locator('html').getAttribute('data-enhancement-draws'); await page.getByRole('button', { name: '重试保存整理', exact: true }).click(); await expect(page.getByRole('button', { name: '重试保存整理', exact: true })).toHaveCount(0); expect(await page.locator('html').getAttribute('data-enhancement-draws')).toBe(draws);
   } else await expect(page.getByText('已更新 1 张图示清晰化，旋转和裁切保持不变。', { exact: true })).toBeVisible();
-  await expect(page.getByAltText('Necessary colour chart', { exact: true })).toHaveAttribute('src', expected);
+  await expect(page.getByAltText('整理后题图', { exact: true })).toHaveAttribute('src', expected);
   await page.getByRole('button', { name: '更新本批清晰化', exact: true }).click(); await expect(page.getByText('图示清晰化已是当前结果，旋转和裁切保持不变。', { exact: true })).toBeVisible();
+  await preview(page); await expect(page.getByAltText('Necessary colour chart', { exact: true })).toHaveAttribute('src', expected);
   const pending = page.waitForEvent('download'); await page.getByRole('button', { name: '下载 PDF', exact: true }).click(); const download = await pending; const path = info.outputPath('enhanced-figures.pdf'); await download.saveAs(path); expect((await readFile(path)).toString('latin1').match(/\/Type \/Page\b/g)).toHaveLength(2);
-  await page.reload(); await expect(page.getByTestId('current-batch')).toBeVisible(); await open(page); await page.getByRole('button', { name: '纯题目', exact: true }).click(); await preview(page); await expect(page.getByAltText('Necessary colour chart', { exact: true })).toHaveAttribute('src', expected);
+  await page.reload(); await expect(page.getByTestId('current-batch')).toBeVisible(); await open(page); await page.getByRole('button', { name: '纯题目', exact: true }).click(); await perspectiveChart(page); await expect(page.getByAltText('整理后题图', { exact: true })).toHaveAttribute('src', expected);
+  await expect(page.getByLabel('导出题图旋转角度', { exact: true })).toHaveValue('6'); await expect(page.getByLabel('导出裁切left', { exact: true })).toHaveValue('5');
   expect(await page.locator('html').getAttribute('data-enhancement-draws')).toBe('0'); expect(await history(page)).toEqual(originals); expect(f.calls()).toBe(2); expect(f.unexpected()).toBe(0); expect(f.errors).toEqual([]);
 });
 
@@ -656,7 +921,7 @@ test('explicit four-corner perspective persists, repeats from the source and rea
   const f = await setup(page), originals = await history(page); await open(page); await process(page); await perspectiveChart(page);
   const original = await page.getByAltText('导出源图', { exact: true }).getAttribute('src');
   await page.getByLabel('导出题图旋转角度').fill('3'); await page.getByLabel('导出裁切left').fill('5');
-  await page.getByRole('button', { name: '更新图像预览', exact: true }).click(); await expect(page.getByText('整理结果已保存，后续导出可复用。', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '更新图像预览', exact: true }).click(); await expect(page.getByText('整理结果已保存', { exact: true })).toBeVisible();
   await perspectiveCoordinates(page); const apply = page.getByRole('button', { name: '应用四角校正', exact: true }); await apply.click();
   await expect(page.getByLabel('导出题图旋转角度')).toHaveValue('0'); await expect(apply).toBeEnabled();
   await expect(page.getByLabel('导出裁切left')).toHaveValue('0'); await expect(page.getByLabel('导出裁切right')).toHaveValue('100');
@@ -725,7 +990,7 @@ for (const [field, text] of [['导出题图旋转角度', '-.75'], ['导出裁�
   await page.evaluate(() => { const draw = CanvasRenderingContext2D.prototype.drawImage; let fail = true; CanvasRenderingContext2D.prototype.drawImage = new Proxy(draw, { apply(target, context, args) { if (fail) { fail = false; throw new Error('Synthetic numeric preview processing fault'); } return Reflect.apply(target, context, args); } }); });
   const apply = page.getByRole('button', { name: '更新图像预览', exact: true }); await apply.click(); await expect(page.getByRole('alert')).toBeVisible(); await expect(apply).toBeEnabled();
   await expect(typed).toHaveValue(text); await expect(page.getByAltText('整理后题图', { exact: true })).toHaveAttribute('src', before ?? 'MISSING');
-  await apply.click(); await expect(page.getByRole('alert')).toHaveCount(0); await expect(page.getByText('整理结果已保存，后续导出可复用。', { exact: true })).toBeVisible();
+  await apply.click(); await expect(page.getByRole('alert')).toHaveCount(0); await expect(page.getByText('整理结果已保存', { exact: true })).toBeVisible();
   await expect(angle).toHaveValue('-0.75'); await expect(left).toHaveValue('12.55'); const corrected = await page.getByAltText('整理后题图', { exact: true }).getAttribute('src'); expect(corrected).not.toBe(before);
   await preview(page); await expect(page.getByAltText('Necessary colour chart', { exact: true })).toHaveAttribute('src', corrected ?? 'MISSING');
   const pending = page.waitForEvent('download'); await page.getByRole('button', { name: '下载 PDF', exact: true }).click(); const path = info.outputPath(field === '导出裁切left' ? 'crop-decimal.pdf' : 'rotation-decimal.pdf'); await (await pending).saveAs(path); expect((await readFile(path)).toString('latin1').match(/\/Type \/Page\b/g)).toHaveLength(2);
@@ -738,7 +1003,7 @@ test('manual numeric drafts guard invalid ranges and recover through Escape, res
   const f = await setup(page), originals = await history(page); await open(page); await process(page); await perspectiveChart(page);
   const before = await page.getByAltText('整理后题图', { exact: true }).getAttribute('src'); const angle = page.getByLabel('导出题图旋转角度'), left = page.getByLabel('导出裁切left'), apply = page.getByRole('button', { name: '更新图像预览', exact: true });
   await angle.fill(''); await angle.pressSequentially('-'); await expect(angle).toHaveValue('-'); await expect(apply).toBeDisabled(); await expect(angle).toHaveAttribute('aria-invalid', 'true');
-  await angle.fill('16'); await expect(apply).toBeDisabled(); await expect(page.getByText('旋转角度需为 -15° 至 15° 的完整数字。', { exact: true })).toBeVisible(); await expect(page.getByAltText('整理后题图', { exact: true })).toHaveAttribute('src', before ?? 'MISSING');
+  await angle.fill('46'); await expect(apply).toBeDisabled(); await expect(page.getByText('旋转角度需为 -45° 至 45° 的完整数字。', { exact: true })).toBeVisible(); await expect(page.getByAltText('整理后题图', { exact: true })).toHaveAttribute('src', before ?? 'MISSING');
   await angle.press('Escape'); await expect(angle).toHaveValue('0'); await expect(page.getByRole('button', { name: '关闭导出', exact: true })).toBeVisible(); await expect(apply).toBeEnabled();
   await angle.press('ArrowDown'); await expect(angle).toHaveValue('-0.25'); await angle.press('ArrowUp'); await expect(angle).toHaveValue('0');
   await left.fill('97'); await expect(apply).toBeDisabled(); await expect(page.getByText('裁切边界需为 0% 至 100% 的完整数字，宽高至少保留 5%。', { exact: true })).toBeVisible();
@@ -1057,7 +1322,7 @@ async function installPreparedReadRecovery(page: Page, failure: 'storage' | 'can
 for (const configured of [false, true]) for (const failure of ['storage', 'cancel'] as const) test(`cached preparation read ${failure} recovers ${configured ? 'with' : 'without'} configured models without repeating work`, async ({ page }, info) => {
   const f = await setup(page); const originals = await history(page); await open(page); await process(page);
   await perspectiveChart(page); await page.getByLabel('导出题图旋转角度', { exact: true }).fill('3.5'); await page.getByRole('button', { name: '更新图像预览', exact: true }).click();
-  await expect(page.getByText('整理结果已保存，后续导出可复用。', { exact: true })).toBeVisible();
+  await expect(page.getByText('整理结果已保存', { exact: true })).toBeVisible();
   const manualImage = await page.getByAltText('整理后题图', { exact: true }).getAttribute('src'); if (!manualImage) throw new Error('MANUAL_IMAGE');
   const entries = await preparedCacheEntries(page); expect(f.calls()).toBe(2);
   if (!configured) await page.route('**/__solveflow/web-env', route => route.fulfill({ status: 404 }));

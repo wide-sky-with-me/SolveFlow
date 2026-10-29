@@ -66,7 +66,7 @@ export async function solve(inputValue: unknown, execute: PhaseExecutor, budget:
       let verification;
       try { verification = parseVerificationForCandidate(checked.verification, candidate); } catch { throw new SolvePhaseError("MODEL_OUTPUT_INVALID"); }
       if (verification.verdict === 'pass' && !verification.checked.includes('transcription')) throw new SolvePhaseError('MODEL_OUTPUT_INVALID');
-      verification = assessVerificationCoverage(verification, candidate);
+      verification = assessVerificationCoverage(verification, candidate, original.exam);
       if (verification.issues.some(issue => issue.code === 'POLICY_VIOLATION')) return SolveOutcomeSchema.parse({ schemaVersion: 1, status: 'needs_clarification', candidate: policyRefusal(), verified: false });
       return SolveOutcomeSchema.parse({ schemaVersion: 1, status: 'completed', candidate, verified: verification.verdict === 'pass', verification, warning: null });
     }
@@ -105,7 +105,7 @@ export async function solve(inputValue: unknown, execute: PhaseExecutor, budget:
         try {
           verification = parseVerificationForCandidate(checked.verification, candidate);
           if (verification.verdict === "pass" && !verification.checked.includes("transcription")) throw new Error("ORIGINAL_IMAGE_NOT_CHECKED");
-          verification = assessVerificationCoverage(verification, candidate);
+          verification = assessVerificationCoverage(verification, candidate, original.exam);
         }
         catch { throw new SolvePhaseError("MODEL_OUTPUT_INVALID"); }
       } catch (error) {

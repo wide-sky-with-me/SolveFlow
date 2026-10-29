@@ -36,7 +36,7 @@ it('keeps unanswered source projection available without creating answers', () =
   const output = projectBatchPrintSnapshot(input, false);
   expect(output.problems).toEqual([{ key: `${id}/unanswered`, recordId: id, ordinal: 1, problem: null }]);
   expect(output.questions).toEqual([]);
-  expect(() => projectBatchPrintSnapshot(input, true)).toThrow('完整已保存回答');
+  expect(projectBatchPrintSnapshot(input, true).questions[0]).toMatchObject({ candidate: null, runId: null });
 });
 
 it('runs the caller page gate before answer extraction, including incomplete answers', () => {
@@ -53,7 +53,7 @@ it('gates the number of subquestions rather than the number of source records', 
   const gate = vi.fn();
   const output = projectBatchPrintSnapshot(input, true, gate);
   expect(gate).toHaveBeenCalledExactlyOnceWith(3);
-  expect(output.questions.map(question => question.candidate.answer)).toEqual(['1', '2', '3']);
+  expect(output.questions.map(question => question.candidate?.answer)).toEqual(['1', '2', '3']);
   expect(output.problems.map(problem => problem.ordinal)).toEqual([1, 2, 3]);
 });
 
@@ -82,10 +82,10 @@ it('does not mutate source data, return it by identity, or cache mutable input v
   input.records[0]!.session.runs[0]!.outcome.candidate.answer = 'changed';
   input.records[0]!.session.runs[0]!.outcome.candidate.problem.uncertainties.push('changed');
   expect(output.snapshot.records[0]!.image).toBe('data:image/jpeg;base64,AQID');
-  expect(output.questions[0]?.candidate.answer).toBe('PRIVATE_ANSWER');
+  expect(output.questions[0]?.candidate?.answer).toBe('PRIVATE_ANSWER');
   const saved = output.snapshot.records[0]!.session.runs[0]?.outcome;
   if (saved?.status !== 'completed') throw new Error('Projection fixture missing answer');
-  expect(saved.candidate.answer).toBe('PRIVATE_ANSWER');
+  expect(saved.candidate?.answer).toBe('PRIVATE_ANSWER');
   expect(saved.candidate.problem.uncertainties).toEqual([]);
   expect(() => projectBatchPrintSnapshot(input, false)).toThrow();
   expect(() => questionsForBatchQuestionPrint(input)).toThrow();

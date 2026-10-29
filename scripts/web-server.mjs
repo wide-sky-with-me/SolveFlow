@@ -7,6 +7,7 @@ import proxyApi from './api-proxy.cjs';
 import { webModelProxy } from './web-model-proxy.mjs';
 import { loadWebEnv } from './web-env.mjs';
 import { openWebModelSettings } from './web-model-settings.mjs';
+import { configureWebRequestTimeouts } from './web-request-limits.mjs';
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.ttf': 'font/ttf', '.woff': 'font/woff', '.woff2': 'font/woff2' };
 export function webServerOptions(environment = process.env) {
   const value = environment.SOLVEFLOW_WEB_PORT ?? '3100'; const port = Number(value);
@@ -19,7 +20,7 @@ export function webServer(directory, apiPort = null, environment = null, modelFe
   if (apiPort !== null && (!Number.isInteger(apiPort) || apiPort < 1024 || apiPort > 65535)) throw new Error('INVALID_API_PORT');
   const root = resolve(directory);
   const modelProxy = webModelProxy(environment, modelFetch, onModelDiagnostic, modelSettings);
-  return createServer(async (req, res) => {
+  const server = createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
     if (await modelProxy(req, res)) return;
@@ -37,13 +38,14 @@ export function webServer(directory, apiPort = null, environment = null, modelFe
       if (req.method === 'HEAD') res.end(); else { const stream = createReadStream(target); stream.on('error', () => res.destroy()); res.on('close', () => stream.destroy()); stream.pipe(res); }
     } catch { res.writeHead(404); res.end('Not found'); }
   });
+  configureWebRequestTimeouts(server);
+  return server;
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const { port, directory } = webServerOptions();
   const environment = await loadWebEnv(new URL('../.env', import.meta.url));
   const modelSettings = await openWebModelSettings(environment, fileURLToPath(new URL('../.runtime/web-model-settings.json', import.meta.url)), fileURLToPath(new URL('../.runtime/web-model-presets.json', import.meta.url)));
   const server = webServer(directory, null, environment, fetch, entry => console.log(JSON.stringify(entry)), modelSettings);
-  server.requestTimeout = 15000; server.headersTimeout = 10000;
   server.listen(port, '127.0.0.1', () => console.log(`SolveFlow React Native Web: http://127.0.0.1:${port}`));
   const stop = () => { server.closeAllConnections(); server.close(); };
   process.once('SIGINT', stop); process.once('SIGTERM', stop);

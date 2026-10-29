@@ -1,8 +1,9 @@
 import { expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { z } from 'zod';
-import { SessionViewSchema } from '@solveflow/contracts/http';
-import { encodeHistoryDocument, decodeHistoryDocument, formatHistoryTime } from './history-payload.js';
+import { RunViewSchema, SessionViewSchema, projectQuestionRun } from '@solveflow/contracts/http';
+import { historyTaskStatus, encodeHistoryDocument, decodeHistoryDocument, formatHistoryTime, historyEntry } from './history-payload.js';
 const id = '20000000-0000-4000-8000-000000000001';
 const text = '求解 $x^{2}+2=6$。'.repeat(10) + '\\[\\frac{1}{2}\\]\n` ${globalThis.executed = true} </script>';
 const session = SessionViewSchema.parse({ schemaVersion: 1, id, subject: 'math', createdAt: '2026-09-16T00:00:00.000Z', upload: { schemaVersion: 1, id, mimeType: 'image/jpeg', bytes: 1, width: 1, height: 1, previewUrl: `/api/v1/uploads/${id}/image`, expiresAt: '9999-12-31T00:00:00.000Z' }, runs: [{ schemaVersion: 1, id, sessionId: id, createdAt: '2026-09-16T00:00:00.000Z', message: '', seq: 1, status: 'needs_clarification', outcome: { schemaVersion: 1, status: 'needs_clarification', verified: false, candidate: { schemaVersion: 1, kind: 'clarification', problem: { text, subject: 'physics', uncertainties: [] }, answer: null, steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: ['请补充条件。'] } } }] });
@@ -39,4 +40,25 @@ it('shows saved answer states in history and leaves legacy documents without a f
   }
   expect(decodeHistoryDocument(encodeHistoryDocument([summary], null, false)).entries[0]).not.toHaveProperty('answerState');
   expect(decodeHistoryDocument(encodeHistoryDocument([{ ...session, runs: [] }], null, false)).entries[0]?.answerState).toBe('unanswered');
+});
+
+it('marks a grouped photo verified only when every current question answer passes', () => {
+  const problem = { text: 'Two questions.', subject: 'math', uncertainties: [] };
+  const root = RunViewSchema.parse({ ...session.runs[0], status: 'completed', outcome: { schemaVersion: 1, status: 'completed', verified: false, verificationStatus: 'not_requested', warning: null, verification: null, candidate: { schemaVersion: 1, kind: 'answer', problem, answer: 'Two answers.', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [], questions: [1, 2].map(number => ({ number, problem, answer: `Answer ${number}`, stepIds: [], figureIds: [] })) } } });
+  const check = (number: number) => RunViewSchema.parse({ ...projectQuestionRun(root, number), id: randomUUID(), context: { kind: 'verification', sourceRunId: root.id, number }, outcome: { ...projectQuestionRun(root, number).outcome, verified: true, verificationStatus: undefined, verification: { schemaVersion: 1, verdict: 'pass', checked: ['transcription'], issues: [] } } });
+  const first = check(1);
+  expect(historyEntry({ ...session, runs: [root, first] }).answerState).toBe('answered');
+  expect(historyEntry({ ...session, runs: [root, first, check(2)] }).answerState).toBe('verified');
+  const replacement = RunViewSchema.parse({ ...check(2), id: randomUUID(), context: { kind: 'regenerate', sourceRunId: root.id, number: 2 } });
+  expect(historyEntry({ ...session, runs: [root, replacement] }).answerState).toBe('answered');
+});
+
+it('separates available answers, pending verification, explicit stop and clarification in task summaries', () => {
+  const ready = RunViewSchema.parse({ ...session.runs[0], status: 'completed', outcome: { schemaVersion: 1, status: 'completed', verified: false, verificationStatus: 'not_requested', warning: null, verification: null, candidate: { schemaVersion: 1, kind: 'answer', problem: { text: 'x+1=3', subject: 'math', uncertainties: [] }, answer: '2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] } } });
+  if (ready.outcome?.status !== 'completed') throw new Error('ANSWER_FIXTURE');
+  expect(historyTaskStatus([{ ...ready, status: 'verifying' }])).toMatchObject({ answerReady: true, taskState: 'pending' });
+  expect(historyTaskStatus([{ ...ready, status: 'cancelled', outcome: null }])).toMatchObject({ answerReady: false, taskState: 'cancelled' });
+  expect(historyTaskStatus([{ ...ready, status: 'failed', outcome: null }])).toMatchObject({ answerReady: false, taskState: 'failed' });
+  expect(historyTaskStatus(session.runs)).toMatchObject({ answerReady: false, taskState: 'needs_clarification' });
+  expect(historyTaskStatus([])).toEqual({ answerReady: false, taskState: 'unanswered' });
 });

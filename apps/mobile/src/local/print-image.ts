@@ -1,4 +1,4 @@
-import { PrintImageAdjustmentSchema, PrintLayoutRegionSchema, type PrintImageAdjustment } from '@solveflow/contracts/local';
+import { MAX_PRINT_ROTATION, PrintImageAdjustmentSchema, PrintLayoutRegionSchema, type PrintImageAdjustment } from '@solveflow/contracts/local';
 import { originalIllustrationBounds, type ProblemStatement } from '@solveflow/contracts/agent';
 import { sharpenPrintPixels } from './print-image-sharpen';
 import { normalizePrintPaperPixels } from './print-image-paper';
@@ -7,9 +7,9 @@ import { warpPrintPerspective } from './print-image-perspective';
 
 export const originalPrintAdjustment: PrintImageAdjustment = { rotation: 0, crop: { left: 0, top: 0, right: 1, bottom: 1 }, enhance: false };
 type Bounds = { left: number; top: number; right: number; bottom: number; count: number };
-function documentField(data: ImageData): Uint8Array {
+function documentField(data: ImageData, valid?: Uint8Array): Uint8Array {
   const { width: w, height: h } = data; const available = new Uint8Array(w * h); const field = new Uint8Array(w * h); let biggest: number[] = [];
-  for (let index = 0; index < available.length; index++) { const p = index * 4; const r = data.data[p] ?? 0; const g = data.data[p + 1] ?? 0; const b = data.data[p + 2] ?? 0; if ((r + g + b) / 3 > 75 && Math.max(r, g, b) - Math.min(r, g, b) < 65) available[index] = 1; }
+  for (let index = 0; index < available.length; index++) { const p = index * 4; const r = data.data[p] ?? 0; const g = data.data[p + 1] ?? 0; const b = data.data[p + 2] ?? 0; if ((!valid || valid[index]) && (r + g + b) / 3 > 75 && Math.max(r, g, b) - Math.min(r, g, b) < 65) available[index] = 1; }
   const stack: number[] = [];
   for (let i = 0; i < available.length; i++) if (available[i]) {
     const component: number[] = []; available[i] = 0; stack.push(i);
@@ -73,7 +73,7 @@ function rotated(image: HTMLImageElement | HTMLCanvasElement, angle: number, max
   const result = canvas(Math.ceil(Math.abs(w * Math.cos(radians)) + Math.abs(h * Math.sin(radians))), Math.ceil(Math.abs(h * Math.cos(radians)) + Math.abs(w * Math.sin(radians))));
   result.context.fillStyle = '#fff'; result.context.fillRect(0, 0, result.canvas.width, result.canvas.height); result.context.translate(result.canvas.width / 2, result.canvas.height / 2); result.context.rotate(radians); result.context.drawImage(image, -w / 2, -h / 2, w, h); result.context.resetTransform(); return result;
 }
-function screenLineRotation(data: ImageData): number | null {
+function screenLineRotation(data: ImageData): { rotation: number; x: number; y: number } | null {
   const mask = new Uint8Array(data.width * data.height); const stack: number[] = []; let biggest: number[] = [];
   for (let y = 0; y < data.height * .65; y++) for (let x = 0; x < data.width; x++) { const p = (y * data.width + x) * 4; const r = data.data[p] ?? 0; const g = data.data[p + 1] ?? 0; const b = data.data[p + 2] ?? 0; if (b - r > 18 && b - g > 8 && b > 75) mask[y * data.width + x] = 1; }
   for (let i = 0; i < mask.length; i++) if (mask[i]) {
@@ -94,16 +94,47 @@ function screenLineRotation(data: ImageData): number | null {
   const slope = points.reduce((sum, point) => sum + (point[0] - meanX) * (point[1] - meanY), 0) / Math.max(1, varianceX);
   const error = points.reduce((sum, point) => sum + (point[1] - meanY - slope * (point[0] - meanX)) ** 2, 0) / points.length;
   const angle = -Math.atan(slope) * 180 / Math.PI;
-  return Math.sqrt(error) < 2.5 && Math.abs(angle) <= 12 ? Math.round(angle * 4) / 4 : null;
+  return Math.sqrt(error) < 2.5 && Math.abs(angle) < MAX_PRINT_ROTATION ? { rotation: Math.round(angle * 4) / 4, x: meanX, y: meanY } : null;
+}
+/** Trim only a confirmed screen's surrounding photograph, retaining a generous paper margin. */
+function screenCrop(data: ImageData, originalWidth: number, originalHeight: number, rotation: number, anchor: { x: number; y: number }): PrintImageAdjustment['crop'] {
+  const { width, height } = data; const radians = rotation * Math.PI / 180, cos = Math.cos(radians), sin = Math.sin(radians);
+  const valid = new Uint8Array(width * height); let validCount = 0;
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const dx = x - width / 2, dy = y - height / 2;
+    const sx = dx * cos + dy * sin + originalWidth / 2;
+    const sy = -dx * sin + dy * cos + originalHeight / 2;
+    if (sx >= 0 && sy >= 0 && sx < originalWidth && sy < originalHeight) { valid[y * width + x] = 1; validCount++; }
+  }
+  const field = documentField(data, valid); let left = width, top = height, right = 0, bottom = 0, count = 0;
+  const anchorX = (anchor.x - originalWidth / 2) * cos - (anchor.y - originalHeight / 2) * sin + width / 2;
+  const anchorY = (anchor.x - originalWidth / 2) * sin + (anchor.y - originalHeight / 2) * cos + height / 2;
+  let attached = 0;
+  for (const dy of [12, 24]) for (const dx of [-15, 0, 15]) {
+    const x = Math.round(anchorX + dx), y = Math.round(anchorY + dy);
+    if (x >= 0 && y >= 0 && x < width && y < height && field[y * width + x]) attached++;
+  }
+  // A larger neutral wall is not the screen's paper. Weak attachment keeps the full photo.
+  if (attached < 3) return originalPrintAdjustment.crop;
+  for (let index = 0; index < field.length; index++) if (field[index]) { const x = index % width, y = Math.floor(index / width); count++; left = Math.min(left, x); top = Math.min(top, y); right = Math.max(right, x + 1); bottom = Math.max(bottom, y + 1); }
+  if (count < validCount * .3 || right - left < originalWidth * .45 || bottom - top < originalHeight * .3) return originalPrintAdjustment.crop;
+  const margin = Math.max(12, Math.ceil(Math.max(width, height) * .03));
+  return { left: Math.max(0, left - margin) / width, top: Math.max(0, top - margin) / height, right: Math.min(width, right + margin) / width, bottom: Math.min(height, bottom + margin) / height };
 }
 export async function detectPrintAdjustment(uri: string, signal: AbortSignal): Promise<PrintImageAdjustment> {
   const image = await loadImage(uri, signal); const sample = rotated(image, 0, 600);
   try {
     const data = sample.context.getImageData(0, 0, sample.canvas.width, sample.canvas.height);
-    const rotation = screenLineRotation(data) ?? await estimatePrintRotation(textInkPoints(data), data.width, data.height, signal);
+    const screen = screenLineRotation(data);
+    const rotation = screen?.rotation ?? await estimatePrintRotation(textInkPoints(data), data.width, data.height, signal);
     signal.throwIfAborted();
-    // Angle detection is not permission to discard faint labels or neighboring choices.
-    return PrintImageAdjustmentSchema.parse({ rotation, crop: originalPrintAdjustment.crop, enhance: true });
+    let crop = originalPrintAdjustment.crop;
+    if (screen !== null) {
+      const turned = rotated(sample.canvas, rotation, 900);
+      try { crop = screenCrop(turned.context.getImageData(0, 0, turned.canvas.width, turned.canvas.height), sample.canvas.width, sample.canvas.height, rotation, screen); }
+      finally { turned.canvas.width = 0; }
+    }
+    return PrintImageAdjustmentSchema.parse({ rotation, crop, enhance: true });
   } finally { sample.canvas.width = 0; }
 }
 // Decision: .agents/notes/implemented/storage/2026-10-15-explicit-print-enhancement.md

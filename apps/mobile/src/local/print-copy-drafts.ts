@@ -1,8 +1,8 @@
-import { MAX_BATCH_PRINT_COPIES, type BatchPrintCopyRequest } from '@solveflow/contracts/local';
+import { MAX_BATCH_PRINT_COPIES, MAX_BATCH_PRINT_REMARK_CHARACTERS, type BatchPrintCopyRequest } from '@solveflow/contracts/local';
 
 type IntegerDraft = { text: string; value: number };
 export type PrintCopyField = 'count' | number;
-export type PrintCopyDrafts = { count?: IntegerDraft; incorrect?: Partial<Record<number, IntegerDraft>> };
+export type PrintCopyDrafts = { count?: IntegerDraft; incorrect?: Partial<Record<number, IntegerDraft>>; remarks?: Partial<Record<number, string>> };
 export type PrintCopyState = { requests: BatchPrintCopyRequest[]; drafts: PrintCopyDrafts };
 
 export function printCopyInteger(text: string, min: number, max: number): number | null {
@@ -22,7 +22,8 @@ export function parsePrintCopyDrafts(state: PrintCopyState, total: number, basel
     const value = draft === undefined ? previous.incorrect : printCopyInteger(draft.text, 0, total);
     if (value === null) invalidIncorrect.push(index);
     const incorrect = value ?? draft?.value ?? previous.incorrect;
-    return { correct: total - incorrect, incorrect };
+    const remark = state.drafts.remarks?.[index] ?? previous.remark;
+    return { correct: total - incorrect, incorrect, ...(remark === undefined ? {} : { remark }) };
   });
   const firstInvalid = invalidIncorrect[0];
   const error = invalidCount ? `导出份数需为 1 至 ${MAX_BATCH_PRINT_COPIES} 的整数。` : firstInvalid !== undefined ? `第 ${firstInvalid + 1} 份错题数需为 0 至 ${total} 的整数。` : '';
@@ -43,4 +44,11 @@ export function editPrintCopyDraft(state: PrintCopyState, field: PrintCopyField,
   const result = parsePrintCopyDrafts({ requests: state.requests, drafts }, total, baselineWrong);
   // Retain bounded per-copy text and valid values through smaller intermediate counts.
   return { requests: result.requests, drafts };
+}
+
+
+export function editPrintCopyRemark(state: PrintCopyState, index: number, text: string, total: number, baselineWrong: number): PrintCopyState {
+  if (!Number.isInteger(index) || index < 0 || index >= MAX_BATCH_PRINT_COPIES) return state;
+  const drafts = { ...state.drafts, remarks: { ...state.drafts.remarks, [index]: text.slice(0, MAX_BATCH_PRINT_REMARK_CHARACTERS) } };
+  return { requests: parsePrintCopyDrafts({ requests: state.requests, drafts }, total, baselineWrong).requests, drafts };
 }

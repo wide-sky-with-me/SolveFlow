@@ -13,6 +13,8 @@ import { background, onBackgroundExpired } from './local/background';
 import { lockLocalApp } from './local/lock';
 import { loadWebEnvironment, webModelFetch, webModelTestFetch, saveWebModelSettings, mutateWebModelPresets } from './local/web-env';
 import type { ModelPresetAction } from './local/model-preset-action';
+import { prepareActTranscriptionViews } from './local/act-transcription-views';
+import { prepareImageReviewViews } from './local/image-review-views';
 let opening: ReturnType<typeof openRuntime> | null = null;
 const settingsEnvelopeSchema = z.strictObject({ settings: LocalSettingsSchema, keySlot: z.enum(['a', 'b']) });
 const webPreferencesSchema = z.strictObject({ exam: ExamTypeSchema, concurrency: LocalConcurrencySchema });
@@ -59,7 +61,7 @@ async function openRuntime() {
     const snapshot = settings; const credentials = { solver: await readKey(keyName('solver')) ?? '', verifier: await readKey(keyName('verifier')), backup: await readKey(keyName('backup')) };
     LocalKeySchema.parse(credentials.solver); if (snapshot.verifier) LocalKeySchema.parse(credentials.verifier);
     if (snapshot.backup) LocalKeySchema.parse(credentials.backup);
-    return (input: Parameters<typeof solveOnDevice>[0], signal: AbortSignal, event: Parameters<typeof solveOnDevice>[5], diagnostic: Parameters<typeof solveOnDevice>[6], lifecycle?: Parameters<typeof solveOnDevice>[8]) => solveOnDevice(input, snapshot, credentials, modelFetch, signal, event, diagnostic, background.scheduleTimeout, lifecycle);
+    return (input: Parameters<typeof solveOnDevice>[0], signal: AbortSignal, event: Parameters<typeof solveOnDevice>[5], diagnostic: Parameters<typeof solveOnDevice>[6], lifecycle?: Parameters<typeof solveOnDevice>[8]) => solveOnDevice(input, snapshot, credentials, modelFetch, signal, event, diagnostic, background.scheduleTimeout, lifecycle, prepareActTranscriptionViews, prepareImageReviewViews);
   }
   let cachedExecutor: ReturnType<typeof executor> | null = null;
   let savingSettings = false;
@@ -195,6 +197,14 @@ async function openRuntime() {
       return engine.start(id, message, context, await getExecutor());
     },
     async enqueueBatch(id: string, retry = false) { return batch.enqueue(id, await getExecutor(), retry); },
+    async addBatchMaterials(input: unknown, signal?: AbortSignal) {
+      signal?.throwIfAborted(); const execute = await getExecutor(); signal?.throwIfAborted();
+      return batch.addMaterials(input, execute, signal);
+    },
+    async regenerateBatch(id: string, message: string, context: Parameters<LocalEngine['start']>[2]) {
+      if (!context || context.kind !== 'regenerate') throw new Error('请选择要重新解答的题目。');
+      return batch.enqueue(id, await getExecutor(), false, { message, context });
+    },
     async retryBatch(id: string, runId: string) { return batch.enqueue(id, await getExecutor(), true, undefined, runId); },
     async removeBatch(id: string) {
       z.uuid().parse(id);

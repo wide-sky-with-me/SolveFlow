@@ -2,7 +2,7 @@ import { cropPixels, type Crop } from '@solveflow/client/presentation';
 import { type ClientStore } from '@solveflow/client/remote';
 import type { Photo } from './platform.types';
 import { setRecentSessionUnavailable } from './local/recent-session-warning';
-import { MAX_BATCH_PHOTOS } from '@solveflow/contracts/local';
+import { MAX_BATCH_PHOTOS, MAX_BATCH_IMPORT_BYTES } from '@solveflow/contracts/local';
 import type { ImportPhoto } from './batch-photo-order';
 export const store: ClientStore = {
   async get(key) { return localStorage.getItem(`solveflow.${key}`); },
@@ -26,12 +26,12 @@ export async function pickPhotos(limit: number): Promise<ImportPhoto[]> {
     input.click();
   });
   if (files.length > limit) throw new Error(`本批还可添加${limit}张图片，请减少选择数量。`);
-  if (files.reduce((sum, file) => sum + file.size, 0) > 100 * 1024 * 1024) throw new Error('本次选择超过100MB，请分次导入。');
+  if (files.reduce((sum, file) => sum + file.size, 0) > MAX_BATCH_IMPORT_BYTES) throw new Error(`本次选择超过${MAX_BATCH_IMPORT_BYTES / 1024 / 1024}MB，请分次导入。`);
   const photos: ImportPhoto[] = [];
   try {
     for (const [id, file] of files.entries()) {
       const photo = await samplePhoto(file);
-      photos.push({ id, photo, fileName: file.name.slice(0, 160), ...(Number.isFinite(file.lastModified) && file.lastModified > 0 ? { timestamp: file.lastModified, timeSource: 'modified' as const } : {}) });
+      photos.push({ id, photo, fileName: file.name.slice(0, 160), sourceBytes: file.size, ...(Number.isFinite(file.lastModified) && file.lastModified > 0 ? { timestamp: file.lastModified, timeSource: 'modified' as const } : {}) });
     }
     return photos;
   } catch (cause) { for (const entry of photos) releasePhoto(entry.photo); throw cause; }
@@ -56,17 +56,17 @@ async function photoBlob(photo: Photo): Promise<Blob> {
 }
 export async function transformPhoto(photo: Photo, crop?: Crop, rotate = false, maxDimension = 2048): Promise<Photo> {
   if (!Number.isInteger(maxDimension) || maxDimension < 1 || maxDimension > 2048) throw new Error('图片尺寸无效。');
-  const source = await photoBlob(photo); const bitmap = await createImageBitmap(source);
+  const source = await photoBlob(photo); const canvas = document.createElement('canvas'); const bitmap = await createImageBitmap(source);
   try {
     const box = cropPixels(crop ?? { left: 0, top: 0, right: 100, bottom: 100 }, bitmap.width, bitmap.height);
     const width = rotate ? box.height : box.width; const height = rotate ? box.width : box.height; const scale = Math.min(1, maxDimension / Math.max(width, height));
-    const canvas = document.createElement('canvas'); canvas.width = Math.max(1, Math.round(width * scale)); canvas.height = Math.max(1, Math.round(height * scale));
+    canvas.width = Math.max(1, Math.round(width * scale)); canvas.height = Math.max(1, Math.round(height * scale));
     const context = canvas.getContext('2d'); if (!context) throw new Error('当前浏览器无法处理图片。');
     context.fillStyle = '#fff'; context.fillRect(0, 0, canvas.width, canvas.height); context.translate(canvas.width / 2, canvas.height / 2); if (rotate) context.rotate(Math.PI / 2);
     context.drawImage(bitmap, box.originX, box.originY, box.width, box.height, -box.width * scale / 2, -box.height * scale / 2, box.width * scale, box.height * scale);
     const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('图片处理失败。')), 'image/jpeg', .92));
     return { uri: URL.createObjectURL(blob), width: canvas.width, height: canvas.height, blob, owned: true, normalized: true };
-  } finally { bitmap.close(); }
+  } finally { bitmap.close(); canvas.width = 0; canvas.height = 0; }
 }
 export async function photoBody(photo: Photo) { const blob = photo.blob ?? await (await fetch(photo.uri)).blob(); const form = new FormData(); form.append('file', blob, 'problem.jpg'); return form; }
 export function releasePhoto(photo: Photo | null) { if (photo?.owned && photo.uri.startsWith('blob:')) URL.revokeObjectURL(photo.uri); }

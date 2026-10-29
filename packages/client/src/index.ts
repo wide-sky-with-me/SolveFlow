@@ -22,4 +22,5 @@ export { verificationFeedback } from './verification-feedback.js';
 export * from './local-history-import.js';
 export * from './batch-print.js';
 export * from './batch-print-variants.js';
+export * from './batch-print-order.js';
 export * from './local-export-tasks.js';

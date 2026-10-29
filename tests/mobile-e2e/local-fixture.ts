@@ -7,6 +7,8 @@ export async function seedLocalSession(page: Page, session: SessionView, image: 
   await page.goto(`/?session=${session.id}`); await expect(page.getByRole('button', { name: '拍照', exact: true })).toBeVisible();
 }
 export async function configureLocalModel(page: Page) {
+  const environmentStatus = await page.evaluate(async () => (await fetch('/__solveflow/web-env', { cache: 'no-store' })).status);
+  if (environmentStatus !== 404) throw new Error('LOCAL_FIXTURE_REQUIRES_UNMANAGED_SERVICE');
   if (!await page.getByLabel('解题服务地址', { exact: true }).isVisible()) { await page.getByRole('tab', { name: '我的', exact: true }).click(); await page.getByRole('button', { name: '设置', exact: true }).click(); }
   await page.getByLabel('解题服务地址', { exact: true }).fill('https://fixture-model.invalid/v1'); await page.getByLabel('解题供应商标识', { exact: true }).fill('fixture-provider'); await page.getByLabel('解题模型引用名', { exact: true }).fill('fixture-user-model'); await page.getByLabel('解题API Key', { exact: true }).fill('synthetic-fixture-secret'); await page.getByRole('button', { name: '保存设置', exact: true }).click(); await expect(page.getByRole('button', { name: '设置', exact: true })).toBeVisible(); await page.getByRole('tab', { name: '题目', exact: true }).click();
 }

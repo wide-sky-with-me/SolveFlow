@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BatchPrintCopyRequestsSchema } from '@solveflow/contracts/local';
-import { editPrintCopyDraft, parsePrintCopyDrafts, printCopyInteger, type PrintCopyState } from './print-copy-drafts';
+import { editPrintCopyDraft, editPrintCopyRemark, parsePrintCopyDrafts, printCopyInteger, type PrintCopyState } from './print-copy-drafts';
 
 const initial = (): PrintCopyState => ({ requests: [{ correct: 25, incorrect: 2 }], drafts: {} });
 const edit = (state: PrintCopyState, field: 'count' | number, text: string | null) => editPrintCopyDraft(state, field, text, 27, 2);
@@ -67,4 +67,17 @@ describe('copy quantity draft projection', () => {
     for (const field of [-1, .5, 20, 1000]) expect(edit(state, field, '1')).toBe(state);
     expect(before).toEqual(initial());
   });
+});
+
+
+it('preserves independent remarks through count edits and never changes error quantities', () => {
+  let state = edit(initial(), 'count', '3');
+  state = editPrintCopyRemark(state, 0, '甲组', 27, 2);
+  state = editPrintCopyRemark(state, 2, '乙组', 27, 2);
+  state = edit(state, 'count', '1'); state = edit(state, 0, '5'); state = edit(state, 'count', '3');
+  expect(state.requests.map(row => row.remark)).toEqual(['甲组', undefined, '乙组']);
+  expect(state.requests[0]).toEqual({ correct: 22, incorrect: 5, remark: '甲组' });
+  const before = structuredClone(state);
+  expect(editPrintCopyRemark(state, 0, 'x'.repeat(81), 27, 2).requests[0]?.remark).toHaveLength(80);
+  expect(state).toEqual(before);
 });

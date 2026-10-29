@@ -1,21 +1,26 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { collectBatchPrint } from '@solveflow/client/local';
-import { clientError, questionsForBatchPrint, questionsForBatchQuestionPrint } from '@solveflow/client/presentation';
+import { clientError, questionsForBatchPrint, questionsForBatchQuestionPrint, orderBatchPrintSnapshot, orderBatchPrintItems } from '@solveflow/client/presentation';
 import { MAX_BATCH_PRINT_BYTES, MAX_BATCH_PRINT_LAYOUT_SOURCES, type BatchPrintSnapshot, type BatchPrintQuestion, type BatchPrintProblem, type PrintImageAdjustment } from '@solveflow/contracts/local';
 import type { Runtime } from '../runtime';
 import { printImageKey, recordPrintImages, type PrintImages } from '../dom/batch-print-document';
 import { fallbackPrintLayout, preparePrintLayout, requireCleanPrintLayouts, requireSavedPrintLayouts, requirePaperPrintLayouts, type PrintAsset, type PrintLayouts, type ReviewPrintSource } from '../local/batch-print-presentation.web';
-import { prepareBatchExport, type ExportLayout } from '../local/prepare-batch-export.web';
+import { prepareBatchExport, type PreparedExportContent, type ExportLayout } from '../local/prepare-batch-export.web';
+import { prepareExportImages } from '../local/prepare-export-images.web';
 import { detectPrintAdjustment, originalPrintAdjustment, preparePrintImage } from '../local/print-image';
 import { parseBatchPrintLayout, type BatchPrintLayoutInput } from '@solveflow/contracts/local';
 import { cachePrintLayout, printLayoutCacheKey, readPrintLayoutCache, writePrintLayoutCache, type CachedPrintLayout } from '../local/batch-print-cache.web';
 import { restorePaperBatch, preparePaperBatch, savePaperRecord, withinPaperBudget, straightenablePaperSources, straightenPaperBatch, enhanceablePaperSources, enhancePaperBatch, type PaperPreparationState } from '../local/prepare-paper-batch.web';
 
 export function useBatchPdfExport(runtime: Runtime, batchId: string) {
-  const [snapshot, setSnapshot] = useState<BatchPrintSnapshot | null>(null); const [sources, setSources] = useState<ReviewPrintSource[]>([]);
-  const [questions, setQuestions] = useState<BatchPrintQuestion[]>([]); const [questionSources, setQuestionSources] = useState<BatchPrintProblem[]>([]); const [layouts, setLayouts] = useState<PrintLayouts>({});
-  const preparedCurrent = useRef<{ layouts: PrintLayouts; images: PrintImages }>({ layouts: {}, images: {} });
+  const [originalSnapshot, setSnapshot] = useState<BatchPrintSnapshot | null>(null); const [sources, setSources] = useState<ReviewPrintSource[]>([]);
+  const [originalQuestions, setQuestions] = useState<BatchPrintQuestion[]>([]); const [originalQuestionSources, setQuestionSources] = useState<BatchPrintProblem[]>([]); const [layouts, setLayouts] = useState<PrintLayouts>({});
+  const [recordOrder, setRecordOrder] = useState<string[] | null>(null);
+  const snapshot = useMemo(() => originalSnapshot && recordOrder ? orderBatchPrintSnapshot(originalSnapshot, recordOrder) : originalSnapshot, [originalSnapshot, recordOrder]);
+  const questions = useMemo(() => snapshot && recordOrder ? orderBatchPrintItems(originalQuestions, snapshot) : originalQuestions, [snapshot, recordOrder, originalQuestions]);
+  const questionSources = useMemo(() => snapshot && recordOrder ? orderBatchPrintItems(originalQuestionSources, snapshot) : originalQuestionSources, [snapshot, recordOrder, originalQuestionSources]);
+  const preparedCurrent = useRef<PreparedExportContent>({ layouts: {}, images: {} });
   const [images, setImages] = useState<PrintImages>({}); const adjustments = useRef<Record<string, PrintImageAdjustment>>({});
   const [selected, setSelected] = useState(0); const [draft, setDraft] = useState<PrintImageAdjustment>(originalPrintAdjustment);
   const [imageResetToken, setImageResetToken] = useState(false);
@@ -49,7 +54,7 @@ export function useBatchPdfExport(runtime: Runtime, batchId: string) {
       catch { operation.signal.throwIfAborted(); if (current()) { setCacheReadFailed(true); setError('已整理内容暂时读取失败，请重试读取；也可按已保存内容导出。'); } }
       if (!current() || operation.signal.aborted) return;
       preparedCurrent.current = { layouts: restored.layouts, images: restored.images }; preparedPolicy.current = 'paper'; paperSources.current = restored.sources; preparedKeys.current = new Set(restored.preparedKeys);
-      adjustments.current = restored.adjustments; setSnapshot(value); setSources(restored.sources); setQuestions(printedQuestions); setQuestionSources(printedSources); setLayouts(restored.layouts); setImages(restored.images); setDraft(original[0] ? restored.adjustments[original[0].key] ?? originalPrintAdjustment : originalPrintAdjustment); setReady(printedSources.every(question => !restored.layouts[question.key]?.assets.some(asset => asset.role === 'source'))); setProgress('');
+      adjustments.current = restored.adjustments; setRecordOrder(null); setSnapshot(value); setSources(restored.sources); setQuestions(printedQuestions); setQuestionSources(printedSources); setLayouts(restored.layouts); setImages(restored.images); setDraft(original[0] ? restored.adjustments[original[0].key] ?? originalPrintAdjustment : originalPrintAdjustment); setReady(printedSources.every(question => !restored.layouts[question.key]?.assets.some(asset => asset.role === 'source'))); setProgress('');
     })().catch(cause => {
       if (!current()) return;
       if (operation.signal.aborted) setMessage('读取已取消。'); else setError(`读取题目失败：${clientError(cause)}`);
@@ -84,11 +89,29 @@ export function useBatchPdfExport(runtime: Runtime, batchId: string) {
     await adjust(false, false, { ...draft, rotation: 0, crop: originalPrintAdjustment.crop, perspective }, true);
   }
   async function prepare(signal: AbortSignal, force = false, policy: ExportLayout = force ? 'clean' : 'paper') {
-    if (!snapshot || !questionSources.length || ready && !force && preparedPolicy.current === policy) return;
-    if (!force && policy !== 'clean') {
-      const prepared = await prepareBatchExport(runtime, snapshot, questionSources, policy, signal, value => { if (alive.current) setProgress(value); }, preparedCurrent.current);
+    if (!snapshot || !questionSources.length) return;
+    if (policy === 'direct') {
+      const prepared = await prepareBatchExport(runtime, snapshot, questionSources, policy, signal, () => {});
+      if (alive.current && !signal.aborted) flushSync(() => { preparedCurrent.current = prepared; preparedPolicy.current = policy; setLayouts(prepared.layouts); setImages(prepared.images); setReady(true); });
+      return;
+    }
+    const reuse = ready && preparedPolicy.current === policy;
+    if (!force && (policy !== 'clean' || reuse)) {
+      if (!preparedCurrent.current.processedImages) setReady(false);
+      const progress = (value: string) => { if (alive.current) setProgress(value); };
+      let prepared: PreparedExportContent;
+      try {
+        prepared = reuse
+          ? await prepareExportImages(snapshot, getPrepared(), signal, progress)
+          : await prepareBatchExport(runtime, snapshot, questionSources, policy, signal, progress, getPrepared());
+      } catch (cause) { if (alive.current) setReady(ready); throw cause; }
       if (alive.current && !signal.aborted) flushSync(() => {
         preparedCurrent.current = prepared; preparedPolicy.current = policy;
+        const currentSource = sources[selected];
+        const currentAdjustment = currentSource ? prepared.adjustments?.[currentSource.key] : undefined;
+        if (currentSource && !adjustments.current[currentSource.key] && currentAdjustment) setDraft(currentAdjustment);
+        adjustments.current = prepared.adjustments ?? adjustments.current;
+        paperSources.current = prepared.sources ?? paperSources.current;
         setLayouts(prepared.layouts); setImages(prepared.images); setReady(true);
       });
       return;
@@ -172,7 +195,7 @@ export function useBatchPdfExport(runtime: Runtime, batchId: string) {
     const record = snapshot?.records.find(record => record.session.id === recordId); if (!record) return;
     for (const question of questionSources.filter(question => question.recordId === recordId)) preparedKeys.current.add(question.key);
     markSaved(recordId, false);
-    try { await savePaperRecord(record, questionSources, paperState(), signal); markSaved(recordId, true); if (alive.current) setMessage('整理结果已保存，后续导出可复用。'); }
+    try { await savePaperRecord(record, questionSources, paperState(), signal); markSaved(recordId, true); if (alive.current) setMessage('整理结果已保存'); }
     catch { signal.throwIfAborted(); throw new Error('整理结果尚未保存，请重试保存；已有结果无需重新识别。'); }
   }
   async function savePending() { await work(async signal => { for (const id of [...dirtyRecords.current]) await persistManual(id, signal); }); }
@@ -196,6 +219,18 @@ export function useBatchPdfExport(runtime: Runtime, batchId: string) {
       if (alive.current) setMessage(count ? `已更新 ${count} 张图示清晰化，旋转和裁切保持不变。` : '图示清晰化已是当前结果，旋转和裁切保持不变。');
     });
   }
+  async function automateFigures() {
+    if (!snapshot) return;
+    await work(async signal => {
+      requireSavedChanges();
+      const prepared = await prepareExportImages(snapshot, getPrepared(), signal, value => { if (alive.current) setProgress(value); }, true);
+      signal.throwIfAborted();
+      const state = { ...paperState(), ...prepared, sources: paperSources.current, adjustments: prepared.adjustments ?? adjustments.current };
+      commitPaper(state); preparedCurrent.current = prepared;
+      for (const record of snapshot.records) if (questionSources.some(question => question.recordId === record.session.id && state.layouts[question.key]?.assets.length)) await persistManual(record.session.id, signal);
+      if (alive.current) setMessage('本批图片已自动旋转、清晰化；可靠屏幕边界已裁剪，手动四角校正保留。');
+    });
+  }
   async function straightenFigures() {
     if (!snapshot) return;
     await work(async signal => {
@@ -212,7 +247,7 @@ export function useBatchPdfExport(runtime: Runtime, batchId: string) {
     await work(async signal => {
       if (dirtyRecords.current.size) throw new Error('请先重试保存整理结果，再继续处理。');
       await preparePaperBatch(runtime, { ...snapshot, records }, questionSources.filter(question => !recordId || question.recordId === recordId), paperState(), force, signal, value => { if (alive.current) setProgress(value); }, state => commitPaper(state), markSaved, refinement);
-      if (alive.current) setMessage('整理结果已保存，后续纯题、作答和不同副本直接复用。');
+      if (alive.current) setMessage('整理结果已保存');
     });
   }
   async function analyze() { await processPaper(true); }
@@ -262,13 +297,13 @@ export function useBatchPdfExport(runtime: Runtime, batchId: string) {
   // Decision: .agents/notes/implemented/storage/2026-10-15-explicit-print-enhancement.md
   function requireSavedChanges() { if (dirtyRecords.current.size) throw new Error('请先重试保存整理结果，再继续导出。'); }
   function validatePrepared(policy: ExportLayout = 'paper') { requireSavedChanges(); (policy === 'clean' ? requireCleanPrintLayouts : policy === 'paper' ? requirePaperPrintLayouts : requireSavedPrintLayouts)(questionSources, preparedCurrent.current.layouts, preparedCurrent.current.images); }
-  function getPrepared() { requireSavedChanges(); return preparedCurrent.current; }
+  function getPrepared(): PreparedExportContent { requireSavedChanges(); return { ...preparedCurrent.current, sources: paperSources.current, adjustments: adjustments.current }; }
   const reviewQuestionIndices = questionSources.flatMap((question, index) => preparedKeys.current.has(question.key) && layouts[question.key]?.assets.some(asset => asset.role === 'source') ? [index] : []);
   const pendingQuestions = questionSources.filter(question => !layouts[question.key] || layouts[question.key]?.assets.some(asset => asset.role === 'source')).length;
   const contentReviewIndices = questionSources.flatMap((question, index) => preparedKeys.current.has(question.key) && layouts[question.key]?.problem.optionsComplete === false ? [index] : []);
   const canRefine = !!runtime.settings?.verifier;
   const hasStraightenableFigures = straightenablePaperSources(paperState()).length > 0;
   const hasEnhanceableFigures = enhanceablePaperSources(paperState()).length > 0;
-  return { snapshot, sources, questions, questionSources, layouts, images, selected, draft, setDraft, imageResetToken, busy, progress, setProgress, error, setError, variantError, message, setMessage, controller, alive, cleanupPrint, cacheNotice, retryLoad, cacheReadFailed, retryPreparedRead, ready, readingReady, prepare, prepareReading, validatePrepared, getPrepared, choose, adjust, correctPerspective, analyze, analyzeQuestion, processPaper, canRefine, hasStraightenableFigures, straightenFigures, hasEnhanceableFigures, enhanceFigures, pendingQuestions, reviewQuestionIndices, contentReviewIndices, unsavedCount, savePending, confirmClose, work, setQuestionMode, useCurrentIllustration, excludeCurrentSource };
+  return { snapshot, originalSnapshot, originalQuestions, recordOrder, setRecordOrder, sources, questions, questionSources, layouts, images, selected, draft, setDraft, imageResetToken, busy, progress, setProgress, error, setError, variantError, message, setMessage, controller, alive, cleanupPrint, cacheNotice, retryLoad, cacheReadFailed, retryPreparedRead, ready, preparedLayout: preparedPolicy.current, readingReady, prepare, prepareReading, validatePrepared, getPrepared, choose, adjust, correctPerspective, analyze, analyzeQuestion, processPaper, canRefine, hasStraightenableFigures, straightenFigures, hasEnhanceableFigures, enhanceFigures, automateFigures, pendingQuestions, reviewQuestionIndices, contentReviewIndices, unsavedCount, savePending, confirmClose, work, setQuestionMode, useCurrentIllustration, excludeCurrentSource };
 }
 export type BatchPdfExportData = ReturnType<typeof useBatchPdfExport>;

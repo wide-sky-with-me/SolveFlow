@@ -7,7 +7,7 @@ export function questionConversations(runs: readonly RunView[]): QuestionConvers
     const address = run.context ? resolveQuestionThread(runs, run.context) : null;
     const candidate = run.outcome?.status === "completed" ? run.outcome.candidate : undefined;
     const sections = candidate ? questionSections(candidate) : null;
-    if (sections && address?.number === undefined) {
+    if (sections && address?.number === undefined && !isAuxiliaryContext(run.context?.kind)) {
       for (const section of sections) {
         const key = keyOf(run.id, section.number);
         groups.set(key, { key, root: run, number: section.number, runs: [projectQuestionRun(run, section.number)] });

@@ -324,7 +324,7 @@ it.each(['conversation', 'auxiliary'] as const)('enforces the separate %s cap be
   expect(execute).not.toHaveBeenCalled(); expect((await repository.read(record.session.id)).session.runs).toHaveLength(count);
 });
 
-it.each(['esat', 'tmua', 'tara'] as const)('preserves %s for batch snapshots, reopened requests and exported records', async exam => {
+it.each(['act', 'esat', 'tmua', 'tara'] as const)('preserves %s for batch snapshots, reopened requests and exported records', async exam => {
   const { repository, engine } = setup();
   const batch = { id: randomUUID(), title: '考试快照回归', exam, position: 1, createdAt: new Date().toISOString() };
   const saved = await engine.create('data:image/jpeg;base64,AQID', 30, 20, exam, batch);

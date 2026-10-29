@@ -45,7 +45,7 @@ export function BatchEditor({ runtime, batchId, onClose, onApplied }: { runtime:
   </SafeAreaView></MotionModal>;
 }
 
-function BatchThumbnail({ runtime, id }: { runtime: Runtime; id: string }) {
+export function BatchThumbnail({ runtime, id }: { runtime: Runtime; id: string }) {
   const [image, setImage] = useState<string>();
   const [error, setError] = useState(false);
   useEffect(() => { let alive = true; void (async () => {

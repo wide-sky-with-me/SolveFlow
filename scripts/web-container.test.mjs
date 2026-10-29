@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request as httpRequest } from 'node:http';
-import { startWebContainer, containerEnvironment } from './web-container.mjs';
+import { startWebContainer, containerEnvironment, containerConcurrency } from './web-container.mjs';
 const profile = { provider: 'fixture', baseURL: 'https://fixture.invalid/v1', model: 'fixture-model', api: 'openai-completions', contextWindow: 32768, maxTokens: 1024, maxTokensField: 'max_tokens' };
 const configuration = { schemaVersion: 1, models: { solver: profile, verifier: null, backup: null }, keys: { solver: 'fixture-private-model-key', verifier: null, backup: null } };
 async function running(t, options = {}) {
@@ -23,6 +23,25 @@ test('bootstrap carries role tokens but never the model key', () => {
   assert.equal(JSON.stringify(environment.bootstrap).includes(configuration.keys.solver), false);
   assert.equal(environment.bootstrap.accessTokens.solver.length, 64);
 });
+test('deployment concurrency is optional and follows shared integer bounds', () => {
+  assert.equal(containerConcurrency({}), null);
+  assert.deepEqual(containerConcurrency({ SOLVEFLOW_WEB_SOLVER_CONCURRENCY: '16', SOLVEFLOW_WEB_VERIFIER_CONCURRENCY: '16' }), { solver: 16, verifier: 16 });
+  assert.deepEqual(containerConcurrency({ SOLVEFLOW_WEB_SOLVER_CONCURRENCY: '64', SOLVEFLOW_WEB_VERIFIER_CONCURRENCY: '64' }), { solver: 64, verifier: 64 });
+  assert.deepEqual(containerConcurrency({ SOLVEFLOW_WEB_SOLVER_CONCURRENCY: '12' }), { solver: 12, verifier: 8 });
+  for (const value of ['', '0', '65', '1.5', 'invalid']) {
+    for (const role of ['SOLVER', 'VERIFIER']) assert.throws(() => containerConcurrency({ [`SOLVEFLOW_WEB_${role}_CONCURRENCY`]: value }));
+  }
+});
+test('deployment concurrency survives loading and editing private model settings without persisting it as a model', async t => {
+  const concurrency = { solver: 16, verifier: 16 }; const app = await running(t, { concurrency });
+  const read = async () => (await (await fetch(`${app.url}/__solveflow/web-env`)).json()).settings.concurrency;
+  assert.deepEqual(await read(), concurrency);
+  const response = await fetch(`${app.url}/__solveflow/web-env/settings`, { method: 'PUT', headers: { 'content-type': 'application/json', authorization: `Bearer ${app.environment.roles.solver.token}` }, body: JSON.stringify({ ...configuration, keys: { solver: null, verifier: null, backup: null } }) });
+  assert.equal(response.status, 200); assert.deepEqual((await response.json()).settings.concurrency, concurrency);
+  assert.deepEqual(await read(), concurrency);
+  assert.deepEqual(JSON.parse(await readFile(join(app.stateDirectory, 'web-model-settings.json'), 'utf8')), configuration);
+  assert.equal(app.calls(), 0);
+});
 test('missing or invalid persistent model settings fail startup', async t => {
   const root = await mkdtemp(join(tmpdir(), 'solveflow-container-invalid-')); t.after(() => rm(root, { recursive: true }));
   await assert.rejects(startWebContainer({ directory: root, stateDirectory: root, port: 0 }));
@@ -31,6 +50,7 @@ test('missing or invalid persistent model settings fail startup', async t => {
 });
 test('static and environment requests make no model calls; unknown API stays closed', async t => {
   const app = await running(t);
+  assert.equal(app.server.requestTimeout, 130000); assert.equal(app.server.headersTimeout, 10000);
   assert.equal((await fetch(app.url)).status, 200);
   const environment = await (await fetch(`${app.url}/__solveflow/web-env`)).json();
   assert.equal(environment.canEditModels, true); assert.equal(JSON.stringify(environment).includes(configuration.keys.solver), false);

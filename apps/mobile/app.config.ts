@@ -1,10 +1,10 @@
 import type { ExpoConfig } from 'expo/config';
 const config: ExpoConfig = {
-  name: 'SolveFlow', slug: 'solveflow', version: '0.1.78', scheme: 'solveflow',
+  name: 'SolveFlow', slug: 'solveflow', version: '0.1.79', scheme: 'solveflow',
   icon: './assets/app-icon.png',
   orientation: 'default',
   ios: { supportsTablet: true, bundleIdentifier: 'com.solveflow.app' },
-  android: { versionCode: 79, adaptiveIcon: { foregroundImage: './assets/app-icon.png', backgroundColor: '#2867dd' }, allowBackup: false, package: 'com.solveflow.app', blockedPermissions: ['android.permission.RECORD_AUDIO', 'android.permission.SYSTEM_ALERT_WINDOW', 'android.permission.READ_MEDIA_IMAGES', 'android.permission.READ_MEDIA_VIDEO', 'android.permission.READ_EXTERNAL_STORAGE', 'android.permission.WRITE_EXTERNAL_STORAGE'] },
+  android: { versionCode: 80, adaptiveIcon: { foregroundImage: './assets/app-icon.png', backgroundColor: '#2867dd' }, allowBackup: false, package: 'com.solveflow.app', blockedPermissions: ['android.permission.RECORD_AUDIO', 'android.permission.SYSTEM_ALERT_WINDOW', 'android.permission.READ_MEDIA_IMAGES', 'android.permission.READ_MEDIA_VIDEO', 'android.permission.READ_EXTERNAL_STORAGE', 'android.permission.WRITE_EXTERNAL_STORAGE'] },
   web: { bundler: 'metro', name: 'SolveFlow 拍照解题', lang: 'zh-CN', favicon: './assets/app-icon.png' },
   plugins: [
     // Decision: .agents/notes/implemented/architecture/2026-10-08-ios-scene-lifecycle.md

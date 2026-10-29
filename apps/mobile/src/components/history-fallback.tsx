@@ -13,6 +13,7 @@ export function HistoryFallback({ sessions, currentId, disabled, loadThumbnail, 
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const lastPage = Math.max(0, Math.ceil(sessions.length / 10) - 1);
   const currentPage = Math.min(page, lastPage);
+  useEffect(() => setPage(value => Math.min(value, lastPage)), [lastPage]);
   const visible = sessions.slice(currentPage * 10, currentPage * 10 + 10).map(historyEntry);
   const ids = visible.map(entry => entry.id).join(',');
   useEffect(() => {

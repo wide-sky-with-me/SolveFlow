@@ -75,3 +75,10 @@ it('preserves initialization success and failure without cancellation', async ()
   const reason = new Error('INITIALIZATION_FAILED');
   await expect(waitForExportInitialization(Promise.reject(reason))).rejects.toBe(reason);
 });
+
+it('returns a storage inspection value and consumes a late rejection after cancellation', async () => {
+  expect(await waitForExportInitialization(Promise.resolve({ available: 42 }))).toEqual({ available: 42 });
+  const controller = new AbortController(); let reject = (_error: Error) => {};
+  const pending = waitForExportInitialization(new Promise<number>((_resolve, no) => { reject = no; }), controller.signal).catch(() => 'cancelled');
+  controller.abort(); expect(await pending).toBe('cancelled'); reject(new Error('LATE_INSPECTION_FAILURE')); await Promise.resolve();
+});

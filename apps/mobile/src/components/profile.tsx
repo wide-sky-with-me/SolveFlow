@@ -2,7 +2,7 @@ import { AppearanceSetting } from './appearance-setting';
 import { Pressable, Text, View } from '../theme/primitives';
 import { StyleSheet } from 'react-native';
 import { colors, MenuLabel, MenuAccessory, s } from './ui';
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import type { LocalHistorySummary } from '@solveflow/contracts/local';
 import { subjectLabel, type QuestionAnswerState } from '@solveflow/contracts/http';
 import { useTheme } from '../theme/provider';
@@ -14,7 +14,7 @@ const answerStates: ReadonlyArray<{ value: QuestionAnswerState; label: string; l
   { value: 'unanswered', label: '未作答', light: '#607087', dark: '#a6b5ca' },
 ];
 
-export function Profile({ sessions, settingsDisabled, onSettings, onHelp, onHistory, onFavorites, onExport, onImport }: { sessions: readonly LocalHistorySummary[]; settingsDisabled: boolean; onSettings: () => void; onHelp: () => void; onHistory: () => void; onFavorites: () => void; onExport: () => void; onImport: () => void }) {
+export function Profile({ sessions, settingsDisabled, onSettings, onHelp, onTasks, onHistory, onFavorites, onExport, onImport, exportRecords }: { sessions: readonly LocalHistorySummary[]; settingsDisabled: boolean; onSettings: () => void; onHelp: () => void; onTasks?: () => void; onHistory: () => void; onFavorites: () => void; onExport: () => void; onImport: () => void; exportRecords?: ReactNode }) {
   const { scheme } = useTheme();
   const stats = useMemo(() => {
     const states = { verified: 0, answered: 0, failed: 0, unanswered: 0 };
@@ -64,6 +64,8 @@ export function Profile({ sessions, settingsDisabled, onSettings, onHelp, onHist
         <Pressable accessibilityRole="button" accessibilityLabel="导出本地记录" disabled={settingsDisabled} accessibilityState={{ disabled: settingsDisabled }} onPress={onExport} style={({ pressed }) => [styles.row, pressed && { backgroundColor: '#f1f5fc' }, settingsDisabled && { opacity: .45 }]}><MenuLabel>导出本地记录</MenuLabel><MenuAccessory /></Pressable>
         <Pressable accessibilityRole="button" accessibilityLabel="恢复本地记录" disabled={settingsDisabled} accessibilityState={{ disabled: settingsDisabled }} onPress={onImport} style={({ pressed }) => [styles.row, pressed && { backgroundColor: '#f1f5fc' }, settingsDisabled && { opacity: .45 }]}><MenuLabel>恢复本地记录</MenuLabel><MenuAccessory /></Pressable>
         <Pressable accessibilityRole="button" accessibilityLabel="使用说明" onPress={onHelp} style={({ pressed }) => [styles.row, pressed && { backgroundColor: '#f1f5fc' }]}><MenuLabel>使用说明</MenuLabel><MenuAccessory /></Pressable>
+        {onTasks && <Pressable accessibilityRole="button" accessibilityLabel="批量任务" onPress={onTasks} style={styles.row}><MenuLabel>批量任务</MenuLabel><MenuAccessory /></Pressable>}
+        {exportRecords}
       </View>
     </View>
   </View>;

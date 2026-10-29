@@ -12,6 +12,8 @@ const sameDestination = (a, b) => a.baseURL === b.baseURL && a.provider === b.pr
 export async function openWebModelSettings(environment, file, presetFile = `${file}.presets`) {
   if (!environment) return null;
   const initial = environment.roles;
+  // Deployment defaults survive model edits; browser preferences still take precedence.
+  const concurrency = environment.bootstrap.settings.concurrency;
   let presets = [];
   const expose = bootstrap => WebEnvironmentSchema.parse({ ...bootstrap, canManagePresets: true, presets: presets.map(({ id, name, configuration }) => ({ id, name, models: configuration.models })) });
   async function writePrivate(destination, value) {
@@ -50,7 +52,7 @@ export async function openWebModelSettings(environment, file, presetFile = `${fi
   function prepare(update) {
     const stored = complete(update);
     const nextRoles = Object.fromEntries(roles.map(role => [role, resolveRole(role, stored.models[role], stored.keys[role])]));
-    const bootstrap = WebEnvironmentSchema.parse({ schemaVersion: 1, canEditModels: true, settings: { schemaVersion: 1, ...update.models }, accessTokens: Object.fromEntries(roles.map(role => [role, nextRoles[role]?.token ?? null])) });
+    const bootstrap = WebEnvironmentSchema.parse({ schemaVersion: 1, canEditModels: true, settings: { schemaVersion: 1, ...update.models, ...(concurrency === undefined ? {} : { concurrency }) }, accessTokens: Object.fromEntries(roles.map(role => [role, nextRoles[role]?.token ?? null])) });
     return { roles: nextRoles, bootstrap: expose(bootstrap) };
   }
   try {

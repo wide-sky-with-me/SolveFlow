@@ -93,7 +93,7 @@ it('keeps later caller edits outside the owned capture and returns independent o
   const output = await captured(owned, true, async () => {
     caller.batch.title = 'CHANGED'; caller.records[2]!.image = 'INVALID'; caller.records[1]!.session.runs[0]!.outcome.candidate.answer = 'CHANGED';
   });
-  expect(output).toStrictEqual(expected); output.snapshot.batch.title = 'RENDERER'; output.questions[0]?.candidate.problem.uncertainties.push('RENDERER');
+  expect(output).toStrictEqual(expected); output.snapshot.batch.title = 'RENDERER'; output.questions[0]?.candidate?.problem.uncertainties.push('RENDERER');
   expect(owned.batch.title).toBe('  Captured projection  '); expect(owned.records[0]!.session.runs[0]!.outcome.candidate.problem.uncertainties).toEqual([]);
 });
 it.each(['image', 'answer', 'root', 'owner', 'position', 'session', 'sparse'] as const)('keeps complete source issues and order for %s ahead of the page gate', async field => {
@@ -116,13 +116,13 @@ it('retains issues spanning multiple invalid records without earlier page or ans
 it('checks projected subquestion count before extracting incomplete answers', async () => {
   const input = source(); input.records[2]!.session.runs = []; const failure = new Error('PAGE_GATE'); const gate = vi.fn(() => { throw failure; });
   await expect(captured(input, true, async () => {}, gate)).rejects.toBe(failure); expect(gate).toHaveBeenCalledExactlyOnceWith(3);
-  await expect(captured(input, true, async () => {})).rejects.toThrow('完整已保存回答');
+  expect((await captured(input, true, async () => {})).questions[2]).toMatchObject({ candidate: null, runId: null });
   expect((await captured(input, false, async () => {})).questions).toEqual([]);
 });
 it('gates subquestions instead of source records', async () => {
   const input = source(2, 3); const gate = vi.fn(); const output = await captured(input, true, async () => {}, gate);
   expect(gate).toHaveBeenCalledExactlyOnceWith(6); expect(output.problems.map(problem => problem.ordinal)).toEqual([1, 2, 3, 4, 5, 6]);
-  expect(output.questions.map(question => question.candidate.answer)).toEqual(['1', '2', '3', '1', '2', '3']);
+  expect(output.questions.map(question => question.candidate?.answer)).toEqual(['1', '2', '3', '1', '2', '3']);
 });
 it.each([false, true])('retains source/output errors before the page gate for large inputs (bad image: %s)', async badImage => {
   const input = badImage ? source(100, 4) : source(100, 3, 2); if (badImage) input.records[99]!.image = 'INVALID';

@@ -1,5 +1,6 @@
 // Decision: .agents/notes/implemented/storage/2026-10-07-browser-recovery-boundaries.md
 import { LocalDataError, type LocalDocuments } from '@solveflow/client/local';
+import { MAX_LOCAL_RECORDS } from '@solveflow/contracts/local';
 let opening: Promise<LocalDocuments> | null = null;
 export function openDocuments(): Promise<LocalDocuments> {
   opening ??= new Promise<LocalDocuments>((resolve, reject) => {
@@ -23,6 +24,28 @@ export function openDocuments(): Promise<LocalDocuments> {
         });
       }
       resolve({ async get(key) { const value: unknown = await transaction('readonly', store => store.get(key)); if (value === undefined) return null; if (typeof value !== 'string') throw new LocalDataError(key); return value; },
+        // Decision: .agents/notes/implemented/storage/2026-10-23-batch-import-preparation.md
+        async getMany(keys) {
+          if (keys.length > MAX_LOCAL_RECORDS * 2) throw new Error('读取条目数量超限。');
+          if (!keys.length) return [];
+          return new Promise<(string | null)[]>((accept, fail) => {
+            const failure = () => fail(new Error('本地保存失败，请检查可用存储空间。'));
+            let tx: IDBTransaction;
+            try { tx = db.transaction('documents', 'readonly'); } catch { failure(); return; }
+            const requests: IDBRequest<unknown>[] = [];
+            tx.onabort = tx.onerror = failure;
+            tx.oncomplete = () => {
+              try { accept(requests.map((request, index) => {
+                const value: unknown = request.result;
+                if (value === undefined) return null;
+                if (typeof value !== 'string') throw new LocalDataError(keys[index]!);
+                return value;
+              })); } catch (cause) { fail(cause); }
+            };
+            try { const store = tx.objectStore('documents'); for (const key of keys) requests.push(store.get(key)); }
+            catch { try { tx.abort(); } catch { /* A failed transaction may already be inactive. */ } failure(); }
+          });
+        },
         async put(key, value) { await transaction('readwrite', store => store.put(value, key)); },
         async remove(key) { await transaction('readwrite', store => store.delete(key)); },
         async keys() { return (await transaction('readonly', store => store.getAllKeys())).map(value => { if (typeof value !== 'string') throw new Error('本地索引损坏。'); return value; }); },

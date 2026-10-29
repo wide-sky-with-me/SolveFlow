@@ -16,6 +16,7 @@ export function HistoryPanel({ viewport = false, filterKey = '', footer, session
   const [page, setPage] = useState(0);
   useEffect(() => setPage(0), [filterKey]);
   const lastPage = Math.max(0, Math.ceil(sessions.length / 20) - 1); const currentPage = Math.min(page, lastPage);
+  useEffect(() => setPage(value => Math.min(value, lastPage)), [lastPage]);
   const payload = useMemo(() => encodeHistoryDocument(sessions.slice(currentPage * 20, currentPage * 20 + 20), currentId, disabled, currentPage * 20), [sessions, currentPage, currentId, disabled]);
   const [state, setState] = useState<'loading' | 'ready' | 'failed'>('loading');
   const [attempt, setAttempt] = useState(0);

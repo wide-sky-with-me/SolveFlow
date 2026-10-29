@@ -1,1 +1,1 @@
-export { boundedHistory, candidateHistoryAnswer, conversationHistory, resolveLearningContext } from "@solveflow/client/learning";
+export { answerContextHistory, boundedHistory, candidateHistoryAnswer, conversationHistory, resolveLearningContext } from "@solveflow/client/learning";

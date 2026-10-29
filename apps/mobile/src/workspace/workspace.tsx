@@ -5,6 +5,7 @@ import { clientError } from '@solveflow/client/presentation';
 import { Pressable, Text, View, SafeAreaView } from '../theme/primitives';
 import { Button, Notice, colors, s } from '../components/ui';
 import { PendingSaves } from '../components/pending-saves';
+import { BatchTaskCenter } from '../components/batch-task-center';
 import { ExportRecordsHost } from '../components/export-records';
 import { HistoryMaintenance } from '../components/history-maintenance';
 import { HistoryImport } from '../components/history-import';
@@ -26,6 +27,9 @@ import { styles } from './styles';
 import { getRecentSessionWarning, subscribeRecentSessionWarning } from '../local/recent-session-warning';
 
 export function Workspace({ runtime, onReady }: { runtime: Runtime; onReady: () => void }) {
+  const [tasksOpen, setTasksOpen] = useState(false);
+  const queueSnapshot = useSyncExternalStore(runtime.batch.subscribe, runtime.batch.getSnapshot, runtime.batch.getSnapshot);
+  const taskCount = new Set(queueSnapshot.tasks.map(row => row.batchId)).size;
   const [examPickerOpen, setExamPickerOpen] = useState(false);
   const state = useWorkspaceState(runtime, onReady);
   const actions = useWorkspaceActions(runtime, state);
@@ -73,13 +77,15 @@ export function Workspace({ runtime, onReady }: { runtime: Runtime; onReady: () 
               </Text>
             </Pressable>
           ))}
+          <View style={{ flex: 1 }} />
+          <Button title={taskCount ? `任务 · ${taskCount}` : '任务'} testID="batch-tasks-entry" compact secondary onPress={() => setTasksOpen(true)} />
         </View>
       )}
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <CurrentQuestionPage runtime={runtime} state={state} actions={actions} />
         <HistoryPage runtime={runtime} state={state} actions={actions} />
-        <ProfilePage runtime={runtime} state={state} actions={actions} />
+        <ProfilePage runtime={runtime} state={state} actions={actions} onTasks={() => setTasksOpen(true)} />
       </KeyboardAvoidingView>
 
       <AppNavigation
@@ -92,7 +98,8 @@ export function Workspace({ runtime, onReady }: { runtime: Runtime; onReady: () 
         cameraDisabled={busy || unsavedCount > 0 || (!!activeId && !batchBusy)}
       />
 
-      <ExportRecordsHost runtime={runtime} />
+      <ExportRecordsHost runtime={runtime} onReviewQuestion={id => void state.openSession(id)} hideNotice={appTab === 'profile' && state.profileSection === 'main'} />
+      {tasksOpen && <BatchTaskCenter runtime={runtime} sessions={sessions} available={available} onOpen={batch => { setTasksOpen(false); setBatchView(batch); }} onClose={() => setTasksOpen(false)} />}
       {/* Floating overlays */}
       {examPickerOpen && <ExamPicker runtime={runtime} onClose={() => setExamPickerOpen(false)} />}
       {maintenanceOpen && <HistoryMaintenance repository={runtime.repository} onChanged={() => { void list(true).catch(cause => setError(clientError(cause))); }} onClose={() => setMaintenanceOpen(false)} onExport={() => { setMaintenanceOpen(false); setExportOpen(true); }} onRestore={id => { setRepairSessionId(id); setMaintenanceOpen(false); setImportOpen(true); }} />}

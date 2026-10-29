@@ -1,7 +1,8 @@
+import { ExportStorageUsageSchema, MAX_EXPORT_STORED_BYTES } from './export-task.js';
 import { describe, expect, it } from 'vitest';
 import {
   ExportTaskFileSchema, ExportTaskMetadataSchema, ExportTaskSchema, isExportTaskTerminal,
-  MAX_EXPORT_ARTIFACT_BYTES, MAX_EXPORT_ERROR_CHARACTERS, MAX_EXPORT_PROGRESS_CHARACTERS,
+  MAX_EXPORT_ARTIFACT_BYTES, MAX_EXPORT_PDF_BYTES, MAX_EXPORT_ERROR_CHARACTERS, MAX_EXPORT_PROGRESS_CHARACTERS,
   type ExportTask,
 } from './export-task.js';
 
@@ -14,6 +15,21 @@ const queued: ExportTask = { schemaVersion: 1, id, batchId, title: 'Export', mod
 const file = { name: 'export.pdf', mimeType: 'application/pdf' as const, bytes: 3 };
 
 describe('export task contract', () => {
+  it('persists direct parsed exports while preserving all existing layouts', () => {
+    for (const layout of ['saved', 'clean', 'paper', 'direct']) {
+      expect(ExportTaskSchema.parse({ ...queued, layout }).layout).toBe(layout);
+      expect(ExportTaskMetadataSchema.parse({ batchId, title: 'Export', mode: 'questions', layout, copies: 1, questionCount: 2 }).layout).toBe(layout);
+    }
+    expect(ExportTaskSchema.safeParse({ ...queued, layout: 'unknown' }).success).toBe(false);
+  });
+  it('preserves legacy unmarked tasks and captures explicit wrong-answer marking', () => {
+    expect(ExportTaskSchema.parse(queued).markIncorrect).toBeUndefined();
+    expect(ExportTaskSchema.parse({ ...queued, markIncorrect: true }).markIncorrect).toBe(true);
+    for (const patch of [{ mode: 'questions', markIncorrect: true }, { mode: 'reading', markIncorrect: true }, { markIncorrect: 'true' }]) {
+      expect(ExportTaskSchema.safeParse({ ...queued, ...patch }).success).toBe(false);
+      expect(ExportTaskMetadataSchema.safeParse({ batchId, title: 'Export', mode: 'answers', layout: 'paper', copies: 1, questionCount: 2, ...patch }).success).toBe(false);
+    }
+  });
   it.each([
     queued,
     { ...queued, status: 'running', startedAt },
@@ -66,4 +82,20 @@ describe('export task contract', () => {
       expect(ExportTaskFileSchema.safeParse({ ...file, ...patch }).success).toBe(false);
     }
   });
+  it('accepts large multi-copy archives while retaining the single PDF bound', () => {
+    const large = 256 * 1024 * 1024;
+    expect(ExportTaskFileSchema.safeParse({ ...file, name: 'ten-copies.zip', mimeType: 'application/zip', bytes: large }).success).toBe(true);
+    expect(ExportTaskFileSchema.safeParse({ ...file, bytes: large }).success).toBe(false);
+    expect(ExportTaskFileSchema.safeParse({ ...file, bytes: MAX_EXPORT_PDF_BYTES }).success).toBe(true);
+    expect(ExportTaskFileSchema.safeParse({ ...file, bytes: MAX_EXPORT_PDF_BYTES + 1 }).success).toBe(false);
+    expect(ExportTaskFileSchema.safeParse({ ...file, name: 'ten-copies.zip', mimeType: 'application/zip', bytes: MAX_EXPORT_ARTIFACT_BYTES + 1 }).success).toBe(false);
+  });
+});
+
+it('validates cache usage without converting an unknown browser estimate to zero', () => {
+  const empty = { usedBytes: 0, availableBytes: MAX_EXPORT_STORED_BYTES, limitBytes: MAX_EXPORT_STORED_BYTES, fileCount: 0, browserAvailableBytes: null };
+  expect(ExportStorageUsageSchema.parse(empty).browserAvailableBytes).toBeNull();
+  expect(ExportStorageUsageSchema.safeParse({ ...empty, usedBytes: 1 }).success).toBe(false);
+  expect(ExportStorageUsageSchema.safeParse({ ...empty, availableBytes: -1 }).success).toBe(false);
+  expect(ExportStorageUsageSchema.parse({ ...empty, usedBytes: MAX_EXPORT_STORED_BYTES, availableBytes: 0, fileCount: 1 }).availableBytes).toBe(0);
 });

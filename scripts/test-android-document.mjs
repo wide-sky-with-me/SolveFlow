@@ -95,9 +95,10 @@ try {
       previewChecked = true;
     } else if (await page.locator('.history-document').count()) {
       await expect(page.locator('.history-preview .katex')).toHaveCount(2);
-      await expect(page.locator('.history-ordinal')).toHaveText('序号 21');
-      await expect(page.locator('.history-meta time')).toHaveAttribute('datetime', historySession.createdAt);
-      await expect(page.locator('.history-meta time')).toHaveText(/^保存于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+      await expect(page.locator('.history-ordinal')).toHaveText('21');
+      await expect(page.locator('.history-ordinal')).toHaveAttribute('aria-label', '序号 21');
+      await expect(page.locator('time.history-time')).toHaveAttribute('datetime', historySession.createdAt);
+      await expect(page.locator('time.history-time')).toHaveText(/^保存于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
       await page.getByRole('button', { name: `打开数学题目 ${value.runId}` }).click();
       await expect.poll(() => messages.some(message => message.type === '$$native_action' && message.data.actionId === 'onOpen' && message.data.args[0] === value.runId)).toBe(true);
       await page.getByRole('button', { name: '题目操作', exact: true }).click();

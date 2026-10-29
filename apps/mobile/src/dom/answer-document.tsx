@@ -41,7 +41,7 @@ export default function AnswerDocument({ theme = 'light', payload, onFocus, onCo
   } }), [reading, onReadingState]);
   const swipeRoot = useQuestionSwipe(onPageSwipe);
   useDocumentHeight(swipeRoot, onHeight);
-  const { explanation, knowledge, outcome: result, image, width, height, runId, number, disabled, showRegenerate, showHistory, verificationPending, verificationFailed, verificationErrorCode } = useMemo(() => decodeAnswerDocument(payload), [payload]);
+  const { explanation, knowledge, outcome: result, image, width, height, runId, number, disabled, regenerateDisabled, showRegenerate, showHistory, verificationPending, verificationFailed, verificationErrorCode } = useMemo(() => decodeAnswerDocument(payload), [payload]);
   useEffect(() => {
     // A React commit is not a Chromium paint. Let the document render across
     // two browser frames before the native pager exposes its WebView surface.
@@ -57,7 +57,7 @@ export default function AnswerDocument({ theme = 'light', payload, onFocus, onCo
   const candidate = result.candidate; const original = image ?? undefined;
   const feedback = verificationFeedback(result, verificationErrorCode);
   return <ReadingMemory value={readingMemory}><article ref={swipeRoot} className="answer-document">
-    <ProblemStatement onDiagnostics={onDiagnostics ? () => void onDiagnostics() : undefined} onShareOriginal={onShareOriginal} onHistory={showHistory && onHistory ? () => void onHistory() : undefined} problem={candidate.problem} image={original} imageSize={{ width, height }} onViewOriginal={() => void onViewOriginal()} onCorrect={() => void onCorrect()} onRegenerate={showRegenerate ? () => void onRegenerate() : undefined} disabled={disabled} />
+    <ProblemStatement onDiagnostics={onDiagnostics ? () => void onDiagnostics() : undefined} onShareOriginal={onShareOriginal} onHistory={showHistory && onHistory ? () => void onHistory() : undefined} problem={candidate.problem} image={original} imageSize={{ width, height }} onViewOriginal={() => void onViewOriginal()} onCorrect={() => void onCorrect()} onRegenerate={showRegenerate ? () => void onRegenerate() : undefined} disabled={disabled} regenerateDisabled={regenerateDisabled} />
     {result.status === 'completed' ? <>
       {feedback && <section className="unverified-note" aria-label="校验说明"><strong>{feedback.title}</strong><p>{feedback.reason}</p>{feedback.issues.map((issue, i) => <div key={i}><strong>{issue.label}</strong><MathText text={issue.message} /></div>)}<p>{feedback.next}</p></section>}
       <AnswerContent verificationNotRequested={!verificationPending && result.verificationStatus === 'not_requested'} onVerify={onVerify ? () => void onVerify() : undefined} verificationLabel={verificationPending ? '校验中' : verificationFailed ? '重试校验' : result.verified ? '校验通过' : result.verification ? result.verification.verdict === 'fail' ? '发现问题' : '无法确认' : '校验'} verificationDisabled={disabled || !!verificationPending || result.verified || !!result.verification} hideSteps={!result.candidate.steps.length && !!onRequestSteps} candidate={result.candidate} subject={subjectLabel(candidate.problem.subject)} originalImageUrl={original} disabled={disabled}

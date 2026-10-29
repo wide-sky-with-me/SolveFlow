@@ -1,4 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
+import { LocalRecordSchema } from '../../packages/contracts/dist/local.js';
+import { installPdfCodecProbe } from './pdf-codec-probe.js';
 const batchId = '92000000-0000-4000-8000-000000000001';
 async function seed(page: Page, broken = false, tilted = false) {
   await page.goto('/'); await expect(page.getByTestId('launch-screen')).toBeHidden();
@@ -86,6 +88,81 @@ test('a corrupt image aborts the complete PDF and retains all source records', a
   await page.getByRole('button', { name: '打印 / 保存 PDF', exact: true }).click();
   await expect(page.getByText('题图无法读取。', { exact: true })).toBeVisible(); await expect(page.getByTestId('batch-print-document')).toHaveCount(0); await expect(page.locator('iframe[title="批次 PDF 打印"]')).toHaveCount(0);
   await page.getByRole('button', { name: '关闭导出', exact: true }).click(); await expect(page.getByTestId('current-batch')).toBeVisible();
+});
+test('reading PDF downloads every question and continuation while keeping only its active record connected', async ({ page }, info) => {
+  let calls = 0; await page.route('**/__solveflow/web-env/model/**', route => { calls++; return route.abort(); });
+  await seed(page);
+  const raw: unknown = await page.evaluate(() => new Promise<unknown>((resolve, reject) => {
+    const req = indexedDB.open('solveflow-local'); req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const db = req.result, tx = db.transaction('documents'), read = tx.objectStore('documents').get('record.92100000-0000-4000-8000-000000000001');
+      tx.oncomplete = () => { db.close(); resolve(read.result); }; tx.onerror = () => reject(tx.error);
+    };
+  }));
+  if (typeof raw !== 'string') throw new Error('SEED_RECORD');
+  const rows = Array.from({ length: 3 }, (_, index) => {
+    const position = index + 3, id = `92100000-0000-4000-8000-${String(position).padStart(12, '0')}`;
+    const record = LocalRecordSchema.parse(JSON.parse(raw)); record.session.id = id; record.session.upload.id = id;
+    for (const run of record.session.runs) { run.id = id; run.sessionId = id; if (run.outcome?.status === 'completed' || run.outcome?.status === 'needs_clarification') run.outcome.candidate.problem.text = `Record ${position}. ` + 'Preserve every saved paragraph and unit. '.repeat(position === 4 ? 100 : 5); }
+    if (!record.batch) throw new Error('SEED_BATCH'); record.batch.position = position; delete record.materials;
+    return { id, value: JSON.stringify(record) };
+  });
+  await page.evaluate(rows => new Promise<void>((resolve, reject) => {
+    const req = indexedDB.open('solveflow-local'); req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const db = req.result, tx = db.transaction('documents', 'readwrite');
+      for (const row of rows) tx.objectStore('documents').put(row.value, `record.${row.id}`);
+      tx.oncomplete = () => { db.close(); resolve(); }; tx.onerror = () => reject(tx.error);
+    };
+  }), rows);
+  await page.reload(); await expect(page.getByTestId('current-batch')).toBeVisible();
+  await page.addStyleTag({ content: '.batch-print-document > .print-question:first-of-type{min-height:1011px}' });
+  await page.evaluate(() => {
+    const toBlob = HTMLCanvasElement.prototype.toBlob;
+    const scopes: number[] = []; Object.defineProperty(window, '__readingPdfScopes', { value: scopes });
+    const ink: boolean[] = []; Object.defineProperty(window, '__readingPdfInk', { value: ink });
+    HTMLCanvasElement.prototype.toBlob = function(this: HTMLCanvasElement, callback, type, quality) {
+      if (type === 'image/jpeg') {
+        const frame = document.querySelector<HTMLIFrameElement>('iframe[title="批次 PDF 打印"]');
+        if (frame?.contentDocument) {
+          scopes.push(frame.contentDocument.querySelectorAll('.print-question-body').length);
+          const context = this.getContext('2d'); if (!context) throw new Error('READING_PDF_CANVAS');
+          const pixels = context.getImageData(0, 0, this.width, this.height).data; let painted = false;
+          for (let i = 0; i < pixels.length; i += 4) if ((pixels[i] ?? 255) < 245 || (pixels[i + 1] ?? 255) < 245 || (pixels[i + 2] ?? 255) < 245) { painted = true; break; }
+          ink.push(painted);
+        }
+      }
+      return Reflect.apply(toBlob, this, [callback, type, quality]);
+    };
+  });
+  await page.getByRole('button', { name: '批次操作', exact: true }).click(); await page.getByRole('button', { name: '导出本批 PDF', exact: true }).click();
+  await page.getByRole('button', { name: '原始记录', exact: true }).click(); await page.getByRole('button', { name: '后台导出', exact: true }).click();
+  await page.getByRole('tab', { name: '我的', exact: true }).click(); await page.getByRole('button', { name: /^导出记录/ }).click();
+  await expect(page.getByTestId('export-record')).toHaveAttribute('data-status', 'succeeded', { timeout: 30000 });
+  const event = page.waitForEvent('download'); await page.getByRole('button', { name: '下载文件', exact: true }).click();
+  const file = info.outputPath('reading-records.pdf'); await (await event).saveAs(file);
+  const bytes = await (await import('node:fs/promises')).readFile(file); expect(bytes.subarray(0, 5).toString()).toBe('%PDF-');
+  const scopes: unknown = await page.evaluate(() => Reflect.get(window, '__readingPdfScopes'));
+  if (!Array.isArray(scopes) || !scopes.every((value: unknown): value is number => typeof value === 'number')) throw new Error('READING_SCOPE_PROBE');
+  expect(scopes.length).toBeGreaterThan(6); expect(Math.max(...scopes)).toBe(1); expect(scopes[0]).toBe(0);
+  const ink: unknown = await page.evaluate(() => Reflect.get(window, '__readingPdfInk')); expect(ink).toEqual(scopes.map(() => true));
+  expect(bytes.toString('latin1').match(/\/Type \/Page\b/g)).toHaveLength(scopes.length);
+  expect(calls).toBe(0); await expect(page.locator('iframe[title="批次 PDF 打印"]')).toHaveCount(0);
+});
+test('cancelling reading PDF releases frozen records and ignores a late encoded cover', async ({ page }) => {
+  let calls = 0; await page.route('**/__solveflow/web-env/model/**', route => { calls++; return route.abort(); });
+  await seed(page); await installPdfCodecProbe(page);
+  await page.evaluate(() => window.__pdfCodecProbe.arm('reading', 'blob', false));
+  await page.getByRole('button', { name: '批次操作', exact: true }).click(); await page.getByRole('button', { name: '导出本批 PDF', exact: true }).click();
+  await page.getByRole('button', { name: '原始记录', exact: true }).click(); await page.getByRole('button', { name: '后台导出', exact: true }).click();
+  await page.getByRole('tab', { name: '我的', exact: true }).click(); await page.getByRole('button', { name: /^导出记录/ }).click();
+  await expect.poll(() => page.evaluate(() => window.__pdfCodecProbe.state().cells.reading?.held)).toBe(true);
+  const record = page.getByTestId('export-record'); await record.getByRole('button', { name: '取消任务', exact: true }).click();
+  await expect(record).toHaveAttribute('data-status', 'cancelled'); await expect(page.locator('iframe[title="批次 PDF 打印"]')).toHaveCount(0);
+  await page.evaluate(() => window.__pdfCodecProbe.release('reading'));
+  const quiet = await page.evaluate(() => window.__pdfCodecProbe.quiet());
+  expect(quiet.after.liveEncodedCanvases).toEqual([]); expect(quiet.after.filePutAttempts).toEqual([]); expect(quiet.after.artifactUrls).toEqual([]);
+  expect(quiet.after.frames.every(frame => !frame.connected)).toBe(true); await expect(record).toHaveAttribute('data-status', 'cancelled'); expect(calls).toBe(0);
 });
 test('a tilted screen is straightened on demand while automatic preparation preserves the full crop and stays usable in short narrow layouts', async ({ page }) => {
   await seed(page, false, true); await page.getByRole('button', { name: '批次操作', exact: true }).click(); await page.getByRole('button', { name: '导出本批 PDF', exact: true }).click();

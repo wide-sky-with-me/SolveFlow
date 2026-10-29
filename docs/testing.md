@@ -33,6 +33,8 @@
 
 `pnpm test` 先执行 `build:workspace` 准备所有非移动 dist，再完整执行 unit 与 offline 两组，固定最多两个 worker；`pnpm test:unit` / `pnpm test:offline` 沿同一入口构建并筛选。已经完成 `build:workspace` 时，用 `pnpm exec vitest run --project unit --maxWorkers=2`（离线集成改为 `--project offline`） 定向复测，避免重复构建。CLI 仍可追加文件名/测试名。CI 在 typecheck 构建后分别执行两组，不以其中一组替代全量。
 
+真实核验清单的 `answerMode` 应对应保存答案，省略时按设备默认简答 `brief` 核验；详细答案显式选 `detailed`，避免额外要求简答未生成的学习内容。
+
 同一组通过后，仅在新增改动、失败或未解决问题要求时重跑或扩大范围；文档/配置整理不要反复启动产品。构建和时序/性能回归顺序执行，避免资源竞争；不调整断言或超时掩盖失败。日志保留首次失败与复测，重复执行不算新的样本。
 
 ## 浏览器

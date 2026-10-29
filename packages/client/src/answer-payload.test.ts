@@ -2,6 +2,7 @@ import { expect, it } from 'vitest';
 import { runInNewContext } from 'node:vm';
 import { encodeAnswerDocument, decodeAnswerDocument, type AnswerDocumentPayload } from './answer-payload.js';
 import { z } from 'zod';
+import { makeSafeAgentError } from '@solveflow/contracts/agent';
 // Reproduce RNCWebView 13.16.1 Android's injectedObjectJson template literal.
 function androidInitialProps(props: unknown): unknown {
   return runInNewContext('JSON.parse(`' + JSON.stringify({ initialProps: { props, names: [] } }) + '`)', {}, { timeout: 100 });
@@ -20,4 +21,11 @@ it('preserves mathematical answers through Android initial-props injection', () 
 });
 it('rejects malformed and oversized payloads before rendering', () => {
   for (const value of ['%', '%7B', encodeURIComponent(JSON.stringify({ schemaVersion: 99 })), 'a'.repeat(18_000_001)]) expect(() => decodeAnswerDocument(value)).toThrow();
+});
+it('keeps regeneration admission separate from auxiliary actions while accepting older document payloads', () => {
+  const value: AnswerDocumentPayload = { schemaVersion: 1, runId: 'run-1', image: null, width: 800, height: 1200, number: null, disabled: false, showRegenerate: true,
+    outcome: { schemaVersion: 1, status: 'failed', verified: false, error: makeSafeAgentError('MODEL_TIMEOUT', 'fixture') } };
+  expect(decodeAnswerDocument(encodeAnswerDocument(value)).regenerateDisabled).toBeUndefined();
+  expect(decodeAnswerDocument(encodeAnswerDocument({ ...value, regenerateDisabled: true }))).toMatchObject({ disabled: false, regenerateDisabled: true });
+  expect(() => decodeAnswerDocument(encodeURIComponent(JSON.stringify({ ...value, regenerateDisabled: 'false' })))).toThrow();
 });

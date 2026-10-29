@@ -4,11 +4,31 @@ import { LocalEngine } from './local-engine.js';
 import { LocalDataError, LocalRepository, type LocalDocuments } from './local-repository.js';
 import { makeSafeAgentError } from '@solveflow/contracts/agent';
 import { LocalRecordSchema, StoredLocalRecordSchema } from '@solveflow/contracts/local';
+import { RunViewSchema, projectQuestionRun } from '@solveflow/contracts/http';
 function setup() {
   const values = new Map<string, string>(); const reads: string[] = [];
   const documents: LocalDocuments = { async get(key) { reads.push(key); return values.get(key) ?? null; }, async put(key, value) { values.set(key, value); }, async remove(key) { values.delete(key); }, async keys() { return [...values.keys()]; } };
   const repository = new LocalRepository(documents); return { values, reads, documents, repository, engine: new LocalEngine(repository, randomUUID) };
 }
+
+it('rebuilds an old grouped verification summary once without changing answers or reading separate photos', async () => {
+  const { values, reads, documents, repository, engine } = setup();
+  const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  const problem = { text: 'Two questions.', subject: 'math', uncertainties: [] };
+  const root = RunViewSchema.parse({ schemaVersion: 1, id: randomUUID(), sessionId: record.session.id, createdAt: record.session.createdAt, status: 'completed', seq: 1, message: '', outcome: { schemaVersion: 1, status: 'completed', verified: false, verificationStatus: 'not_requested', verification: null, warning: null, candidate: { schemaVersion: 1, kind: 'answer', problem, answer: 'Two answers.', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [], questions: [1, 2].map(number => ({ number, problem, answer: `Answer ${number}`, stepIds: [], figureIds: [] })) } } });
+  const check = RunViewSchema.parse({ ...projectQuestionRun(root, 1), id: randomUUID(), context: { kind: 'verification', sourceRunId: root.id, number: 1 }, outcome: { ...projectQuestionRun(root, 1).outcome, verified: true, verificationStatus: undefined, verification: { schemaVersion: 1, verdict: 'pass', checked: ['transcription'], issues: [] } } });
+  record.session.runs = [root, check]; await repository.save(record);
+  const key = `summary.${record.session.id}`;
+  values.set(key, JSON.stringify({ schemaVersion: 1, id: record.session.id, subject: 'math', createdAt: record.session.createdAt, text: problem.text, pending: false, answerState: 'verified' }));
+  const original = values.get(`record.${record.session.id}`); const image = values.get(`image.${record.session.id}`); reads.length = 0;
+  expect(await new LocalRepository(documents).listHistory()).toMatchObject([{ id: record.session.id, answerState: 'answered' }]);
+  expect(reads).toContain(`record.${record.session.id}`);
+  expect(reads.some(key => key.startsWith('image.') || key.startsWith('material.'))).toBe(false);
+  expect(values.get(`record.${record.session.id}`)).toBe(original); expect(values.get(`image.${record.session.id}`)).toBe(image);
+  reads.length = 0;
+  expect(await new LocalRepository(documents).listHistory()).toMatchObject([{ answerState: 'answered' }]);
+  expect(reads.some(key => key.startsWith('record.'))).toBe(false);
+});
 
 it.each([1, 2] as const)('reads historical model error text in v%s without treating the question as damaged or rewriting it', async version => {
   const { values, documents, repository, engine } = setup();
@@ -258,6 +278,23 @@ it('lists many saved questions through one bulk metadata read and still rebuilds
   await expect(repository.listHistory()).rejects.toThrow('read failed');
   documents.getMany = async () => [];
   await expect(repository.listHistory()).rejects.toThrow('本地批量读取失败');
+});
+
+it('isolates bulk metadata corruption and still rebuilds a damaged summary', async () => {
+  const { values, documents, repository, engine } = setup();
+  const first = await engine.create('data:image/jpeg;base64,AQID', 30, 20), second = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  const key = `summary.${first.session.id}`, original = documents.get.bind(documents);
+  documents.getMany = async () => { throw new LocalDataError(key); };
+  documents.get = async name => { if (name === key) throw new LocalDataError(key); return original(name); };
+  const result = await repository.listHistory(); expect(result.map(row => row.id).sort()).toEqual([first.session.id, second.session.id].sort());
+  expect(values.has(`image.${first.session.id}`)).toBe(true); expect(values.has(`image.${second.session.id}`)).toBe(true);
+  const favorite = `favorite.${first.session.id}`;
+  documents.getMany = async () => { throw new LocalDataError(favorite); };
+  documents.get = async name => { if (name === favorite) throw new LocalDataError(favorite); return original(name); };
+  expect((await repository.listHistory()).map(row => row.id)).toEqual([second.session.id]);
+  expect(repository.issues.some(issue => issue.key === favorite)).toBe(true);
+  documents.getMany = async () => { throw new Error('READ_UNAVAILABLE'); };
+  await expect(repository.listHistory()).rejects.toThrow('READ_UNAVAILABLE');
 });
 
 it('reuses a bounded summary snapshot and updates it after writes without rescanning storage', async () => {

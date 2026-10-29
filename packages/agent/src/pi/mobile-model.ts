@@ -62,10 +62,12 @@ export function modelTransport(profile: LocalModelProfile, transport: LocalFetch
     try { response = await transport(input, { ...bodyInit, credentials: 'omit', redirect: 'error', cache: 'no-store' }); }
     catch { const error = new SolvePhaseError('MODEL_UNAVAILABLE'); if (!init?.signal?.aborted) observe?.(null, error); throw error; }
     if (!response.ok) {
-      const code = response.status === 401 || response.status === 403 ? 'CAPABILITY_DENIED'
+      // A local upload failure precedes model dispatch; keep it outside automatic fallback.
+      const uploadTimeout = response.status === 408 && response.headers.get('x-solveflow-request-failure') === 'upload-timeout';
+      const code = uploadTimeout ? 'MODEL_UPLOAD_TIMEOUT' : response.status === 401 || response.status === 403 ? 'CAPABILITY_DENIED'
         : response.status === 402 ? 'SPEND_LIMIT' : response.status === 429 ? 'MODEL_RATE_LIMITED'
         : response.status >= 400 && response.status < 500 && response.status !== 404 ? 'MODEL_REQUEST_REJECTED' : 'MODEL_UNAVAILABLE';
-      const error = new SolvePhaseError(code); observe?.(response.status, error); await response.body?.cancel(); throw error;
+      const error = new SolvePhaseError(code); observe?.(response.status, error, uploadTimeout ? 'upload_timeout' : undefined); await response.body?.cancel(); throw error;
     }
     const format = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() === 'text/event-stream' ? 'sse' : 'json';
     observe?.(response.status, undefined, undefined, format);

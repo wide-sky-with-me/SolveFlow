@@ -58,7 +58,8 @@ test('dashboard counts saved answers, failed and clarification records, favorite
       await expect(mine).toHaveCSS('outline-width', '2px');
       await expect(mine).toHaveCSS('outline-color', colorScheme === 'dark' ? 'rgb(111, 146, 199)' : 'rgb(157, 185, 232)');
       const arrows = await page.getByTestId('profile-menu').getByTestId('menu-chevron').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().right));
-      expect(arrows).toHaveLength(6); expect(Math.max(...arrows) - Math.min(...arrows)).toBeLessThan(1);
+      expect(arrows).toHaveLength(7); expect(Math.max(...arrows) - Math.min(...arrows)).toBeLessThan(1);
+      await expect(page.getByTestId('profile-menu').getByRole('button', { name: '导出记录', exact: true })).toHaveCount(1);
       const values = await page.getByTestId('profile-menu').getByTestId('menu-accessory-value').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().right));
       expect(values).toHaveLength(2); expect(Math.abs(values[0]! - values[1]!)).toBeLessThan(1);
       const verticalOffsets = await page.getByTestId('profile-menu').evaluate(node => Array.from(node.querySelectorAll(':scope > [role="button"]')).flatMap(row => {

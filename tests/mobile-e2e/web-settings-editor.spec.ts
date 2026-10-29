@@ -3,6 +3,25 @@ import { WebEnvironmentSchema, WebModelUpdateSchema } from '../../packages/contr
 import { chooseSyntheticPhoto, modelSse } from './local-fixture.js';
 const profile = { provider: 'fixture', baseURL: 'https://fixture-settings.invalid/v1', model: 'primary', api: 'openai-completions', contextWindow: 32768, maxTokens: 8192, maxTokensField: 'max_tokens' };
 test.use({ launchOptions: { executablePath: process.env.SOLVEFLOW_TEST_CHROME ?? '/usr/bin/google-chrome', args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] } });
+test('higher concurrency saves 64 independent slots, survives a 16-slot environment reload and rejects overflow without model calls', async ({ page }) => {
+  const environment = WebEnvironmentSchema.parse({ schemaVersion: 1, canEditModels: true, settings: { schemaVersion: 1, solver: profile, verifier: null, backup: null, concurrency: { solver: 16, verifier: 16 } }, accessTokens: { solver: 'synthetic-concurrency-token', verifier: null, backup: null } });
+  let saves = 0; let calls = 0;
+  await page.route('**/__solveflow/web-env', route => route.fulfill({ json: environment }));
+  await page.route('**/__solveflow/web-env/settings', async route => { WebModelUpdateSchema.parse(route.request().postDataJSON()); saves++; await route.fulfill({ json: environment }); });
+  await page.route('**/__solveflow/web-env/model/**', async route => { calls++; await route.abort(); });
+  await page.route('https://*.invalid/**', async route => { calls++; await route.abort(); });
+  await page.goto('/'); await page.getByRole('tab', { name: '我的', exact: true }).click(); await page.getByRole('button', { name: '设置', exact: true }).click();
+  await expect(page.getByLabel('答题并发', { exact: true })).toHaveValue('16');
+  await page.getByLabel('答题并发', { exact: true }).fill('65'); await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await expect(page.getByText('答题并发和校验并发必须是1–64的整数。', { exact: true })).toBeVisible(); expect(saves).toBe(0);
+  await page.getByLabel('答题并发', { exact: true }).fill('64'); await page.getByLabel('校验并发', { exact: true }).fill('64');
+  // Concurrency-only changes persist as browser preferences, without rewriting server models.
+  await page.getByRole('button', { name: '保存设置', exact: true }).click(); await expect(page.getByRole('dialog')).toHaveCount(0); expect(saves).toBe(0);
+  await page.reload(); await page.getByRole('tab', { name: '我的', exact: true }).click(); await page.getByRole('button', { name: '设置', exact: true }).click();
+  await expect(page.getByLabel('答题并发', { exact: true })).toHaveValue('64'); await expect(page.getByLabel('校验并发', { exact: true })).toHaveValue('64');
+  await page.getByLabel('校验并发', { exact: true }).fill('65'); await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await expect(page.getByText('答题并发和校验并发必须是1–64的整数。', { exact: true })).toBeVisible(); expect(saves).toBe(0); expect(calls).toBe(0);
+});
 test('Web settings edit, test and save locally, keep secrets off browser storage and use the new model immediately', async ({ page }, info) => {
   let environment = WebEnvironmentSchema.parse({ schemaVersion: 1, canEditModels: true, settings: { schemaVersion: 1, solver: profile, verifier: null, backup: null }, accessTokens: { solver: 'synthetic-initial-token', verifier: null, backup: null } });
   let saves = 0; let checks = 0; let solves = 0; let external = 0;
