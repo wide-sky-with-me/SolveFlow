@@ -26,7 +26,7 @@
 | iOS | 2026-10-08已有原生模拟器验收；ACT应用源码快照已备，用户本轮暂缓Mac验收，尚未完成新原生编译。真机签名、联网及发行未验 | [模拟器证据](postmortem/2026-10-08-ios-simulator.md)、[交付准备](postmortem/2026-10-20-act-delivery.md) |
 | 工程管理与CI | 文档分层及本地CI检查已有；远端CI与分支保护未完成 | [管理修正](postmortem/2026-10-04-project-practice.md)，[管理改造](postmortem/2026-10-03-project-management.md) |
 
-PDF [语料](postmortem/2026-10-19-pdf-biology-corpus.md)、[样式](postmortem/2026-10-18-pdf-body-has-scope.md)、[时限](postmortem/2026-10-21-pdf-copy-timeout.md)、[小修](postmortem/2026-10-21-small-issues-review.md)、[Mac入口](postmortem/2026-10-23-wifi-web-entry.md)。[识别改进](postmortem/2026-10-26-local-image-review.md)、[工作台](postmortem/2026-10-27-batch-material-workbench.md)仅本地。[保存恢复](postmortem/2026-10-24-export-save-recovery.md)、[批量补图](postmortem/2026-10-24-batch-material-style.md)、[连拍与导出提速](postmortem/2026-10-25-capture-and-direct-pdf-speed.md)已同步[Mac新版](postmortem/2026-10-25-mac-web-update.md)，默认32/32。
+PDF [语料](postmortem/2026-10-19-pdf-biology-corpus.md)、[样式](postmortem/2026-10-18-pdf-body-has-scope.md)、[时限](postmortem/2026-10-21-pdf-copy-timeout.md)、[小修](postmortem/2026-10-21-small-issues-review.md)、[Mac入口](postmortem/2026-10-23-wifi-web-entry.md)。[识别改进](postmortem/2026-10-26-local-image-review.md)、[工作台](postmortem/2026-10-27-batch-material-workbench.md)、[批次控制与预检](postmortem/2026-10-28-batch-controls-preflight.md)及依赖修复已同步[Mac新版](postmortem/2026-10-29-mac-web-update.md)，默认32/32；真实模型与原生另验。
 
 旧[模型主测](UAT_UK_LIVE_EVAL_2026_10_02.md)、[可靠性复测](MODEL_RELIABILITY_2026_10_03.md)、[页面复核](postmortem/2026-10-03-ui-production.md)为当时证据。
 
