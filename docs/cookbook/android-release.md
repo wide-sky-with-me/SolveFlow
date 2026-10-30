@@ -13,6 +13,14 @@
 
 覆盖安装前保留备份并核对 [存储兼容规则](../subsystems/storage.md#数据与事务)，不支持降级覆盖安装，不用卸载或清库绕过读取错误。写作、反应式和图内检查的字段兼容影响见 [学科呈现决策](../../.agents/notes/implemented/agent/2026-10-04-subject-presentation.md)。
 
+## 隔离模拟器
+
+没有真机时，可在具备Hypervisor.Framework的Apple Silicon Mac上运行ARM64 Android模拟器。SDK、JDK、AVD和Android用户目录放独立测试目录，使用单独ADB服务端口；启动后先读回`ro.kernel.qemu`、AVD名和API/ABI，再安装指定APK。不要把连接到ADB的第一台设备当作测试机，不指定公开gRPC监听。
+
+通过系统照片选择器测试合成图片，使用独立SQLite夹具检查题目和任务；目录保存、系统分享与重启后文件读取分别验证。使用无效域名只能检查调度和失败处理，真实模型调用仍需opt-in。模拟器镜头不代表真机相机质量，ARM64包不能安装到x86镜像。
+
+结束时仅停止本轮AVD、独立ADB服务和临时防休眠进程，保留SDK供后续复用。环境、命令和实际测试结果见[2026-10-30模拟器记录](../postmortem/2026-10-30-android-emulator.md)。
+
 ## Kotlin 编译进程连接阻塞
 
 若构建长期停在 `compileKotlin`，先保留日志并检查本次 Gradle 线程栈。只有确认停在旧 Kotlin daemon 的回环连接时，才停止本轮已确认的进程，使用进程内编译重试：

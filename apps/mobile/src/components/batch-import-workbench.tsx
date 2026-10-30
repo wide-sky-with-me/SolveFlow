@@ -34,14 +34,14 @@ export function BatchImportWorkbench({ existing, photos, layout, selectedId, bef
   return <BatchImportDragSurface photoIds={busy ? [] : photos.map(row => row.id)} layout={layout} group={group} onPreview={setPreview} onDrop={onDrop} onActiveChange={onDragActive} onSelect={onSelect}><View testID="batch-import-workbench" style={{ gap: 16 }}>
     <View style={s.row}><Text style={[s.label, { flex: 1 }]}>待加入 · {photos.length} 张</Text>{multiple && <>
       {batchImportDragAvailable && <Pressable accessibilityRole="button" accessibilityLabel="整组拖动" aria-pressed={group} accessibilityState={{ selected: group, disabled: blocked }} disabled={blocked} onPress={() => setGroup(value => !value)} style={[s.button, s.compact, s.secondary, { borderColor: group ? colors.blue : colors.line, backgroundColor: group ? '#dbe8ff' : '#edf3ff' }]}><Text style={[s.buttonText, { color: colors.blue, fontSize: 13 }]}>整组拖动</Text></Pressable>}
-      <Button title="全部追加到末尾" secondary compact disabled={blocked} onPress={() => onPlace(null, true)} /></>}</View>
+      {!!existing.length && <Button title="全部追加到末尾" secondary compact disabled={blocked} onPress={() => onPlace(null, true)} />}</>}</View>
     <FlatList horizontal data={photos} keyExtractor={row => String(row.id)} initialNumToRender={8} maxToRenderPerBatch={8} windowSize={3} extraData={{ selectedId: selected?.id, positions, blocked }} contentContainerStyle={{ gap: 8 }}
       renderItem={({ item, index }) => <ImportPhotoCard row={item} index={index} kind="new" summary={`加入后第 ${positions.get(item.id)} 张`} testID="import-photo-row" selected={item.id === selected?.id} disabled={blocked}
         onSelect={() => onSelect(item.id)} onEdit={() => { onSelect(item.id); setToolsId(item.id); }} onRemove={() => onRemove(item.id)}
         wrapPreview={node => <BatchImportDragItem source={busy ? undefined : item.id}>{node}</BatchImportDragItem>} />} />
-    {selected && <Text testID="batch-import-placement-summary" accessibilityLiveRegion="polite" style={s.subtitle}>{destination > 0 ? `新 ${selectedIndex + 1} → 第 ${destination} 张 · ${target && targetPosition > 0 ? `目标：第 ${targetPosition} 张（原第 ${target.position} 张）` : '追加到末尾'}` : '位置待确认'}</Text>}
-    <View style={{ gap: 12, borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 14 }}>
-      <View style={s.row}><Text style={[s.label, { flex: 1 }]}>调整后顺序 · 共 {layout.length} 张</Text>{multiple && <Button title="全部新图放到此处" secondary compact disabled={blocked} onPress={() => onPlace(beforeId, true)} />}</View>
+    {selected && !!existing.length && <Text testID="batch-import-placement-summary" accessibilityLiveRegion="polite" style={s.subtitle}>{destination > 0 ? `新 ${selectedIndex + 1} → 第 ${destination} 张 · ${target && targetPosition > 0 ? `目标：第 ${targetPosition} 张（原第 ${target.position} 张）` : '追加到末尾'}` : '位置待确认'}</Text>}
+    {(!!existing.length || multiple) && <View style={{ gap: 12, borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 14 }}>
+      <View style={s.row}><Text style={[s.label, { flex: 1 }]}>调整后顺序 · 共 {layout.length} 张</Text>{multiple && !!existing.length && <Button title="全部新图放到此处" secondary compact disabled={blocked} onPress={() => onPlace(beforeId, true)} />}</View>
       <BatchImportDragGrid><View testID="batch-import-layout" style={{ flexDirection: 'row', flexWrap: 'wrap', columnGap: 6, rowGap: 10 }}>
         {numbered.map(row => {
           const incoming = row.kind === 'new';
@@ -61,9 +61,9 @@ export function BatchImportWorkbench({ existing, photos, layout, selectedId, bef
             </Pressable>
           </View></BatchImportDragItem>;
         })}
-        <BatchImportDragItem target={null}><View style={{ width: 62, paddingLeft: 10 }}><Pressable accessibilityRole="button" accessibilityLabel="本张追加到末尾" onPress={() => onPlace(null)} style={{ width: 52, height: 48, alignItems: 'center', justifyContent: 'center', borderRadius: 12, borderWidth: 1, borderColor: colors.line, backgroundColor: '#f5f7fb' }}><Text style={s.subtitle}>末尾</Text></Pressable></View></BatchImportDragItem>
+        {!!existing.length && <BatchImportDragItem target={null}><View style={{ width: 62, paddingLeft: 10 }}><Pressable accessibilityRole="button" accessibilityLabel="本张追加到末尾" onPress={() => onPlace(null)} style={{ width: 52, height: 48, alignItems: 'center', justifyContent: 'center', borderRadius: 12, borderWidth: 1, borderColor: colors.line, backgroundColor: '#f5f7fb' }}><Text style={s.subtitle}>末尾</Text></Pressable></View></BatchImportDragItem>}
       </View></BatchImportDragGrid>
-    </View>
+    </View>}
     {tools && <MaterialPhotoTools kind="题图" row={tools} index={toolsIndex} busy={busy} onClose={() => setToolsId(undefined)} onCrop={() => { setToolsId(undefined); onCrop(tools.id); }} onRotate={() => onRotate(tools)} extraActions={multiple ? <View style={s.row}><Button title={`上移第${toolsIndex + 1}张`} compact secondary disabled={busy || toolsIndex === 0} onPress={() => onMove(toolsIndex, -1)} /><Button title={`下移第${toolsIndex + 1}张`} compact secondary disabled={busy || toolsIndex === photos.length - 1} onPress={() => onMove(toolsIndex, 1)} /></View> : undefined} />}
   </View></BatchImportDragSurface>;
 }

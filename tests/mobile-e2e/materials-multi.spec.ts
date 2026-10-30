@@ -56,9 +56,9 @@ test('selects several supplements once, permits crop rotation and removal, and e
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message)); let calls = 0; await page.route('https://**', route => { calls++; return route.abort(); });
   await page.route('**/__solveflow/web-env/model/**', route => { calls++; return route.abort(); });
   const source = await seed(page, false, true); const before = LocalRecordSchema.parse(JSON.parse(await readDocument(page, `record.${source.id}`))); await trackUrls(page);
-  await page.getByRole('button', { name: '同题材料 / 补图', exact: true }).click(); await select(page); await expect(page.getByTestId('material-import-row')).toHaveCount(3); await expect(page.getByTestId('material-import-row').nth(0)).toContainText('supp-1.jpg');
-  await page.getByRole('button', { name: '裁剪第1张', exact: true }).click(); await crop(page); await expect(page.getByTestId('material-import-row').nth(0)).toContainText('588 × 300');
-  await page.getByRole('button', { name: '旋转第2张', exact: true }).click(); await expect(page.getByTestId('material-import-row').nth(1)).toContainText('300 × 600'); await page.getByRole('button', { name: '移除第3张', exact: true }).click();
+  await page.getByRole('button', { name: '同题材料 / 补图', exact: true }).click(); await select(page); await expect(page.getByTestId('material-import-row')).toHaveCount(3);
+  await page.getByRole('button', { name: '编辑第1张补图', exact: true }).click(); await page.getByRole('button', { name: '裁剪第1张', exact: true }).click(); await crop(page); await page.getByRole('button', { name: '编辑第1张补图', exact: true }).click(); await expect(page.getByTestId('material-photo-tools')).toContainText('588 × 300'); await page.getByRole('button', { name: '关闭图片操作', exact: true }).click();
+  await page.getByRole('button', { name: '编辑第2张补图', exact: true }).click(); await page.getByRole('button', { name: '旋转第2张', exact: true }).click(); await expect(page.getByTestId('material-photo-tools')).toContainText('300 × 600'); await page.getByRole('button', { name: '关闭图片操作', exact: true }).click(); await page.getByRole('button', { name: '移除第3张', exact: true }).click();
   await page.emulateMedia({ colorScheme: 'dark' }); await page.screenshot({ path: info.outputPath('multi-material-preview.png') });
   await page.getByRole('button', { name: '保存补图（2张）', exact: true }).click(); await expect(page.getByRole('button', { name: '查看材料 3', exact: true })).toBeVisible(); await expect(page.locator('html')).toHaveAttribute('data-live-photo-urls', '0');
   const saved = StoredLocalRecordSchema.parse(JSON.parse(await readDocument(page, `record.${source.id}`))); expect(saved.materials).toHaveLength(3); expect(saved.materials?.slice(1).map(item => [item.width, item.height])).toEqual([[588, 300], [300, 600]]); expect(saved.session.runs).toEqual(before.session.runs); expect(calls).toBe(0);
@@ -88,7 +88,7 @@ test('selects several supplements once, permits crop rotation and removal, and e
 });
 test('cancelling multi-image edits releases all temporary photos and keeps records and requests unchanged', async ({ page }) => {
   let calls = 0; await page.route('https://**', route => { calls++; return route.abort(); }); const source = await seed(page); const before = await readDocument(page, `record.${source.id}`); await trackUrls(page);
-  await page.getByRole('button', { name: '同题材料 / 补图', exact: true }).click(); await select(page); await page.getByRole('button', { name: '裁剪第1张', exact: true }).click(); await crop(page); await page.getByRole('button', { name: '移除第2张', exact: true }).click(); await page.getByRole('button', { name: '取消补图', exact: true }).click();
+  await page.getByRole('button', { name: '同题材料 / 补图', exact: true }).click(); await select(page); await page.getByRole('button', { name: '编辑第1张补图', exact: true }).click(); await page.getByRole('button', { name: '裁剪第1张', exact: true }).click(); await crop(page); await page.getByRole('button', { name: '移除第2张', exact: true }).click(); await page.getByRole('button', { name: '取消补图', exact: true }).click();
   expect(await readDocument(page, `record.${source.id}`)).toBe(before); await expect(page.locator('html')).toHaveAttribute('data-live-photo-urls', '0'); expect(calls).toBe(0);
 });
 test('a failed transaction keeps the whole multi-image draft for retry and saves no prefix', async ({ page }) => {
@@ -96,6 +96,43 @@ test('a failed transaction keeps the whole multi-image draft for retry and saves
   await page.evaluate(() => { document.documentElement.dataset.failMaterialSave = 'true'; IDBDatabase.prototype.transaction = new Proxy(IDBDatabase.prototype.transaction, { apply(target, context, args) { const tx: IDBTransaction = Reflect.apply(target, context, args); if (args[0] === 'documents' && args[1] === 'readwrite' && document.documentElement.dataset.failMaterialSave === 'true') queueMicrotask(() => tx.abort()); return tx; } }); });
   await page.getByRole('button', { name: '保存补图（3张）', exact: true }).click(); await expect(page.getByText('本地保存失败，请检查可用存储空间。', { exact: true })).toBeVisible(); await expect(page.getByTestId('material-import-row')).toHaveCount(3); expect(await readDocument(page, `record.${source.id}`)).toBe(before);
   await page.evaluate(() => { document.documentElement.dataset.failMaterialSave = 'false'; }); await page.getByRole('button', { name: '保存补图（3张）', exact: true }).click(); await expect(page.getByRole('button', { name: '查看材料 4', exact: true })).toBeVisible(); expect(StoredLocalRecordSchema.parse(JSON.parse(await readDocument(page, `record.${source.id}`))).materials).toHaveLength(4); await expect(page.locator('html')).toHaveAttribute('data-live-photo-urls', '0');
+});
+
+for (const operation of ['new', 'edit'] as const) test(`a failed ${operation} single supplement preserves the crop and retries without model calls`, async ({ page }) => {
+  let calls = 0; await page.route('https://**', route => { calls++; return route.abort(); });
+  const source = await seed(page); const before = await readDocument(page, `record.${source.id}`); await trackUrls(page);
+  await page.getByRole('button', { name: '同题材料 / 补图', exact: true }).click();
+  if (operation === 'new') await select(page, '从相册补图', 1);
+  else await page.getByRole('button', { name: '编辑材料1', exact: true }).click();
+  await page.getByRole('button', { name: '精细调整', exact: true }).click(); await page.getByRole('button', { name: '左边界增大', exact: true }).click();
+  await page.evaluate(() => {
+    document.documentElement.dataset.failSingleSave = 'true'; const transaction = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = new Proxy(transaction, { apply(target, receiver, args) { const tx: IDBTransaction = Reflect.apply(target, receiver, args); if (args[0] === 'documents' && args[1] === 'readwrite' && document.documentElement.dataset.failSingleSave === 'true') queueMicrotask(() => tx.abort()); return tx; } });
+  });
+  await page.getByRole('button', { name: '使用这张题图', exact: true }).click();
+  await expect(page.getByRole('button', { name: '使用这张题图', exact: true })).toBeVisible();
+  await expect(page.getByRole('alert').last()).toContainText('本地保存失败'); expect(await readDocument(page, `record.${source.id}`)).toBe(before);
+  await page.evaluate(() => { document.documentElement.dataset.failSingleSave = 'false'; });
+  await page.getByRole('button', { name: '使用这张题图', exact: true }).click();
+  await expect(page.getByRole('button', { name: '使用这张题图', exact: true })).toHaveCount(0);
+  await expect.poll(async () => JSON.parse(await readDocument(page, `record.${source.id}`)).materials?.length).toBe(2);
+  await expect(page.getByText('确认与裁切题图', { exact: true })).toHaveCount(0);
+  const saved = StoredLocalRecordSchema.parse(JSON.parse(await readDocument(page, `record.${source.id}`)));
+  expect(saved.materials).toHaveLength(2); expect(saved.materials?.at(-1)?.width).toBe(588); expect(saved.session.runs).toEqual(LocalRecordSchema.parse(JSON.parse(before)).session.runs);
+  await expect(page.locator('html')).toHaveAttribute('data-live-photo-urls', '0'); expect(calls).toBe(0);
+});
+
+for (const size of [{ width: 320, height: 568 }, { width: 844, height: 390 }]) for (const scheme of ['light', 'dark'] as const) test(`single material workbench stays compact at ${size.width}x${size.height} ${scheme}`, async ({ page }, info) => {
+  await page.setViewportSize(size); await page.emulateMedia({ colorScheme: scheme }); await seed(page);
+  await page.getByRole('button', { name: '同题材料 / 补图', exact: true }).click(); await select(page, '从相册补图', 2);
+  const dialog = page.getByTestId('single-material-workbench'); await expect(dialog).toBeVisible();
+  await expect(page.getByRole('button', { name: '裁剪第1张', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '移除第1张', exact: true })).toBeInViewport();
+  await expect(page.getByRole('button', { name: '保存补图（2张）', exact: true })).toBeInViewport({ ratio: 1 });
+  await expect(dialog).not.toContainText('600 × 300');
+  await page.getByRole('button', { name: '编辑第1张补图', exact: true }).click(); await expect(page.getByRole('button', { name: '裁剪第1张', exact: true })).toBeInViewport({ ratio: 1 });
+  await page.getByRole('button', { name: '关闭图片操作', exact: true }).click(); await page.screenshot({ path: info.outputPath('compact-single-material.png') });
+  await page.getByRole('button', { name: '取消补图', exact: true }).click();
 });
 test('over-selection is rejected before decoding or saving any supplement', async ({ page }) => {
   const source = await seed(page); const before = await readDocument(page, `record.${source.id}`); await trackUrls(page); await page.getByRole('button', { name: '同题材料 / 补图', exact: true }).click(); await select(page, '从相册补图', 7);

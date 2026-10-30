@@ -5,6 +5,8 @@ import { LocalBatchQueue } from './local-batch.js';
 import { LocalRepository, type LocalDocumentChange } from './local-repository.js';
 import type { SolveOutcome, SolverInput } from '@solveflow/contracts/agent';
 import { questionConversations } from './question-conversations.js';
+import { collectBatchPrint } from './batch-print.js';
+import { questionsForBatchQuestionPrint } from './batch-print-variants.js';
 
 const jpeg = 'data:image/jpeg;base64,/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAACAAIDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AKpAB//Z';
 const outcome: SolveOutcome = { schemaVersion: 1, status: 'completed', verified: false, verificationStatus: 'not_requested', warning: null, verification: null, candidate: { schemaVersion: 1, kind: 'answer', problem: { text: 'x+1=3', subject: 'math', uncertainties: [] }, answer: 'x=2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] } };
@@ -219,6 +221,39 @@ async function groupedRecipient() {
   await f.engine.start(record.session.id, '', undefined, async () => grouped); await f.engine.waitForIdle();
   f.plan.images[0]!.sessionIds = [record.session.id]; return { ...f, groupId: record.session.id, group: await f.repository.read(record.session.id) };
 }
+
+it.each(['failed', 'cancelled', 'running', 'empty-message'] as const)('preserves the original scope after a %s first attempt receives supplements and exports only the recovered questions', async state => {
+  const f = await setup(); const gate = latch(); let signal: AbortSignal | undefined;
+  const record = await f.engine.create(jpeg, 2, 2, 'act', { ...f.records[0]!.batch!, position: 4 });
+  const message = state === 'empty-message' ? '' : '请只解答第7、8题，参照表一。';
+  const run = await f.engine.start(record.session.id, message, undefined, async (_input, current) => {
+    signal = current;
+    if (state === 'running' || state === 'cancelled') await gate.promise;
+    throw new Error('SYNTHETIC_FIRST_FAILURE');
+  });
+  let saving: ReturnType<LocalBatchQueue['addMaterials']> | undefined;
+  try {
+    await expect.poll(() => !!signal).toBe(true);
+    if (state === 'cancelled') { const stopping = f.engine.cancelRun(run.id); gate.release(); await stopping; }
+    if (state !== 'running') await f.engine.waitForIdle();
+    if (outcome.status !== 'completed') throw new Error('GROUP_OUTCOME');
+    const grouped: SolveOutcome = { ...outcome, candidate: { ...outcome.candidate, questions: [7, 8].map(number => ({ number, problem: outcome.candidate.problem, answer: `Answer ${number}`, stepIds: [], figureIds: [] })) } };
+    const execute = vi.fn(async (_input: SolverInput) => grouped);
+    f.plan.images[0]!.sessionIds = [record.session.id];
+    saving = f.queue.addMaterials(f.plan, execute);
+    if (state === 'running') { await expect.poll(() => signal?.aborted).toBe(true); gate.release(); }
+    await saving; await f.queue.waitForIdle();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0]?.[0]).toMatchObject({ message, materials: [expect.objectContaining({ image: expect.any(Object) })] });
+    const saved = await f.repository.read(record.session.id);
+    expect(saved.session.runs[0]).toMatchObject({ id: run.id, message, status: state === 'cancelled' || state === 'running' ? 'cancelled' : 'failed' });
+    expect(questionConversations(saved.session.runs).map(thread => thread.number)).toEqual([7, 8]);
+    const snapshot = await collectBatchPrint(f.repository, f.plan.batchId, new AbortController().signal, () => {});
+    const printed = questionsForBatchQuestionPrint(snapshot).filter(question => question.recordId === record.session.id);
+    expect(printed.map(question => question.number)).toEqual([7, 8]);
+    expect(printed.every(question => question.problem !== null)).toBe(true);
+  } finally { gate.release(); await saving; await f.queue.stop(); await f.engine.waitForIdle(); }
+});
 
 it('reanswers grouped photos sequentially within their existing question threads without duplicating roots', async () => {
   const f = await groupedRecipient(); const inputs: SolverInput[] = []; let simultaneous = 0; let maximum = 0;

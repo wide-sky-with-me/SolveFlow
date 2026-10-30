@@ -1,4 +1,5 @@
 import { isAuxiliaryContext, projectQuestionRun, questionSections, resolveQuestionThread, type RunContext, type RunView } from "@solveflow/contracts/http";
+// Decision: .agents/notes/implemented/architecture/2026-10-29-retry-projection-and-import-previews.md
 export interface QuestionConversation { key: string; root: RunView; number?: number; runs: RunView[] }
 const keyOf = (root: string, number?: number) => `${root}:${number ?? "single"}`;
 export function questionConversations(runs: readonly RunView[]): QuestionConversation[] {
@@ -8,9 +9,15 @@ export function questionConversations(runs: readonly RunView[]): QuestionConvers
     const candidate = run.outcome?.status === "completed" ? run.outcome.candidate : undefined;
     const sections = candidate ? questionSections(candidate) : null;
     if (sections && address?.number === undefined && !isAuxiliaryContext(run.context?.kind)) {
+      // Only an identical unscoped retry can absorb empty attempts. Keep unrelated
+      // requests and earlier answers separate, and retain failures in each history.
+      const previous = groups.size === 1 ? [...groups.values()][0] : undefined;
+      const attempts = !run.context && previous?.number === undefined && previous?.runs.every(item =>
+        !item.context && item.message === run.message && ['failed', 'cancelled'].includes(item.status)) ? previous.runs : [];
+      if (attempts.length && previous) groups.delete(previous.key);
       for (const section of sections) {
         const key = keyOf(run.id, section.number);
-        groups.set(key, { key, root: run, number: section.number, runs: [projectQuestionRun(run, section.number)] });
+        groups.set(key, { key, root: run, number: section.number, runs: [...attempts, projectQuestionRun(run, section.number)] });
       }
       continue;
     }

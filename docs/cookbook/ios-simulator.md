@@ -32,9 +32,19 @@ pnpm --filter @solveflow/mobile exec expo run:ios --configuration Release --devi
 pnpm test:ios:smoke --app=/绝对路径/SolveFlow.app
 ```
 
-替换为本次编译得到的 **iPhoneSimulator** 产物。脚本核对 bundle ID 与平台，创建全新模拟器，导入[合成题图](../../tests/ios/fixture.png)，生成独立 XCTest 工程并执行[用例](../../tests/ios/smoke.swift)。用例只保存测试配置，不点击连接测试或解题按钮。
+替换为本次编译得到的 **iPhoneSimulator** 产物。脚本先核对包签名、bundle ID 与平台，再创建全新模拟器，导入[合成题图](../../tests/ios/fixture.png)和应用图标两张独立测试图片，生成 XCTest 工程并执行[用例](../../tests/ios/smoke.swift)。用例保存题图、补图及测试配置，不点击连接测试或解题按钮。
 
-每次的 `.runtime/ios-smoke-*` 保存步骤退出码、日志和 `ui.xcresult`。用例验证冷启动、导航、相册/裁切/SQLite 保存与重启恢复、历史 DOM、设置/Keychain 恢复、外观及横屏返回入口。全部断言通过且清理成功才返回零。断言失败保留截图和可访问性树；重复复测不累计新样本。
+模拟器包仍需本地ad hoc签名以使用Keychain，不需要Apple开发者证书。直接调用Xcode时保留签名，例如`CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-`；关闭签名的包可能正常启动，但密钥存取失败。未签名真机产物与模拟器包分别保存，不能混用。
+
+每次的 `.runtime/ios-smoke-*` 保存步骤退出码、日志和 `ui.xcresult`。用例检查冷启动、导航、相册/裁切/SQLite 保存与重启恢复、补图工作台编辑/取消/保存、历史 DOM、设置/Keychain 恢复、外观及横屏入口。结束时读回材料数量、当前选择与零模型run；全部断言通过且清理成功才返回零。断言失败保留截图和可访问性树；重复复测不累计新样本。
+
+原生快速PDF使用独立用例：
+
+```sh
+pnpm test:ios:smoke --app=/绝对路径/SolveFlow.app --pdf
+```
+
+此模式只在本轮新建模拟器种入六题合成已答记录，包含不同原图/补图及长文。通过原生UI生成两份不同错误数的ZIP和一份纯题PDF，检查横屏、重启恢复与分享入口；再从SQLite读回两条完成记录及两个文件，并确认六条预置run未增加，不调用模型。生成文件随证据保存，需另行核对实际内容、书签和链接。不会覆盖用户设备或已有模拟器数据。
 
 脚本关闭 Xcode 的额外系统诊断收集，避免失败后卡在 sysdiagnose；截图与断言仍保留。中止或结果包未完成时明确记录，不能将缺失附件当作通过。
 
@@ -44,7 +54,7 @@ pnpm test:ios:smoke --app=/绝对路径/SolveFlow.app
 
 大 tar 包下载超时先看实际日志；可在本次安装命令中设置有界的 `--fetch-timeout`，保留锁文件与校验，不切换未知镜像或关闭完整性检查。共享编译若报根配置不存在，先核对同步清单，不修改 TypeScript 标准。
 
-首次运行 Expo 若报 `~/.expo/devicectl-exists` 的 `ENOENT`，创建用户的 `.expo` 缓存目录后从 Release 阶段重试，不重新安装 Pods。
+首次运行 Expo 若报 `~/.expo/devicectl-exists` 的 `ENOENT`，创建用户的 `.expo` 缓存目录后从 Release 阶段重试，不重新安装 Pods。克隆构建目录若命中旧绝对路径的Metro缓存，为本次构建指定独立`TMPDIR`；共享包源码变化后须先重跑`pnpm build:shared`，源码哈希正确不代表已有dist已更新。
 
 SSH 中指定具体设备可能在构建、安装后因 `osascript` 激活 Simulator 失败而非零退出；保留失败记录，使用上面的 generic 构建及冒烟脚本独立核对，不把 `Build Succeeded` 当作整条命令成功。
 

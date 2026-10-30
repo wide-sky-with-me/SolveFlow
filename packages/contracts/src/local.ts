@@ -9,6 +9,7 @@ import { SessionViewSchema, MAX_CONVERSATION_RUNS, MAX_AUXILIARY_RUNS } from './
 import { ExamTypeSchema } from './exam.js';
 import { LocalMaterialSchema, LocalMaterialImageSchema, LocalImageDataSchema, MaterialInfoSchema, QuestionImageIdsSchema, MAX_MATERIAL_IMAGES, MAX_QUESTION_IMAGE_BYTES, MAX_STORED_MATERIAL_IMAGES, MAX_STORED_IMAGE_BYTES } from './material.js';
 import { MAX_IMAGE_REVIEW_REGIONS } from './image-review.js';
+import { BatchPrintCopySchema, MAX_BATCH_PRINT_COPIES } from './batch-print-variants.js';
 export { LocalMaterialSchema, MAX_MATERIAL_IMAGES, MAX_QUESTION_IMAGE_BYTES, type LocalMaterial } from './material.js';
 export { LocalMaterialImageSchema, LocalMaterialImagesSchema, type LocalMaterialImage } from './material.js';
 export { LocalImageEditSchema, QuestionImageIdsSchema, MAX_STORED_MATERIAL_IMAGES, MAX_STORED_IMAGE_BYTES, type LocalImageEdit } from './material.js';
@@ -290,3 +291,12 @@ export const LocalHistoryExportLineSchema = z.discriminatedUnion('kind', [
 export type LocalHistoryExportLine = z.infer<typeof LocalHistoryExportLineSchema>;
 export { MAX_BATCH_PRINT_LAYOUT_SOURCES, BatchPrintLayoutInputSchema, BatchPrintLayoutSchema, PrintLayoutRefinementSchema, PrintLayoutRegionSchema, parseBatchPrintLayout, normalizeGeneratedBatchPrintLayout, type BatchPrintLayoutInput, type BatchPrintLayout, type PrintLayoutRefinement, type PrintLayoutRegion, type PrintLayoutQuestion } from './batch-print-layout.js';
 export * from './batch-print-variants.js';
+
+/** A local renderer receives only a frozen export snapshot, never runtime/model credentials. */
+export const NativePdfInputSchema = z.strictObject({
+  schemaVersion: z.literal(1), snapshot: BatchPrintSnapshotSchema,
+  mode: z.enum(['answers', 'questions']), markIncorrect: z.boolean(),
+  copies: z.array(BatchPrintCopySchema).max(MAX_BATCH_PRINT_COPIES), exportedAt: z.iso.datetime(),
+}).refine(value => value.mode === 'answers' ? value.copies.length > 0 : !value.copies.length && !value.markIncorrect, '导出内容与副本设置不一致');
+export type NativePdfInput = z.infer<typeof NativePdfInputSchema>;
+export const NATIVE_PDF_CHUNK_CHARACTERS = 32768;

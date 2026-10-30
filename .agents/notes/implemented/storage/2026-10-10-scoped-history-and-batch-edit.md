@@ -20,6 +20,10 @@
 
 调整将停止本批已接受任务，其他批次不取消；确认失败也不会自动续跑。无法确认归属的损坏记录和孤立诊断保留给维护。缩略图用有界列表按需读取；预览期间释放摄像流，回到拍摄时重新打开。契约限制批次成员数量，并要求候选成员均来自当前批。
 
+局部删除期间的任务准入由[2026-10-29范围修正](../architecture/2026-10-29-supplement-scope-and-deletion-admission.md)细化：只阻止选中题目启动，其他批次继续派发；本决定的事务、取消和失败保留规则仍有效。
+
+展示与原图预览由[共享图片工作台](../architecture/2026-10-29-shared-image-workbenches.md)更新，本文的成员快照、停止、事务删除与失败保留规则继续有效。
+
 ## 验证
 
 [仓库/引擎回归](../../../../packages/client/src/local-batch-edit.test.ts)、[运行时回归](../../../../apps/mobile/src/runtime.test.ts)及[浏览器回归](../../../../tests/mobile-e2e/batch-management.spec.ts)覆盖事务失败、范围保护、迟到结果与UI确认。实际命令、复现失败、最终成绩与原生未验范围见[验收报告](../../../../docs/postmortem/2026-10-10-batch-management.md)。

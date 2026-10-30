@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { chromium, expect } from '@playwright/test';
 import { encodeHistoryDocument } from '../packages/client/dist/history-payload.js';
 import { encodeAnswerDocument } from '../packages/client/dist/answer-payload.js';
+import { checkNativePdfDocument } from './native-pdf-document-check.mjs';
 
 const apk = resolve(process.argv[2] ?? '.runtime/artifacts/solveflow-arm64-local.apk');
 const directory = await mkdtemp(join(tmpdir(), 'solveflow-apk-dom-'));
@@ -17,16 +18,24 @@ try {
   execFileSync('unzip', ['-q', apk, 'assets/www.bundle/*', '-d', directory]);
   const assets = join(directory, 'assets/www.bundle');
   assert.ok(!(await readdir(assets, { recursive: true })).some(file => file.includes('noto-serif-sc')), 'No obsolete fixed reading font assets');
-  const documents = (await readdir(assets)).filter(file => file.endsWith('.html'));
-  assert.equal(documents.length, 3, 'Expected packaged answer, history and formula-preview documents');
+  const allDocuments = (await readdir(assets)).filter(file => file.endsWith('.html'));
+  assert.equal(allDocuments.length, 4, 'Expected packaged answer, history, formula-preview and PDF documents');
+  const documents = []; let pdfDocument;
+  for (const file of allDocuments) {
+    const html = await readFile(join(assets, file), 'utf8'); let pdf = false;
+    for (const match of html.matchAll(/_expo\/static\/js\/web\/(entry-[a-f0-9]+\.js)/g)) if ((await readFile(join(assets, '_expo/static/js/web', match[1]), 'utf8')).includes('native-pdf-renderer')) pdf = true;
+    if (pdf) { assert.equal(pdfDocument, undefined); pdfDocument = file; } else documents.push(file);
+  }
+  assert.ok(pdfDocument, 'Native PDF renderer must be packaged');
   const referencedEntries = new Set();
-  for (const file of documents) {
+  for (const file of allDocuments) {
     const html = await readFile(join(assets, file), 'utf8');
     for (const match of html.matchAll(/_expo\/static\/js\/web\/(entry-[a-f0-9]+\.js)/g)) referencedEntries.add(match[1]);
   }
   const packagedEntries = (await readdir(join(assets, '_expo/static/js/web'))).filter(file => /^entry-.*\.js$/.test(file));
   assert.deepEqual(packagedEntries.sort(), [...referencedEntries].sort(), 'APK must not retain obsolete DOM entry bundles from earlier builds');
   browser = await chromium.launch({ executablePath: process.env.SOLVEFLOW_TEST_CHROME ?? '/usr/bin/google-chrome' });
+  await checkNativePdfDocument(browser, assets, pdfDocument, directory);
   const page = await browser.newPage({ viewport: { width: 360, height: 800 } });
   const image = `data:image/jpeg;base64,${(await page.screenshot({ type: 'jpeg' })).toString('base64')}`;
   const value = { schemaVersion: 1, runId: '10000000-0000-4000-8000-000000000003', image, width: 360, height: 800, number: null, disabled: false, showRegenerate: true,

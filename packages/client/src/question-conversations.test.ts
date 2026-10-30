@@ -35,3 +35,27 @@ it.each(['explanation', 'knowledge-list'] as const)('keeps structured questions 
   const followUp = run(3, { kind: 'step', sourceRunId: detail.id, stepId: 'example-1' });
   expect(questionConversations([root, detail, followUp]).map(thread => thread.runs.map(item => item.id))).toEqual([[root.id, detail.id, followUp.id]]);
 });
+
+it.each(['failed', 'cancelled'] as const)('attaches an unsuccessful %s attempt to the successful grouped retry without creating an empty question', status => {
+  const failed: RunView = { ...run(1), status, message: '请解答第1、2题。', outcome: null };
+  const retry = { ...run(2), message: failed.message };
+  if (retry.outcome?.status !== 'completed') throw new Error('COMPLETED_FIXTURE_REQUIRED');
+  retry.outcome.candidate.questions = [1, 2].map(number => ({ number, answer: `Answer ${number}`, stepIds: [], figureIds: [] }));
+  const before = JSON.stringify([failed, retry]);
+  const threads = questionConversations([failed, retry]);
+  expect(threads.map(thread => thread.number)).toEqual([1, 2]);
+  for (const thread of threads) {
+    expect(thread.root.id).toBe(retry.id);
+    expect(thread.runs.map(item => item.id)).toEqual([failed.id, retry.id]);
+    expect(continuationContext(thread)).toEqual({ kind: 'question', sourceRunId: retry.id, number: thread.number });
+  }
+  expect(JSON.stringify([failed, retry])).toBe(before);
+});
+
+it('keeps a different unsuccessful question separate instead of guessing its grouped retry', () => {
+  const failed: RunView = { ...run(1), status: 'failed', message: '请解答第3题。', outcome: null };
+  const answer = { ...run(2), message: '请解答第1、2题。' };
+  if (answer.outcome?.status !== 'completed') throw new Error('COMPLETED_FIXTURE_REQUIRED');
+  answer.outcome.candidate.questions = [1, 2].map(number => ({ number, answer: `Answer ${number}`, stepIds: [], figureIds: [] }));
+  expect(questionConversations([failed, answer]).map(thread => thread.number)).toEqual([undefined, 1, 2]);
+});

@@ -148,9 +148,9 @@ export function CaptureFlow({ runtime, initialBatch, insertion, onPhoto, onGalle
     {rename && batch && <BatchName title={batch.title} onClose={() => setRename(false)} onSave={async title => { if (count) await runtime.repository.renameBatch(batch.id, title); setBatch({ ...batch, title }); }} />}
     {review && batch && <BatchEditor runtime={runtime} batchId={batch.id} onClose={() => setReview(false)} onApplied={() => { void refreshCount().catch(cause => setError(clientError(cause))); }} />}
     {discard && <MotionModal transparent animationType="fade" onRequestClose={() => { if (!busy) setDiscard(false); }}><DialogSurface>
-      <Text style={s.title}>放弃整个批次？</Text><Text style={s.subtitle}>本批 {count} 张题图及解答将永久删除，本批任务会停止。其他批次和单题保留。</Text>
+      <Text style={s.title}>删除整个批次？</Text><Text style={s.subtitle}>本批 {count} 张题图及解答将永久删除，本批任务会停止。其他批次和单题保留。</Text>
       {!!error && <Notice text={error} error />}
-      <Button title="确认放弃本批" danger disabled={busy} onPress={() => void discardBatch()} /><Button title="保留本批" secondary disabled={busy} onPress={() => setDiscard(false)} />
+      <Button title="确认删除本批" danger disabled={busy} onPress={() => void discardBatch()} /><Button title="保留本批" secondary disabled={busy} onPress={() => setDiscard(false)} />
     </DialogSurface></MotionModal>}
   </Camera>;
 }

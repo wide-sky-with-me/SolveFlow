@@ -27,7 +27,7 @@ async function records(page: Page) { return page.evaluate(async () => {
 }); }
 async function openBatch(page: Page) {
   await page.getByRole('tab', { name: '历史题目', exact: true }).click(); await page.getByRole('tab', { name: '批量记录', exact: true }).click();
-  await page.getByText('Editable synthetic batch', { exact: true }).click(); await expect(page.getByTestId('current-batch')).toBeVisible();
+  await page.getByRole('button', { name: '打开批量', exact: true }).filter({ hasText: 'Editable synthetic batch' }).click(); await expect(page.getByTestId('current-batch')).toBeVisible();
 }
 test('clearing single history preserves batch images and records across refresh', async ({ page }) => {
   await seed(page); await page.getByRole('tab', { name: '历史题目', exact: true }).click();
@@ -42,15 +42,69 @@ test('second batch edit cancels safely, then reorders and removes only the confi
   await page.getByRole('button', { name: '批次操作', exact: true }).click(); await page.getByRole('button', { name: '调整批次图片', exact: true }).click();
   await page.getByRole('button', { name: '移除第2张', exact: true }).click(); await page.getByRole('button', { name: '取消调整', exact: true }).click(); expect(await records(page)).toHaveLength(5);
   await page.getByRole('button', { name: '批次操作', exact: true }).click(); await page.getByRole('button', { name: '调整批次图片', exact: true }).click();
-  await page.getByRole('button', { name: '移除第2张', exact: true }).click(); await page.getByRole('button', { name: '上移第2张', exact: true }).click();
+  await page.getByRole('button', { name: '移除第2张', exact: true }).click(); await page.getByRole('button', { name: '调整第2张位置', exact: true }).click(); await page.getByRole('button', { name: '上移第2张', exact: true }).click(); await page.getByRole('button', { name: '关闭图片操作', exact: true }).click();
   await page.getByRole('button', { name: '保存批次调整', exact: true }).click(); await page.getByRole('button', { name: '确认批次调整', exact: true }).click();
   await expect.poll(() => records(page)).toEqual([{ id: single }, { id: batchRows[0], position: 2 }, { id: batchRows[2], position: 1 }, { id: other, position: 1 }]);
   await page.reload(); expect(await records(page)).toHaveLength(4); expect(calls).toBe(0);
 });
 test('discarding a saved batch asks first and retains singles and another batch', async ({ page }) => {
-  await seed(page); await openBatch(page); await page.getByRole('button', { name: '批次操作', exact: true }).click(); await page.getByRole('button', { name: '放弃本批', exact: true }).click();
+  await seed(page); await openBatch(page); await page.getByRole('button', { name: '批次操作', exact: true }).click(); await page.getByRole('button', { name: '删除本批', exact: true }).click();
   await page.getByRole('button', { name: '保留本批', exact: true }).click(); expect(await records(page)).toHaveLength(5);
-  await page.getByRole('button', { name: '批次操作', exact: true }).click(); await page.getByRole('button', { name: '放弃本批', exact: true }).click(); await page.getByRole('button', { name: '确认放弃本批', exact: true }).click();
+  await page.getByRole('button', { name: '批次操作', exact: true }).click(); await page.getByRole('button', { name: '删除本批', exact: true }).click(); await page.getByRole('button', { name: '确认删除本批', exact: true }).click();
   await expect.poll(async () => (await records(page)).map(row => row.id)).toEqual([single, other].sort());
   await page.reload(); expect((await records(page)).map(row => row.id)).toEqual([single, other].sort());
+});
+
+test('the compact batch editor keeps movement on demand and reads no supplement documents for thumbnails', async ({ page }, info) => {
+  await seed(page); await openBatch(page);
+  const originalOrder = await records(page);
+  await page.evaluate(ids => new Promise<void>((resolve, reject) => {
+    const r = indexedDB.open('solveflow-local'); r.onsuccess = () => {
+      const db = r.result, tx = db.transaction('documents', 'readwrite'), store = tx.objectStore('documents');
+      for (const id of ids) { const get = store.get(`record.${id}`); get.onsuccess = () => {
+        const record = JSON.parse(get.result); const ids = [crypto.randomUUID(), crypto.randomUUID()];
+        store.put(JSON.stringify({ schemaVersion: 1, image: record.image }), `image.${id}`);
+        for (const materialId of ids) store.put(JSON.stringify({ schemaVersion: 1, image: record.image }), `material.${id}.${materialId}`);
+        const { image: _image, ...metadata } = record;
+        store.put(JSON.stringify({ ...metadata, schemaVersion: 2, materials: ids.map(materialId => ({ id: materialId, width: record.session.upload.width, height: record.session.upload.height, bytes: record.session.upload.bytes })) }), `record.${id}`);
+      }; }
+      tx.oncomplete = () => { db.close(); resolve(); }; tx.onabort = () => { db.close(); reject(tx.error); };
+    }; r.onerror = () => reject(r.error);
+  }), batchRows);
+  await page.reload(); await openBatch(page);
+  for (const position of [2, 3, 1]) { await page.getByRole('tab', { name: `跳转第${position}题`, exact: true }).click(); await expect(page.getByRole('tab', { name: `跳转第${position}题`, exact: true })).toHaveAttribute('aria-selected', 'true'); }
+  await page.evaluate(() => {
+    const get = IDBObjectStore.prototype.get; document.documentElement.dataset.editMaterialReads = '0';
+    IDBObjectStore.prototype.get = function(key) { if (typeof key === 'string' && key.startsWith('material.')) document.documentElement.dataset.editMaterialReads = String(Number(document.documentElement.dataset.editMaterialReads) + 1); return get.call(this, key); };
+  });
+  await page.getByRole('button', { name: '批次操作', exact: true }).click(); await page.getByRole('button', { name: '调整批次图片', exact: true }).click();
+  const dialog = page.getByTestId('batch-edit-workbench'); await expect(dialog).toBeVisible();
+  await expect(page.getByRole('img', { name: '批次题图缩略图', exact: true })).toHaveCount(3);
+  await expect(page.locator('html')).toHaveAttribute('data-edit-material-reads', '0');
+  await expect(page.getByRole('button', { name: '上移第2张', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '调整第2张位置', exact: true }).click();
+  await expect(page.getByRole('button', { name: '上移第2张', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '上移第2张', exact: true }).click();
+  await expect(page.getByRole('button', { name: '上移第1张', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: '关闭图片操作', exact: true }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-edit-material-reads', '0');
+  await page.emulateMedia({ colorScheme: 'dark' }); await page.screenshot({ path: info.outputPath('compact-batch-editor.png') });
+  await page.getByRole('button', { name: '取消调整', exact: true }).click(); expect(await records(page)).toEqual(originalOrder);
+});
+
+test('the saved-image grid can reach the last of one hundred thumbnails and closes without retaining preview URLs', async ({ page }) => {
+  await seed(page);
+  await page.evaluate(({ batchId, first }) => new Promise<void>((resolve, reject) => {
+    const r = indexedDB.open('solveflow-local'); r.onsuccess = () => { const db = r.result, tx = db.transaction('documents', 'readwrite'), store = tx.objectStore('documents'), get = store.get(`record.${first}`);
+      get.onsuccess = () => { const original = JSON.parse(get.result); for (let position = 4; position <= 100; position++) { const id = crypto.randomUUID(); store.put(JSON.stringify({ ...original, batch: { ...original.batch, id: batchId, position }, session: { ...original.session, id, upload: { ...original.session.upload, id, previewUrl: `/api/v1/uploads/${id}/image` } } }), `record.${id}`); } };
+      tx.oncomplete = () => { db.close(); resolve(); }; tx.onabort = () => { db.close(); reject(tx.error); };
+    }; r.onerror = () => reject(r.error);
+  }), { batchId, first: batchRows[0] });
+  await page.reload(); await openBatch(page);
+  await page.evaluate(() => { const live = new Set<string>(), create = URL.createObjectURL.bind(URL), revoke = URL.revokeObjectURL.bind(URL); const publish = () => { document.documentElement.dataset.editorPreviewUrls = String(live.size); }; URL.createObjectURL = value => { const uri = create(value); live.add(uri); publish(); return uri; }; URL.revokeObjectURL = uri => { live.delete(uri); revoke(uri); publish(); }; publish(); });
+  await page.getByRole('button', { name: '批次操作', exact: true }).click(); await page.getByRole('button', { name: '调整批次图片', exact: true }).click();
+  const dialog = page.getByTestId('batch-edit-workbench');
+  await expect.poll(async () => { await dialog.locator('div').evaluateAll(nodes => { for (const node of nodes) if (node.scrollHeight > node.clientHeight + 40 && /auto|scroll/.test(getComputedStyle(node).overflowY)) node.scrollTop = node.scrollHeight; }); return page.getByRole('button', { name: '调整第100张位置', exact: true }).count(); }).toBe(1);
+  await expect(page.getByTestId('batch-edit-row').filter({ hasText: '第 100 张' }).getByRole('img', { name: '批次题图缩略图', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '取消调整', exact: true }).click(); await expect(page.locator('html')).toHaveAttribute('data-editor-preview-urls', '0');
 });

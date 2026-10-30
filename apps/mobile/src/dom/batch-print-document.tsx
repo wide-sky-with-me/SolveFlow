@@ -7,13 +7,8 @@ import { AnswerContent, TeachingSteps } from './answer-content';
 import { MathText } from './math-text';
 import { ReadingMemory } from './reading-state';
 
-export type PrintImages = Record<string, string>;
-export function printImageKey(recordId: string, imageId: string) { return `${recordId}/${imageId}`; }
-export function recordPrintImages(record: LocalRecord, scope: 'current' | 'history' = 'current') {
-  const images = [{ id: record.session.upload.id, image: record.image }, ...(record.materials ?? []).map(item => ({ id: item.id, image: item.image }))];
-  if (scope === 'history' || !record.activeImageIds) return images;
-  return record.activeImageIds.flatMap(id => { const source = images.find(source => source.id === id); return source ? [source] : []; });
-}
+import { printImageKey, recordPrintImages, type PrintImages } from '../local/batch-print-images';
+export { printImageKey, recordPrintImages, type PrintImages } from '../local/batch-print-images';
 function PrintedAnswer({ run, runs }: { run: RunView; runs: RunView[] }) {
   const check = runs.findLast(item => item.context?.kind === 'verification' && item.context.sourceRunId === run.id);
   const result = check?.outcome?.status === 'completed' ? check.outcome : run.outcome;

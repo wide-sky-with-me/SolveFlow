@@ -61,10 +61,10 @@ async function appendFiles(page: Page, names: string[]) {
 }
 async function trackDraftUrls(page: Page) {
   await page.evaluate(() => {
-    const active = new Set<string>(); const create = URL.createObjectURL.bind(URL); const revoke = URL.revokeObjectURL.bind(URL);
-    const publish = () => document.documentElement.setAttribute('data-supplement-draft-urls', String(active.size));
-    URL.createObjectURL = value => { const uri = create(value); active.add(uri); publish(); return uri; };
-    URL.revokeObjectURL = uri => { active.delete(uri); publish(); revoke(uri); }; publish();
+    const active = new Set<string>(), originals = new Set<string>(); const create = URL.createObjectURL.bind(URL); const revoke = URL.revokeObjectURL.bind(URL);
+    const publish = () => { document.documentElement.setAttribute('data-supplement-draft-urls', String(active.size)); document.documentElement.setAttribute('data-supplement-original-urls', String(originals.size)); };
+    URL.createObjectURL = value => { const uri = create(value); active.add(uri); if (value instanceof File) originals.add(uri); publish(); return uri; };
+    URL.revokeObjectURL = uri => { active.delete(uri); originals.delete(uri); publish(); revoke(uri); }; publish();
   });
 }
 async function completedRecipient(page: Page, id: string) {
@@ -204,7 +204,7 @@ test('thumbnail clicks only switch bindings and the separate transparent edit bu
   await page.screenshot({ path: info.outputPath('thumbnail-bindings.png') });
   // Editing another card also selects it; closing the tools keeps its binding context.
   await edit.click(); await expect(page.getByTestId('material-photo-tools')).toBeVisible();
-  await expect(page.getByText('shared-2.jpg', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('material-photo-tools')).toContainText('shared-2.jpg');
   await expect(page.getByRole('button', { name: '查看补图2', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '关闭图片操作', exact: true }).click();
   expect(await checkedPositions(page)).toEqual([2, 3]);
@@ -344,7 +344,7 @@ test('cancelled and over-limit additional selections keep the current bindings a
   await expect(page.getByRole('alert')).toContainText('本批还可添加99张图片');
   await expect(page.getByTestId('material-import-row')).toHaveCount(1); await expect(page.getByTestId('material-import-row').first()).toContainText('已绑定 2 题');
   await appendFiles(page, ['more.jpg']); await expect(page.getByTestId('material-import-row')).toHaveCount(2);
-  await expect(page.locator('html')).toHaveAttribute('data-supplement-draft-urls', '2');
+  await expect(page.locator('html')).toHaveAttribute('data-supplement-original-urls', '2');
   await page.getByRole('button', { name: '取消补图', exact: true }).click();
   await expect(page.locator('html')).toHaveAttribute('data-supplement-draft-urls', '0');
   expect(await Promise.all(ids.map(id => readDocument(page, `record.${id}`)))).toEqual(before); expect(models.solves).toHaveLength(0);
@@ -358,7 +358,7 @@ test('additional selections obey the cumulative original-byte limit and release 
   await appendFiles(page, Array.from({ length: 40 }, (_, index) => `more-${index}.jpg`));
   await expect(page.getByRole('alert')).toContainText('本次补图累计超过500MB');
   await expect(page.getByText('已选择 50 张补图', { exact: true })).toBeVisible();
-  await expect(page.locator('html')).toHaveAttribute('data-supplement-draft-urls', '50');
+  await expect(page.locator('html')).toHaveAttribute('data-supplement-original-urls', '50');
   await page.getByRole('button', { name: '取消补图', exact: true }).click(); await expect(page.locator('html')).toHaveAttribute('data-supplement-draft-urls', '0');
   expect(models.solves).toHaveLength(0);
 });

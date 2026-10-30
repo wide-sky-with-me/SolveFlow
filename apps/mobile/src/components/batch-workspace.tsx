@@ -138,7 +138,7 @@ export function BatchWorkspace({ runtime, batch, available, active = true, jumpG
                   {queueBusy && (
                     <Button title="停止批量解题" danger disabled={busy} onPress={() => { setActions(false); setBusy(true); void runtime.batch.stop(batch.id).catch(cause => setError(clientError(cause))).finally(() => { setBusy(false); void refresh(); }); }} />
                   )}
-                  <Button title="放弃本批" secondary danger disabled={busy || !pages.length} onPress={() => { setActions(false); setError(''); setDiscard(true); }} />
+                  <Button title="删除本批" secondary danger disabled={busy || !pages.length} onPress={() => { setActions(false); setError(''); setDiscard(true); }} />
                 </ScrollView>
               </View>
             </View>
@@ -155,9 +155,9 @@ export function BatchWorkspace({ runtime, batch, available, active = true, jumpG
     {materials && <BatchMaterials runtime={runtime} batchId={batch.id} onClose={() => { setMaterials(false); void refresh(); }} onApplied={showMaterialMessage} />}
     {pdfExport && <BatchPdfExport runtime={runtime} batchId={batch.id} onReviewQuestion={setSelected} onClose={() => setPdfExport(false)} />}
     {discard && <Modal transparent animationType="fade" onRequestClose={() => { if (!busy) setDiscard(false); }}><DialogSurface>
-      <Text style={s.title}>放弃整个批次？</Text><Text style={s.subtitle}>本批 {pages.length} 张题图及解答将永久删除，本批任务会停止。其他批次和单题保留。</Text>
+      <Text style={s.title}>删除整个批次？</Text><Text style={s.subtitle}>本批 {pages.length} 张题图及解答将永久删除，本批任务会停止。其他批次和单题保留。</Text>
       {!!error && <Notice text={error} error />}
-      <Button title="确认放弃本批" danger disabled={busy} onPress={() => void discardBatch()} /><Button title="保留本批" secondary disabled={busy} onPress={() => setDiscard(false)} />
+      <Button title="确认删除本批" danger disabled={busy} onPress={() => void discardBatch()} /><Button title="保留本批" secondary disabled={busy} onPress={() => setDiscard(false)} />
     </DialogSurface></Modal>}
   </View>;
 }

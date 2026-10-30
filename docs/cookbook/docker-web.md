@@ -30,6 +30,8 @@ macOS Colima 的回环转发保持原样。宿主用已有 Node 运行 gateway.m
 
 升级前备份 shared/state，模式仍为 700/600；保留旧镜像、发布清单、网关和 launchd 配置。只操作本项目的 Compose 和 launchd label，不重启整个 Colima。
 
+先在新目录构建并验收，再等待现有请求结束后切换。保留旧版哈希静态资源供已打开页面延迟加载，排除`index.html`和`metadata.json`；同名资源必须内容一致，不能覆盖不同内容。发布后分别核对两个入口的TLS、首页摘要、模型配置及并发，确认其他容器未重启。历史记录属于各浏览器来源，不迁移、不清空；用户刷新前先完成当前任务和待存照片。
+
 macOS 重载网关时，bootout 后等待本 label 不再可查询且旧 PID 已退出，再 bootstrap；立即重载可能返回 EIO。失败时恢复旧 plist 和该实例容器，不修改模型状态。
 
 需要并行保留旧版本时，另建发布目录和私有 state 副本，使用新端口、独立 `docker compose -p PROJECT` 与 launchd label；不要沿用旧 Compose 项目名、共享可写模型状态或覆盖旧网关。新实例从现有私有模型配置初始化，后续设置各自保存。

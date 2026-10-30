@@ -131,7 +131,7 @@ export function Camera({
             disabled={busy || externalBusy}
             onPress={onClose}
           />
-          {continuous && onDiscard && <Button title="放弃本批" compact secondary danger disabled={controlsBusy} onPress={onDiscard} />}
+          {continuous && onDiscard && <Button title={count ? '删除本批' : '取消拍摄'} compact secondary danger disabled={controlsBusy} onPress={onDiscard} />}
         </View>
 
         <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>

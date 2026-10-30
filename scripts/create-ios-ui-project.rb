@@ -1,12 +1,12 @@
 require 'xcodeproj'
 require 'fileutils'
 
-abort 'Expected repository root and output directory' unless ARGV.length == 2
-root, directory = ARGV.map { |argument| File.expand_path(argument) }
+abort 'Expected repository root, output directory and optional pdf mode' unless [2, 3].include?(ARGV.length) && (ARGV.length == 2 || ARGV[2] == 'pdf')
+root, directory = ARGV.first(2).map { |argument| File.expand_path(argument) }
 FileUtils.mkdir_p(directory)
 project = Xcodeproj::Project.new(File.join(directory, 'SolveFlowSmoke.xcodeproj'))
 target = project.new_target(:ui_test_bundle, 'SolveFlowSmoke', :ios, '16.4')
-source = project.main_group.new_file(File.join(root, 'tests/ios/smoke.swift'))
+source = project.main_group.new_file(File.join(root, ARGV[2] == 'pdf' ? 'tests/ios/pdf-smoke.swift' : 'tests/ios/smoke.swift'))
 target.source_build_phase.add_file_reference(source)
 target.build_configurations.each do |configuration|
   configuration.build_settings.merge!({

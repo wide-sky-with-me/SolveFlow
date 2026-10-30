@@ -6,6 +6,18 @@ function id(value: number): string { return `00000000-0000-4000-8000-${value.toS
 const metadata: ExportTaskMetadata = { batchId: id(1), title: 'Synthetic export', mode: 'answers', layout: 'saved', copies: 1, questionCount: 2 };
 const artifact: ExportArtifact = { name: 'export.pdf', mimeType: 'application/pdf', data: new Uint8Array([1, 2, 3]) };
 const time = '2026-10-14T00:00:00.000Z';
+it('admits Hermes-style abort signals without throwIfAborted and still rejects pre-cancelled submissions', async () => {
+  const { queue } = setup(); await queue.initialize();
+  const controller = new AbortController();
+  Object.defineProperty(controller.signal, 'throwIfAborted', { value: undefined });
+  Object.defineProperty(controller.signal, 'reason', { value: undefined });
+  const runner = vi.fn(async () => artifact);
+  await queue.enqueue(metadata, runner, controller.signal); await queue.waitForIdle();
+  expect(runner).toHaveBeenCalledTimes(1);
+  controller.abort();
+  await expect(queue.enqueue(metadata, runner, controller.signal)).rejects.toThrow('取消');
+  expect(runner).toHaveBeenCalledTimes(1);
+});
 function task(value: number, patch: Partial<ExportTask> = {}): ExportTask {
   return ExportTaskSchema.parse({ ...metadata, parentId: null, schemaVersion: 1, id: id(value), createdAt: time, startedAt: null, finishedAt: null, status: 'queued', progress: '', error: null, file: null, ...patch });
 }

@@ -91,11 +91,13 @@ test('multi-select previews natural names, known times and manual moves before m
   await page.route('https://fixture-model.invalid/v1/chat/completions', async route => { calls++; const body = route.request().postDataJSON(); const input = lastModelInput(body); const verifier = typeof input === 'object' && input !== null && 'role' in input && input.role === 'verifier'; await route.fulfill({ contentType: 'text/event-stream', body: modelSse(verifier ? modelPass : { schemaVersion: 1, kind: 'answer', problem: { text: 'x+1=3', subject: 'math', uncertainties: [] }, answer: 'x=2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] }, body) }); });
   await page.goto('/'); await configureLocalModel(page); await selectBatch(page);
   const rows = page.getByTestId('import-photo-row');
-  await expect(rows.nth(0)).toContainText('question-1.jpg'); await expect(rows.nth(1)).toContainText('question-2.jpg'); await expect(rows.nth(2)).toContainText('question-10.jpg');
+  await expect(rows.nth(0).getByRole('img')).toHaveAccessibleName('题图1缩略图：question-1.jpg'); await expect(rows.nth(1).getByRole('img')).toHaveAccessibleName('题图2缩略图：question-2.jpg'); await expect(rows.nth(2).getByRole('img')).toHaveAccessibleName('题图3缩略图：question-10.jpg');
   expect(calls).toBe(0); await page.getByRole('button', { name: '按时间排序', exact: true }).click();
-  await expect(rows.nth(0)).toContainText('question-10.jpg');
+  await expect(rows.nth(0).getByRole('img')).toHaveAccessibleName('题图1缩略图：question-10.jpg');
+  await page.getByRole('button', { name: '编辑第3张题图', exact: true }).click();
   await page.getByRole('button', { name: '上移第3张', exact: true }).click();
-  await expect(rows.nth(1)).toContainText('question-1.jpg'); await expect(page.getByText('自定义排序 · 剩余 3 张', { exact: true })).toBeVisible(); expect(calls).toBe(0);
+  await page.getByRole('button', { name: '关闭图片操作', exact: true }).click();
+  await expect(rows.nth(1).getByRole('img')).toHaveAccessibleName('题图2缩略图：question-1.jpg'); await expect(page.getByText('自定义排序 · 剩余 3 张', { exact: true })).toBeVisible(); expect(calls).toBe(0);
   await page.getByRole('button', { name: '导入并解题（3张）', exact: true }).click();
   await expect(page.getByRole('heading', { name: '确认图片顺序', exact: true })).toHaveCount(0); await expect(page.getByText('已保存 3 张', { exact: true })).toBeVisible();
   await expect.poll(() => calls).toBe(6); await page.getByRole('button', { name: '完成拍摄', exact: true }).click();
@@ -199,10 +201,10 @@ test('batch capture previews allow removal and cancel, saved photos allow adjust
   await page.getByRole('button', { name: '调整批次图片', exact: true }).click(); await expect(page.getByTestId('batch-edit-row')).toHaveCount(2); await page.getByRole('button', { name: '取消调整', exact: true }).click();
   await expect(page.getByRole('button', { name: '拍摄', exact: true })).toBeEnabled();
   const stream = await page.locator('video').evaluateHandle(node => node instanceof HTMLVideoElement ? node.srcObject : null);
-  await page.getByRole('button', { name: '放弃本批', exact: true }).click();
+  await page.getByRole('button', { name: '删除本批', exact: true }).click();
   expect(await stream.evaluate(value => value instanceof MediaStream && value.getTracks().every(track => track.readyState === 'ended'))).toBe(true);
   await page.getByRole('button', { name: '保留本批', exact: true }).click(); expect((await savedPhotos(page)).records).toHaveLength(2);
-  await page.getByRole('button', { name: '放弃本批', exact: true }).click(); await page.getByRole('button', { name: '确认放弃本批', exact: true }).click();
+  await page.getByRole('button', { name: '删除本批', exact: true }).click(); await page.getByRole('button', { name: '确认删除本批', exact: true }).click();
   await expect.poll(async () => (await savedPhotos(page)).records.length).toBe(0); await expect(page.getByRole('button', { name: '拍一张', exact: true })).toBeVisible(); expect(calls).toBe(4); await stream.dispose();
 });
 
@@ -233,7 +235,8 @@ for (const totalBytes of [200 * 1024 * 1024, 500 * 1024 * 1024, 500 * 1024 * 102
     await (await chooser).setFiles(Array.from({ length: 100 }, (_, index) => ({ name: `capacity-${index}.jpg`, mimeType: 'image/jpeg', buffer: Buffer.from(image, 'base64') })));
     if (totalBytes <= 500 * 1024 * 1024) {
       await expect(page.getByRole('heading', { name: '确认图片顺序', exact: true })).toBeVisible();
-      await expect(page.getByTestId('import-photo-row')).toHaveCount(100);
+      await expect(page.getByTestId('batch-import-new-slot')).toHaveCount(100);
+      await expect(page.getByRole('button', { name: '导入并解题（100张）', exact: true })).toBeEnabled();
       await page.getByRole('button', { name: '取消导入', exact: true }).click();
     } else {
       await expect(page.getByText('本次选择超过500MB，请分次导入。', { exact: true })).toBeVisible();

@@ -234,6 +234,20 @@ export class LocalRepository {
     return { schemaVersion: 1, session: record.session, ...(record.exam ? { exam: record.exam } : {}), ...(record.batch ? { batch: record.batch } : {}), ...(record.activeImageIds ? { activeImageIds: record.activeImageIds } : {}), ...(record.materials ? { materials: record.materials.map(item => ({ id: item.id, bytes: item.bytes, width: item.width, height: item.height })) } : {}) };
     } catch (cause) { if (cause instanceof LocalDataError) this.noteIssue(cause, id); throw cause; }
   }
+  /** Preview only the immutable original; historical supplements are not needed. */
+  // Decision: .agents/notes/implemented/architecture/2026-10-29-shared-image-workbenches.md
+  async readPrimaryImage(id: string): Promise<{ image: string; width: number; height: number }> {
+    try {
+      const record = await this.loadRecord(id, false);
+      if (record.schemaVersion === 1) return { image: record.image, width: record.session.upload.width, height: record.session.upload.height };
+      const key = `image.${id}`;
+      const raw = await this.documents.get(key);
+      if (raw === null) throw new LocalDataError(key);
+      const image = decodeDocument(key, raw, StoredLocalImageSchema).image;
+      this.damaged.delete(key);
+      return { image, width: record.session.upload.width, height: record.session.upload.height };
+    } catch (cause) { if (cause instanceof LocalDataError) this.noteIssue(cause, id); throw cause; }
+  }
   async read(id: string): Promise<LocalRecord> {
     try {
     const record = await this.loadRecord(id);

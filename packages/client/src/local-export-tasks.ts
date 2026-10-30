@@ -8,12 +8,19 @@ import {
 /** Explicitly classified local validation errors; arbitrary runner errors stay redacted. */
 export class ExportTaskFailure extends Error {}
 
+/** React Native's AbortSignal has aborted/events but may lack throwIfAborted. */
+export function requireExportActive(signal?: Pick<AbortSignal, 'aborted'>): void {
+  if (!signal?.aborted) return;
+  if ('reason' in signal && signal.reason !== undefined) throw signal.reason;
+  throw new Error('导出已取消。');
+}
+
 const storageErrors = {
   capacity: `导出记录缓存已达 ${MAX_EXPORT_STORED_BYTES / 1024 / 1024} MiB 上限，请先下载并删除旧导出记录，再重试保存。`,
-  quota: '当前浏览器存储空间不足，请释放空间后重试保存。',
-  timeout: '当前浏览器保存导出结果超时，请重试保存。',
-  unavailable: '当前浏览器存储不可用，请检查存储权限后重试。',
-  clone: '当前浏览器无法写入该导出文件，请尝试下载已生成文件。',
+  quota: '当前存储空间不足，请释放空间后重试保存。',
+  timeout: '保存导出结果超时，请重试保存。',
+  unavailable: '当前存储不可用，请检查存储权限后重试。',
+  clone: '无法写入该导出文件，请尝试保存已生成文件。',
   integrity: '导出记录的容量信息损坏，旧文件已保留。',
 };
 /** Platform adapters classify causes without exposing browser errors or private data. */
@@ -136,10 +143,10 @@ export class LocalExportTasks {
 
   // Decision: .agents/notes/implemented/storage/2026-10-17-pdf-admission-cancellation.md
   async enqueue(metadata: ExportTaskMetadata, runner: ExportTaskRunner, signal?: AbortSignal): Promise<ExportTaskSnapshot> {
-    signal?.throwIfAborted();
+    requireExportActive(signal);
     const checked = ExportTaskMetadataSchema.parse(metadata);
     const task = await this.lock(async () => {
-      signal?.throwIfAborted();
+      requireExportActive(signal);
       this.requireInitialized();
       if (this.storageBlocked) throw new Error(SAVE_ERROR);
       if (this.waiting.length >= MAX_EXPORT_QUEUED_TASKS) throw new Error('后台导出排队已满，请等待或取消已有任务。');
@@ -153,14 +160,14 @@ export class LocalExportTasks {
         await this.interruptWaiting();
         if (signal?.aborted) {
           if (pending.task.status !== 'cancelled') this.retain({ ...pending, task: this.terminal(created, 'cancelled') });
-          signal.throwIfAborted();
+          requireExportActive(signal);
         }
         throw new Error(SAVE_ERROR);
       }
       // Keep ownership of the write until it settles; cancellation never admits a runner.
       if (signal?.aborted) {
         await this.commit({ task: this.terminal(created, 'cancelled'), cleanup: false, notify: true });
-        signal.throwIfAborted();
+        requireExportActive(signal);
       }
       const execution: Execution = { id: created.id, runner, controller: new AbortController(), done: Promise.resolve() };
       this.records.set(created.id, freezeTask(created)); this.executions.set(created.id, execution); this.waiting.push(execution); this.emit();
@@ -168,7 +175,7 @@ export class LocalExportTasks {
     });
     // A queued subscriber may cancel synchronously or in the publication microtask.
     if (signal?.aborted) {
-      try { await this.cancel(task.id); } finally { signal.throwIfAborted(); }
+      try { await this.cancel(task.id); } finally { requireExportActive(signal); }
     }
     this.pump(); return task;
   }

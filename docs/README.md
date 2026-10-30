@@ -8,13 +8,15 @@
 | --- | --- |
 | AI 接手后从哪些代码和测试读起 | [任务定位与交接](cookbook/ai-development.md) |
 | 本地Web怎样运行、使用.env或更新服务 | [Web操作指南](cookbook/local-web.md) |
+| Mac/Docker怎样更新、保留模型配置及回滚 | [网页发布指南](cookbook/docker-web.md) |
 | 设备怎样提交任务和保存密钥 | [设备运行](subsystems/device-runtime.md) |
 | 本地任务锁、并发、取消和最终写入 | [生命周期](subsystems/local-run-lifecycle.md) |
 | 批量拍照、导入及插入/拖动顺序 | [连续拍摄](subsystems/batch-capture.md)、[相册导入](subsystems/batch-import.md)、[题图与导出顺序](subsystems/batch-order.md) |
 | 多批次后台、独立停止与进度总览 | [批量任务](subsystems/batch-tasks.md) |
 | 共享补图、按题重答及提示反馈 | [批量补图](subsystems/batch-materials.md) |
+| 缩略卡片、按需编辑、裁剪保存失败后重试 | [图片工作台与草稿](subsystems/image-workbenches.md) |
 | ACT完整转录及低质量图片复核 | [ACT转录](subsystems/act-transcription.md)、[图片复核](subsystems/image-review.md) |
-| PDF版式、多份作答、答案表及下载恢复 | [导出总览](subsystems/batch-pdf.md)、[快速PDF](subsystems/quick-pdf.md)、[导出任务](subsystems/export-tasks.md) |
+| PDF版式、多份作答、答案表及下载恢复 | [导出总览](subsystems/batch-pdf.md)、[快速PDF](subsystems/quick-pdf.md)、[导出任务](subsystems/export-tasks.md)、[原生PDF](subsystems/native-pdf.md) |
 | 打印跨页、图示裁剪及清晰化 | [打印分页](subsystems/print-pagination.md)、[题图处理](subsystems/print-images.md) |
 | 一题多图、补图增删和历史答案证据 | [图片与版本](subsystems/local-run-lifecycle.md#材料与答案版本)、[存储格式](subsystems/storage.md#数据与事务) |
 | 保存失败、损坏记录、备份恢复 | [本地存储](subsystems/storage.md) |

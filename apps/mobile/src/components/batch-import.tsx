@@ -11,6 +11,7 @@ import type { Photo } from '../platform.types';
 import { ScrollView, Text, View } from '../theme/primitives';
 import { BatchImportDialog } from './batch-import-dialog';
 import { BatchImportWorkbench } from './batch-import-workbench';
+import { ImportPhotoPreviewProvider } from './import-photo-preview';
 import { PhotoEditor } from './photo-editor';
 import { Button, Notice, s } from './ui';
 
@@ -104,7 +105,7 @@ export function BatchImport({ photos, placement, onAdd, onClose }: {
     }
   }
   const editing = rows.find(row => row.id === editingId);
-  return <BatchImportDialog title={placement ? '新增题图工作台' : '确认图片顺序'} busy={blocked} onClose={() => { if (!saving.current && !imageWorking.current && !positionDragging && editingId === null) onClose(); }} footer={<>
+  return <ImportPhotoPreviewProvider photos={rows.map(row => row.photo)}><BatchImportDialog title={placement ? '新增题图工作台' : '确认图片顺序'} busy={blocked} onClose={() => { if (!saving.current && !imageWorking.current && !positionDragging && editingId === null) onClose(); }} footer={<>
     <View style={[s.row, { justifyContent: 'flex-end' }]}>
       {!busy && <Button title="取消导入" compact secondary disabled={blocked} onPress={onClose} />}
       {busy && <Button title="停止导入后续图片" compact secondary onPress={() => { stop.current = true; }} />}
@@ -121,13 +122,8 @@ export function BatchImport({ photos, placement, onAdd, onClose }: {
       {order === 'time' && <Text style={s.subtitle}>按文件时间从旧到新，可能与拍摄时间不同。</Text>}
       {!!error && <Notice text={error} error />}
       {!!placementError && <Notice text={placementError} error />}
-      {!busy && placement && existing && <BatchImportWorkbench existing={existing} photos={rows} layout={layout} selectedId={selected?.id ?? -1} beforeId={beforeId} dragging={positionDragging} busy={imageBusy || editingId !== null} onSelect={setSelectedId} onPlace={place} onMove={move} onRemove={remove} onCrop={setEditingId} onRotate={row => void rotate(row)} onDrop={drop} onDragActive={setPositionDragging} />}
-      {!busy && !placement && rows.map((row, index) => <View key={row.id} testID="import-photo-row" style={[s.card, { flexDirection: 'row', alignItems: 'center', gap: 12 }]}>
-        <View style={{ flex: 1, minWidth: 0, gap: 6 }}><Text numberOfLines={2} style={s.label}>{index + 1}. {row.fileName}</Text><Text style={s.subtitle}>{row.timestamp === undefined ? '未提供时间' : `${row.timeSource === 'modified' ? '文件修改' : '文件名时间'} · ${new Date(row.timestamp).toLocaleString('zh-CN')}`}</Text>
-          <View style={s.row}>{rows.length > 1 && <><Button title={`上移第${index + 1}张`} compact secondary disabled={busy || index === 0} onPress={() => move(index, -1)} /><Button title={`下移第${index + 1}张`} compact secondary disabled={busy || index === rows.length - 1} onPress={() => move(index, 1)} /></>}<Button title={`移除第${index + 1}张`} compact secondary danger disabled={busy} onPress={() => remove(row.id)} /></View>
-        </View>
-      </View>)}
+      {!busy && existing && <BatchImportWorkbench existing={existing} photos={rows} layout={layout} selectedId={selected?.id ?? -1} beforeId={beforeId} dragging={positionDragging} busy={imageBusy || editingId !== null} onSelect={setSelectedId} onPlace={place} onMove={move} onRemove={remove} onCrop={setEditingId} onRotate={row => void rotate(row)} onDrop={drop} onDragActive={setPositionDragging} />}
     </ScrollView>
     {editing && <PhotoEditor photo={editing.photo} onApply={photo => { replace(editing.id, photo); setEditingId(null); }} onClose={() => setEditingId(null)} onBusyChange={value => { imageWorking.current = value; if (alive.current) setImageBusy(value); else if (!value) releaseAll(); }} />}
-  </BatchImportDialog>;
+  </BatchImportDialog></ImportPhotoPreviewProvider>;
 }

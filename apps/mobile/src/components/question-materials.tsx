@@ -58,7 +58,7 @@ export function QuestionMaterials({ id, runtime, disabled }: { id: string; runti
     try {
       const record = await runtime.engine.addMaterial(id, await photoData(value), value.width, value.height);
       if (alive.current) { setRecord(record); setMaterials(activeMaterials(record)); setPhoto(null); }
-    } catch (cause) { if (alive.current) { setError(clientError(cause)); setPhoto(null); } }
+    } catch (cause) { if (alive.current) setError(clientError(cause)); throw cause; }
     finally { releasePhoto(value); working.current = false; if (alive.current) setBusy(false); }
   }
   async function saveMany(values: Photo[]) {
@@ -78,9 +78,9 @@ export function QuestionMaterials({ id, runtime, disabled }: { id: string; runti
     try {
       const image = await photoData(value); if (!alive.current) return;
       const saved = await runtime.engine.replaceMaterial(id, target.id, image, value.width, value.height);
-      if (alive.current) { setRecord(saved); setMaterials(activeMaterials(saved)); }
-    } catch (cause) { if (alive.current) setError(clientError(cause)); }
-    finally { releasePhoto(value); working.current = false; if (alive.current) { setBusy(false); setEditing(null); } }
+      if (alive.current) { setRecord(saved); setMaterials(activeMaterials(saved)); setEditing(null); }
+    } catch (cause) { if (alive.current) setError(clientError(cause)); throw cause; }
+    finally { releasePhoto(value); working.current = false; if (alive.current) setBusy(false); }
   }
   async function continueAnswer(context: Parameters<Runtime['continueWithMaterials']>[1]) {
     if (working.current || disabled) return;
@@ -108,9 +108,9 @@ export function QuestionMaterials({ id, runtime, disabled }: { id: string; runti
     })}
     {activeCount >= MAX_MATERIAL_IMAGES + 1 && <Text style={s.subtitle}>已达到 {MAX_MATERIAL_IMAGES + 1} 张同题图片上限。</Text>}
     {camera && <Camera onPhoto={choose} onGallery={() => void gallery()} onClose={() => setCamera(false)} externalBusy={busy} />}
-    {photo && <PhotoEditor photo={photo} onApply={value => void save(value)} onClose={() => { if (!busy) setPhoto(null); }} />}
+    {photo && <PhotoEditor photo={photo} onApply={save} onClose={() => { if (!busy) setPhoto(null); }} />}
     {imports && <MaterialImport photos={imports} onApply={saveMany} onClose={() => setImports(null)} />}
-    {editing && <PhotoEditor key={editing.id} photo={{ uri: editing.image, width: editing.width, height: editing.height }} onApply={value => void saveEdit(value)} onClose={() => { if (!busy) setEditing(null); }} />}
+    {editing && <PhotoEditor key={editing.id} photo={{ uri: editing.image, width: editing.width, height: editing.height }} onApply={saveEdit} onClose={() => { if (!busy) setEditing(null); }} />}
     {view && <ImageViewer uri={view.image} size={view} onClose={() => setView(null)} />}
   </Card></ScrollView></SafeAreaView></Modal>}</>;
 }

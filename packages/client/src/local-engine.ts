@@ -73,7 +73,8 @@ export class LocalEngine {
   private readonly storageListeners = new Set<() => void>();
   /** Preparation and result writes are serialized; executions overlap afterwards. */
   private queue: Promise<unknown> = Promise.resolve();
-  private deleting = false;
+  // Decision: .agents/notes/implemented/architecture/2026-10-29-supplement-scope-and-deletion-admission.md
+  private deleting: ReadonlySet<string> | 'all' | null = null;
   private readonly materialUpdates = new Set<string>();
   private listeners = new Set<(run: RunView) => void>();
   private errors = new Set<(message: string) => void>();
@@ -281,7 +282,7 @@ export class LocalEngine {
   private async startRun(id: string, message: string, context: RunContext | undefined, execute: DeviceSolve,
     correction?: { runId: string; generation: number }, imageEdit?: LocalImageEdit): Promise<RunView> {
     if (correction && correction.generation !== this.correctionGeneration) throw new Error('AUTO_CORRECTION_OBSOLETE');
-    if (this.deleting)
+    if (this.deleting === 'all' || this.deleting?.has(id))
       throw new Error('正在删除历史，请稍候。');
     const auxiliary = isAuxiliaryContext(context?.kind);
     if (auxiliary) {
@@ -625,7 +626,7 @@ export class LocalEngine {
     this.correctionGeneration++;
     if (this.deleting)
       throw new Error('正在删除历史，请稍候。');
-    this.deleting = true;
+    this.deleting = ids ?? 'all';
     try {
       // Finish accepted preparation first; result persistence needs this lock during cancellation.
       await this.lock(async () => {});
@@ -641,7 +642,7 @@ export class LocalEngine {
         this.storageChanged();
       });
     } finally {
-      this.deleting = false;
+      this.deleting = null;
     }
   }
 

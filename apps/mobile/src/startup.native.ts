@@ -1,4 +1,8 @@
 import * as SplashScreen from 'expo-splash-screen';
+import { installNativeAbortSignal } from './native-abort-signal';
+
+// Decision: .agents/notes/implemented/architecture/2026-10-30-native-abort-signal.md
+installNativeAbortSignal(AbortSignal.prototype);
 // Keep the native artwork until the matching React Native image is decoded.
 void SplashScreen.preventAutoHideAsync().catch(() => console.warn('原生开屏保持失败，将使用应用内加载画面。'));
 let revealed = false;

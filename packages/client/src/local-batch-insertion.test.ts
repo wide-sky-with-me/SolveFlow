@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
-import { LocalEngine } from './local-engine.js';
+import { LocalEngine, type DeviceSolve } from './local-engine.js';
+import { LocalBatchQueue } from './local-batch.js';
 import { LocalRepository, type LocalDocuments } from './local-repository.js';
 import type { SolveOutcome } from '@solveflow/contracts/agent';
 
@@ -46,6 +47,52 @@ it('keeps a running answer attached to its original photo after insertion shifts
   finish({ schemaVersion: 1, status: 'completed', verified: false, verification: null, warning: null, verificationStatus: 'not_requested', candidate: { schemaVersion: 1, kind: 'answer', problem: { text: 'x+1=3', subject: 'math', uncertainties: [] }, answer: 'x=2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] } });
   await f.engine.waitForRun(run.id);
   expect(await f.repository.read(recipient.session.id)).toMatchObject({ batch: { position: 3 }, session: { runs: [{ id: run.id, status: 'completed', outcome: { candidate: { answer: 'x=2' } } }] } });
+});
+it('inserts ahead of solving and verifying photos without cancelling them, replaying them or changing the dispatch order of waiting photos', async () => {
+  const f = await setup(); f.engine.configureConcurrency({ solver: 1, verifier: 1 }); const queue = new LocalBatchQueue(f.engine);
+  const [verifying, solving, waiting] = f.records;
+  if (!verifying || !solving || !waiting) throw new Error('MISSING_FIXTURE');
+  const calls: string[] = []; const signals = new Map<string, AbortSignal>(); const images = new Map<string, number[]>();
+  let releaseSolve = () => {}; let releaseVerify = () => {};
+  const solveGate = new Promise<void>(resolve => { releaseSolve = resolve; }); const verifyGate = new Promise<void>(resolve => { releaseVerify = resolve; });
+  const execute: DeviceSolve = async (input, signal, _event, _diagnostic, lifecycle) => {
+    const id = input.identity.sessionId; calls.push(id); signals.set(id, signal); images.set(id, [...input.image.bytes]);
+    if (id === solving.session.id) await solveGate;
+    if (!lifecycle) throw new Error('MISSING_LIFECYCLE');
+    const candidate = { schemaVersion: 1 as const, kind: 'answer' as const, problem: { text: `Question ${id}`, subject: 'math' as const, uncertainties: [] }, answer: `Answer ${id}`, steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] };
+    await lifecycle.candidate(candidate); const done = await lifecycle.verification();
+    try {
+      if (id === verifying.session.id) await verifyGate;
+      return { schemaVersion: 1, status: 'completed', verified: true, verification: { schemaVersion: 1, verdict: 'pass', checked: ['transcription'], issues: [] }, warning: null, candidate };
+    } finally { await done(); }
+  };
+  try {
+    for (const record of f.records) await queue.enqueue(record.session.id, execute);
+    await expect.poll(() => calls).toEqual([verifying.session.id, solving.session.id]);
+    await expect.poll(() => f.engine.actives.find(run => run.sessionId === verifying.session.id)?.status).toBe('verifying');
+    const accepted = new Map(f.engine.actives.map(run => [run.sessionId, run.id]));
+    const front = await f.engine.create('data:image/jpeg;base64,BAUG', 30, 20, 'act', { ...f.batch, position: 4 }, { beforeId: verifying.session.id });
+    const middle = await f.engine.create('data:image/jpeg;base64,BwgJ', 30, 20, 'act', { ...f.batch, position: 5 }, { beforeId: solving.session.id });
+    await queue.enqueue(front.session.id, execute); await queue.enqueue(middle.session.id, execute);
+    expect(signals.get(verifying.session.id)?.aborted).toBe(false); expect(signals.get(solving.session.id)?.aborted).toBe(false);
+    expect(new Map(f.engine.actives.map(run => [run.sessionId, run.id]))).toEqual(accepted);
+    expect((await f.repository.read(verifying.session.id)).batch?.position).toBe(2);
+    expect((await f.repository.read(solving.session.id)).batch?.position).toBe(4);
+    releaseSolve(); await expect.poll(() => calls.length).toBe(5);
+    expect(calls).toEqual([...f.records.map(record => record.session.id), front.session.id, middle.session.id]);
+    releaseVerify(); await queue.waitForIdle();
+    const order = (await f.repository.listHistory()).sort((a, b) => a.batch!.position - b.batch!.position);
+    expect(order.map(row => row.id)).toEqual([front.session.id, verifying.session.id, middle.session.id, solving.session.id, waiting.session.id]);
+    expect(order.map(row => row.batch?.position)).toEqual([1, 2, 3, 4, 5]);
+    for (const row of order) {
+      const record = await f.repository.read(row.id);
+      expect(record.session.runs).toHaveLength(1);
+      expect(record.session.runs[0]).toMatchObject({ status: 'completed', imageIds: [row.id], outcome: { candidate: { answer: `Answer ${row.id}` } } });
+      expect(images.get(row.id)).toEqual(row.id === front.session.id ? [4, 5, 6] : row.id === middle.session.id ? [7, 8, 9] : [1, 2, 3]);
+      if (accepted.has(row.id)) expect(record.session.runs[0]?.id).toBe(accepted.get(row.id));
+    }
+    expect(queue.messageFor(f.batch.id)).toBeNull();
+  } finally { releaseSolve(); releaseVerify(); await queue.stop(); await f.engine.waitForIdle(); }
 });
 it('requires a transaction and leaves source data untouched when one is unavailable', async () => {
   const f = await setup(); const original = [...f.values]; delete f.documents.batch;

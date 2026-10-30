@@ -171,7 +171,7 @@ function SettingsHelp({ managed }: { managed: boolean }) {
 function Profile({ value, onChange, apiKey, onKey, label, disabled, advanced, onToggleAdvanced, managed = false, showKey = true }: { value: LocalModelProfile; onChange: (value: LocalModelProfile) => void; apiKey: string; onKey: (value: string) => void; label: string; disabled: boolean; advanced: boolean; onToggleAdvanced: () => void; managed?: boolean; showKey?: boolean }) {
   const field = (name: string, current: string, change: (text: string) => void, secret = false, numeric = false) => <View style={{ gap: 5 }}>
     <Text style={s.label}>{name}</Text>
-    <TextInput accessibilityLabel={`${label}${name}`} value={current} onChangeText={change} editable={!disabled} autoCapitalize="none" autoCorrect={false} secureTextEntry={secret} placeholder={secret && managed ? '已配置则留空保留；更换服务填写新密钥' : undefined} keyboardType={numeric ? 'number-pad' : 'default'} maxLength={secret ? 2048 : numeric ? 8 : 256} style={[s.input, { minHeight: 48 }]} />
+    <TextInput accessibilityLabel={`${label}${name}`} value={current} onChangeText={change} editable={!disabled} autoCapitalize="none" autoCorrect={false} secureTextEntry={secret} placeholder={secret && managed ? '已配置则留空保留；更换服务填写新密钥' : undefined} keyboardType={numeric ? 'number-pad' : name === '服务地址' ? 'url' : secret && Platform.OS === 'ios' ? 'ascii-capable' : 'default'} maxLength={secret ? 2048 : numeric ? 8 : 256} style={[s.input, { minHeight: 48 }]} />
   </View>;
   const thinking = resolveThinking(value);
   return <View style={{ gap: 12 }}>

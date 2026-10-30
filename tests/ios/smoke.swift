@@ -49,6 +49,15 @@ final class SolveFlowSmokeTests: XCTestCase {
     XCTAssertTrue(element.isHittable, "Control \(element.label) at \(element.frame) is not reachable inside \(scroll.frame)")
   }
 
+  private func selectMaterialPhotos(_ count: Int) {
+    control("从相册补图").tap()
+    let photos = app.images.matching(identifier: "PXGGridLayout-Info")
+    XCTAssertTrue(photos.firstMatch.waitForExistence(timeout: 20))
+    XCTAssertGreaterThanOrEqual(photos.count, count)
+    for index in 0..<count { photos.element(boundBy: index).tap() }
+    control("Add").tap()
+  }
+
   func testLandscapeModalOrientation() throws {
     control("我的").tap()
     XCUIDevice.shared.orientation = .landscapeLeft
@@ -98,9 +107,48 @@ final class SolveFlowSmokeTests: XCTestCase {
     XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "本题考试：")).firstMatch.waitForExistence(timeout: 15))
     capture("03-saved-synthetic-photo")
 
+    // Exercise the real native picker, nested workbench, crop and material transaction.
+    // Saving materials never submits a solve, so this flow needs no model credentials.
+    control("同题材料 / 补图").tap()
+    selectMaterialPhotos(1)
+    control("精细调整").tap()
+    control("左边界增大").tap()
+    control("使用这张题图").tap()
+    XCTAssertTrue(app.buttons["编辑材料1"].waitForExistence(timeout: 20))
+    control("编辑材料1").tap()
+    control("精细调整").tap()
+    control("左边界增大").tap()
+    control("使用这张题图").tap()
+    XCTAssertTrue(app.buttons["编辑材料1"].waitForExistence(timeout: 20))
+    selectMaterialPhotos(2)
+    XCTAssertTrue(app.otherElements["single-material-workbench"].waitForExistence(timeout: 20))
+    control("编辑第1张补图").tap()
+    control("旋转第1张").tap()
+    control("裁剪第1张").tap()
+    XCTAssertTrue(app.buttons["使用这张题图"].waitForExistence(timeout: 15))
+    control("使用这张题图").tap()
+    XCTAssertTrue(app.buttons["保存补图（2张）"].waitForExistence(timeout: 15))
+    XCUIDevice.shared.orientation = .landscapeLeft
+    XCTAssertGreaterThan(app.frame.width, app.frame.height)
+    XCTAssertTrue(control("关闭补图").isHittable)
+    XCTAssertTrue(control("保存补图（2张）").isHittable)
+    capture("03a-landscape-material-workbench")
+    XCUIDevice.shared.orientation = .portrait
+    control("移除第2张").tap()
+    control("取消补图").tap()
+    XCTAssertFalse(app.buttons["编辑材料2"].exists, "Cancelling drafts wrote a material")
+    selectMaterialPhotos(2)
+    control("保存补图（2张）").tap()
+    XCTAssertTrue(app.buttons["编辑材料3"].waitForExistence(timeout: 20))
+    capture("03b-saved-three-materials")
+    control("返回题目").tap()
+
     app.terminate()
     app.launch()
     XCTAssertTrue(app.buttons["查看题目图片"].waitForExistence(timeout: 30))
+    control("同题材料 / 补图").tap()
+    XCTAssertTrue(app.buttons["编辑材料3"].waitForExistence(timeout: 15))
+    control("返回题目").tap()
     control("我的").tap()
     control("查看历史题目").tap()
     XCTAssertTrue(app.staticTexts["1 条记录"].waitForExistence(timeout: 15))
@@ -125,14 +173,19 @@ final class SolveFlowSmokeTests: XCTestCase {
       XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
       reach(field)
       XCTAssertLessThanOrEqual(field.frame.maxY, app.keyboards.firstMatch.frame.minY, "Focused field overlaps the keyboard")
-      field.typeText(value)
+      for character in value { field.typeText(String(character)) }
+      XCTAssertEqual(field.value as? String, value, "Typed configuration changed before saving")
+      // Finish one field before scrolling to the next; the final key is saved with
+      // its keyboard still visible, so keyboard avoidance remains covered.
+      field.typeText("\n")
+      XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
     }
     let key = app.secureTextFields["解题API Key"]
     reach(key)
     key.tap()
     reach(key)
     XCTAssertLessThanOrEqual(key.frame.maxY, app.keyboards.firstMatch.frame.minY, "Secret field overlaps the keyboard")
-    key.typeText("synthetic-ios-test-key")
+    for character in "synthetic-ios-test-key" { key.typeText(String(character)) }
     let saveSettings = control("保存设置")
     reach(saveSettings)
     saveSettings.tap()

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { PanResponder, Platform, StyleSheet, useWindowDimensions, type ViewStyle } from 'react-native';
 import { MotionModal as Modal } from './motion-modal';
 
-import { dragCrop, fullCrop, type Crop, type CropDragTarget } from '@solveflow/client/presentation';
+import { clientError, dragCrop, fullCrop, type Crop, type CropDragTarget } from '@solveflow/client/presentation';
 import { Button, Notice, s } from './ui';
 import { releasePhoto, transformPhoto } from '../platform';
 import type { Photo } from '../platform.types';
@@ -32,7 +32,8 @@ function CropHandle(props: { target: CropDragTarget; crop: Crop; onChange: (valu
     {props.target !== 'move' && <View pointerEvents="none" style={props.target.includes('-') ? styles.corner : styles.edge} />}
   </View>;
 }
-export function PhotoEditor({ photo, onApply, onClose, onBusyChange }: { photo: Photo; onApply: (value: Photo) => void; onClose: () => void; onBusyChange?: (busy: boolean) => void }) {
+// Decision: .agents/notes/implemented/architecture/2026-10-29-shared-image-workbenches.md
+export function PhotoEditor({ photo, onApply, onClose, onBusyChange }: { photo: Photo; onApply: (value: Photo) => void | Promise<void>; onClose: () => void; onBusyChange?: (busy: boolean) => void }) {
   const window = useWindowDimensions();
   const landscape = window.height < 500 && window.width > window.height;
   const [crop, setCrop] = useState<Crop>(fullCrop); const [viewport, setViewport] = useState({ width: 300, height: 300 });
@@ -47,8 +48,9 @@ export function PhotoEditor({ photo, onApply, onClose, onBusyChange }: { photo: 
   function close() { if (busy) return; alive.current = false; onClose(); }
   async function apply() {
     if (busy) return; setBusy(true); setError(''); onBusyChange?.(true);
-    try { const value = await transformPhoto(photo, crop); if (alive.current) onApply(value); else releasePhoto(value); }
-    catch { if (alive.current) setError('裁切失败，请调整范围后重试。'); }
+    let submitting = false;
+    try { const value = await transformPhoto(photo, crop); if (alive.current) { submitting = true; await onApply(value); } else releasePhoto(value); }
+    catch (cause) { if (alive.current) setError(submitting ? clientError(cause) : '裁切失败，请调整范围后重试。'); }
     finally { if (alive.current) setBusy(false); onBusyChange?.(false); }
   }
   return <Modal animationType="slide" onRequestClose={close}><SafeAreaView style={styles.screen}>

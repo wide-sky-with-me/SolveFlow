@@ -17,6 +17,30 @@ function setup(solver = 2) {
 }
 function answer(): SolveOutcome { return { schemaVersion: 1, status: 'completed', verified: true, warning: null, verification: { schemaVersion: 1, verdict: 'pass', checked: ['transcription'], issues: [] }, candidate: { schemaVersion: 1, kind: 'answer', problem: { text: 'x+1=3', subject: 'math', uncertainties: [] }, answer: '2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] } }; }
 
+it.each(['remove', 'removeMany'] as const)('%s waits for a selected explanation to cancel without stopping another batch dispatch', async method => {
+  const f = setup(1); const single = await f.engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  const first = await f.engine.start(single.session.id, '', undefined, async () => answer()); await f.engine.waitForIdle();
+  const b1 = await f.create(0, 1), b2 = await f.create(0, 2);
+  let releaseAux = () => {}; let releaseSolve = () => {}; let auxSignal: AbortSignal | undefined; let solving = false;
+  const auxGate = new Promise<void>(resolve => { releaseAux = resolve; }); const solveGate = new Promise<void>(resolve => { releaseSolve = resolve; });
+  let deleting: Promise<void> | undefined;
+  try {
+    await f.engine.start(single.session.id, '详细步骤', { kind: 'explanation', sourceRunId: first.id }, async (_input, signal) => { auxSignal = signal; await auxGate; return answer(); });
+    await f.queue.enqueue(b1.session.id, async () => { solving = true; await solveGate; return answer(); });
+    await expect.poll(() => solving && !!auxSignal).toBe(true);
+    await f.queue.enqueue(b2.session.id, async () => answer());
+    deleting = method === 'remove' ? f.engine.remove(single.session.id) : f.engine.removeMany([single.session.id]);
+    await expect.poll(() => auxSignal?.aborted).toBe(true);
+    await expect(f.engine.start(single.session.id, 'duplicate', undefined, async () => answer())).rejects.toThrow('删除');
+    releaseSolve();
+    await expect.poll(async () => (await f.repository.read(b2.session.id)).session.runs.at(-1)?.status).toBe('completed');
+    expect(f.queue.messageFor(f.batches[0]!.id)).toBeNull();
+    releaseAux(); await deleting; await f.queue.waitForIdle();
+    expect((await f.repository.listHistory()).map(row => row.id).sort()).toEqual([b1.session.id, b2.session.id].sort());
+    expect((await f.repository.read(b1.session.id)).session.runs.at(-1)?.status).toBe('completed');
+  } finally { releaseAux(); releaseSolve(); await deleting; await f.queue.stop(); await f.engine.waitForIdle(); }
+});
+
 it('a start failure stops its own batch while another batch still dispatches and keeps the scoped error', async () => {
   const { queue, engine, batches, create, repository } = setup(1);
   const a1 = await create(0, 1), a2 = await create(0, 2), b1 = await create(1, 1);
