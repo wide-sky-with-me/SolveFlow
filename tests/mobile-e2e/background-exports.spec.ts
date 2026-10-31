@@ -57,7 +57,22 @@ for (const failure of ['capacity', 'quota', 'clone'] as const) test(`supplemente
       return Reflect.apply(put, this, args);
     };
     const toBlob = HTMLCanvasElement.prototype.toBlob;
-    HTMLCanvasElement.prototype.toBlob = function(this: HTMLCanvasElement, ...args) { encodes++; return Reflect.apply(toBlob, this, args); };
+    HTMLCanvasElement.prototype.toBlob = function(this: HTMLCanvasElement, ...args) {
+      encodes++;
+      if (failure === 'capacity' && fault && encodes === 1) {
+        // Fill the cache after admission and dispatch preflights, while rendering.
+        // A cache already full before submission must be blocked by preflight.
+        const canvas = this; const request = indexedDB.open('solveflow-exports');
+        request.onsuccess = () => {
+          const db = request.result; const tx = db.transaction(['files', 'sizes'], 'readwrite');
+          tx.objectStore('files').put({ name: 'old.zip', mimeType: 'application/zip', data: new Uint8Array([80, 75, 3, 4]) }, 'full-cache-fixture');
+          tx.objectStore('sizes').put(512 * 1024 * 1024, 'full-cache-fixture');
+          tx.oncomplete = () => { db.close(); Reflect.apply(toBlob, canvas, args); };
+        };
+        return;
+      }
+      return Reflect.apply(toBlob, this, args);
+    };
     Object.defineProperty(window, '__saveRecoveryEncodes', { value: () => encodes });
     Object.defineProperty(window, '__saveRecoveryRestore', { value: () => { fault = false; } });
   }, failure);
@@ -77,21 +92,11 @@ for (const failure of ['capacity', 'quota', 'clone'] as const) test(`supplemente
   }), { sessionId });
   await page.reload(); await expect(page.getByTestId('current-batch')).toBeVisible();
   const before = await history(page); await openExport(page);
-  if (failure === 'capacity') await page.evaluate(() => new Promise<void>((resolve, reject) => {
-    const request = indexedDB.open('solveflow-exports'); request.onerror = () => reject(request.error);
-    request.onsuccess = () => {
-      const db = request.result; const tx = db.transaction(['files', 'sizes'], 'readwrite');
-      // Synthetic accounting reaches the real guard without allocating 512 MiB in a CI browser.
-      tx.objectStore('files').put({ name: 'old.zip', mimeType: 'application/zip', data: new Uint8Array([80, 75, 3, 4]) }, 'full-cache-fixture');
-      tx.objectStore('sizes').put(512 * 1024 * 1024, 'full-cache-fixture');
-      tx.oncomplete = () => { db.close(); resolve(); }; tx.onabort = () => { db.close(); reject(tx.error); };
-    };
-  }));
   await page.getByRole('button', { name: '快速原文（最快）', exact: true }).click();
   await page.getByLabel('导出份数', { exact: true }).fill('7');
   await page.getByRole('button', { name: '后台导出', exact: true }).click(); await openRecords(page);
   const record = page.getByTestId('export-record'); await expect(record).toContainText('等待保存');
-  await expect(record).toContainText(failure === 'capacity' ? '512 MiB 上限' : failure === 'quota' ? '当前浏览器存储空间不足' : '当前浏览器无法写入该导出文件');
+  await expect(record).toContainText(failure === 'capacity' ? '512 MiB 上限' : failure === 'quota' ? '当前存储空间不足' : '无法写入该导出文件');
   await expect(record).not.toContainText('PRIVATE_STORAGE_DETAIL');
   const encodes: unknown = await page.evaluate('window.__saveRecoveryEncodes()'); expect(encodes).toBeGreaterThan(0);
   const waiting = page.waitForEvent('download'); await record.getByRole('button', { name: '下载已生成文件', exact: true }).click();
@@ -164,7 +169,7 @@ test('foreground quick export recovers a download without saving and can then ex
   await page.getByRole('button', { name: '快速原文（最快）', exact: true }).click();
   await page.getByLabel('导出份数', { exact: true }).fill('7');
   await page.getByRole('button', { name: '下载 PDF 压缩包', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('当前浏览器存储空间不足');
+  await expect(page.getByRole('alert')).toContainText('当前存储空间不足');
   const encodes: unknown = await page.evaluate('window.__foregroundRecoveryEncodes()'); expect(encodes).toBeGreaterThan(0);
   const waiting = page.waitForEvent('download'); await page.getByRole('button', { name: '下载已生成文件', exact: true }).click();
   const path = info.outputPath('foreground-generated.zip'); await (await waiting).saveAs(path);
@@ -341,8 +346,9 @@ for (const { phase, failAck } of [{ phase: 'synchronous', failAck: false }, { ph
       const value: unknown = args[0]; const record = this.transaction.db.name === 'solveflow-exports' && this.name === 'records' && value && typeof value === 'object' && 'status' in value && typeof value.status === 'string';
       if (record && typeof value.status === 'string') state.writes.push(value.status); const result = Reflect.apply(put, this, args);
       if (record && value.status === 'cancelled' && state.failAck) {
-        const tx = this.transaction; const failure = tx.onerror;
-        tx.oncomplete = () => { state.committed = structuredClone(value); setTimeout(() => failure?.call(tx, new Event('error')), 20); };
+        const tx = this.transaction; const failure = tx.onabort;
+        // Error only records the cause; abort is the adapter's rejection event.
+        tx.oncomplete = () => { state.committed = structuredClone(value); setTimeout(() => failure?.call(tx, new Event('abort')), 20); };
       }
       return result;
     };
