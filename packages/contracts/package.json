@@ -30,6 +30,10 @@
     "./local": {
       "types": "./dist/local.d.ts",
       "default": "./dist/local.js"
+    },
+    "./photo": {
+      "types": "./dist/photo.d.ts",
+      "default": "./dist/photo.js"
     }
   },
   "dependencies": {

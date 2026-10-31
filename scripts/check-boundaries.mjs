@@ -9,6 +9,10 @@ const builtins = new Set(builtinModules.map(name => name.replace(/^node:/, "")))
 const contractsOnly = /^@solveflow\/contracts(?:\/|$)/;
 // Decision: .agents/notes/implemented/architecture/2026-10-05-source-and-build-boundaries.md
 const layers = [
+  { root: 'apps/photo-web', source: 'apps/photo-web/src/browser/', portable: true,
+    allows: name => /^@solveflow\/(?:contracts|client)(?:\/|$)/.test(name) },
+  { root: 'apps/photo-web', source: 'apps/photo-web/src/server/', portable: false,
+    allows: name => /^@solveflow\/contracts(?:\/|$)/.test(name) || name === '@solveflow/agent/mobile' },
   { root: "apps/mobile", source: "apps/mobile/src/", portable: true,
     allows: name => /^@solveflow\/(?:contracts|client)(?:\/|$)/.test(name) || name === "@solveflow/agent/mobile" },
   { root: "packages/client", source: "packages/client/src/", portable: true, allows: name => contractsOnly.test(name) },

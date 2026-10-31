@@ -26,6 +26,8 @@ apps/mobile 界面与平台适配
 
 ## 保留的服务路径
 
+独立[公网手机拍题入口](../apps/photo-web/README.md)仅提供密钥登录、单图解答和浏览器历史；固定模型由专用Node服务执行，凭据不返回前端，不暴露完整版设置/批量/导出。它不改变默认设备路径，也不使用下述服务数据库；鉴权与持久化边界见[部署说明](cookbook/public-photo-web.md)和[决策](../.agents/notes/implemented/architecture/2026-10-31-public-photo-web.md)。
+
 `apps/api` 提供 Hono 路由和 worker；`packages/db` 使用 PostgreSQL/Drizzle，上传存于私有对象存储；`packages/config` 管理服务环境。此路径通过 `server:dev` / `server:start` 显式启动，默认设备应用无需它。服务端身份、幂等、租约、SSE 与终态事务见 [服务语义](subsystems/legacy-server.md)。
 
 原生模型密钥与服务端 `.env` 互不注入；Web 可显式启用[本地环境桥接](subsystems/device-runtime.md#模型与考试)，由回环 Web 服务转发固定角色请求，真实密钥不进入浏览器。设备历史与服务数据库没有自动迁移通道。服务专属数据库、对象存储和 Node 配置不能打包到客户端。

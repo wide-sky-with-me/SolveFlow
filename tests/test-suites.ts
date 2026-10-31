@@ -1,6 +1,7 @@
 /** Suites using actual SDK sessions, loopback services or isolated processes.
  * The unit project excludes these exact patterns; the default run includes both. */
 export const offlineTestPatterns = [
+  'apps/photo-web/src/server/service.test.ts',
   'packages/agent/src/pi/**/*.test.ts',
   'packages/agent/src/mcp/**/*.test.ts',
   'packages/agent/src/application.test.ts',

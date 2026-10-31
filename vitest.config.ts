@@ -2,7 +2,7 @@ import { defineConfig } from "vitest/config";
 import { offlineTestPatterns } from './tests/test-suites.js';
 
 // node:test deployment suites run via test:web-container, not Vitest.
-const exclude = ['**/node_modules/**', '**/dist/**', '.runtime/**', 'scripts/**/*.test.mjs', '**/*.integration.test.ts', 'tests/mobile-e2e/**'];
+const exclude = ['**/node_modules/**', '**/dist/**', '.runtime/**', 'scripts/**/*.test.mjs', '**/*.integration.test.ts', 'tests/mobile-e2e/**', 'tests/photo-web/**'];
 export default defineConfig({ test: {
   exclude,
   projects: [

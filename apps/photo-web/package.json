@@ -1,0 +1,29 @@
+{
+  "name": "@solveflow/photo-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc --noEmit && node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/server.mjs"
+  },
+  "dependencies": {
+    "@solveflow/agent": "workspace:*",
+    "@solveflow/client": "workspace:*",
+    "@solveflow/contracts": "workspace:*",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
+    "remark-math": "6.0.0",
+    "katex": "0.18.7",
+    "sharp": "0.35.5",
+    "zod": "4.6.6"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3"
+  }
+}

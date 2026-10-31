@@ -56,7 +56,11 @@
     "test:android:storage": "node scripts/test-android-storage.mjs",
     "test:ios:smoke": "node scripts/test-ios-simulator.mjs",
     "generate:pdf-render-lifecycle": "node scripts/generate-html2canvas-lifecycle.mjs",
-    "test:pdf-render-lifecycle": "node --test scripts/pdf-render-baseline.test.mjs scripts/html2canvas-lifecycle.test.mjs scripts/html2canvas-parser.test.mjs && playwright test tests/mobile-e2e/pdf-render-lifecycle.spec.ts"
+    "test:pdf-render-lifecycle": "node --test scripts/pdf-render-baseline.test.mjs scripts/html2canvas-lifecycle.test.mjs scripts/html2canvas-parser.test.mjs && playwright test tests/mobile-e2e/pdf-render-lifecycle.spec.ts",
+    "build:photo-web": "pnpm build:shared && pnpm --filter @solveflow/photo-web build",
+    "package:photo-web": "pnpm build:photo-web && node apps/photo-web/package-release.mjs",
+    "start:photo-web": "node apps/photo-web/dist/server.mjs",
+    "test:photo-web": "node scripts/test-photo-web.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
