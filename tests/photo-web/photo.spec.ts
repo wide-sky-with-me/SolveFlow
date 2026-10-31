@@ -30,15 +30,15 @@ test('compact controls stay inside 320px, landscape and dark screens',async({pag
 });
 test('failed answer persistence keeps the answer visible and retries storage without another solve',async({page})=>{
   await page.addInitScript(()=>{let fail=true;const put=IDBObjectStore.prototype.put;IDBObjectStore.prototype.put=function(...args:Parameters<IDBObjectStore['put']>){const value:unknown=args[0],key:unknown=args[1];if(fail&&typeof key==='string'&&key.startsWith('record.')&&typeof value==='string'){const row=JSON.parse(value);if(row.session?.runs?.at(-1)?.status==='completed')throw new DOMException('Synthetic quota failure','QuotaExceededError');}return Reflect.apply(put,this,args);};Reflect.set(window,'restorePhotoStorage',()=>{fail=false;});});
-  await page.goto('/');await login(page);await photo(page);const before=await(await page.request.get('/__test-state')).json();await page.getByRole('button',{name:'开始解题',exact:true}).click();await expect(page.getByRole('heading',{name:'答案 B',exact:true})).toBeVisible();await expect(page.getByRole('alert')).toContainText('答案尚未保存');await expect(page.getByRole('button',{name:'拍下一题',exact:true})).toBeDisabled();await expect(page.getByRole('button',{name:'退出登录',exact:true})).toBeDisabled();
+  await page.goto('/');await login(page);await photo(page);const before=await(await page.request.get('/__test-state')).json();const submitted=page.waitForRequest(r=>r.url().endsWith('/api/solve')&&r.method()==='POST');await page.getByRole('button',{name:'开始解题',exact:true}).click();const body:unknown=(await submitted).postDataJSON();expect(body).toMatchObject({exam:'general'});await expect(page.getByRole('heading',{name:'答案 B',exact:true})).toBeVisible();await expect(page.getByRole('alert')).toContainText('答案尚未保存');await expect(page.getByRole('button',{name:'拍下一题',exact:true})).toBeDisabled();await expect(page.getByRole('button',{name:'退出登录',exact:true})).toBeDisabled();
   await page.evaluate(()=>Reflect.get(window,'restorePhotoStorage')());await page.getByRole('button',{name:'重试保存',exact:true}).click();await expect(page.getByRole('button',{name:'拍下一题',exact:true})).toBeEnabled();expect((await(await page.request.get('/__test-state')).json()).calls).toBe(before.calls+1);
   await page.reload();await page.getByRole('tab',{name:/历史记录/}).click();await page.locator('.history-open').click();await expect(page.getByRole('heading',{name:'答案 B',exact:true})).toBeVisible();
 });
 test('exam menu supports keyboard, outside dismissal and the saved question exam snapshot',async({page},info)=>{
   await page.goto('/');await login(page);
   const trigger=page.getByRole('button',{name:'考试类型',exact:true});
-  await trigger.click();await expect(page.getByRole('listbox',{name:'考试类型',exact:true})).toBeVisible();
-  await expect(page.getByRole('option',{name:'ACT',exact:true})).toHaveAttribute('aria-selected','true');
+  await expect(trigger).toContainText('未指定');await trigger.click();await expect(page.getByRole('listbox',{name:'考试类型',exact:true})).toBeVisible();
+  await expect(page.getByRole('option',{name:'未指定',exact:true})).toHaveAttribute('aria-selected','true');
   await page.screenshot({path:info.outputPath('photo-exam-menu.png')});
   await page.keyboard.press('Home');await expect(page.getByRole('option',{name:'未指定',exact:true})).toBeFocused();
   await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');

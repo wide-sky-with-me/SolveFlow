@@ -24,7 +24,7 @@ function Login({ error: initialError, onLogin }: { error: string; onLogin: (a: P
 }
 function Workspace({ account, onLogout }: { account: PhotoAccount; onLogout: () => void }) {
   const [runtime, setRuntime] = useState<PhotoRuntime | null>(null), [error, setError] = useState(''), [busy, setBusy] = useState(false), [running, setRunning] = useState(false), [tab, setTab] = useState<'photo' | 'history'>('photo');
-  const [exam, setExam] = useState<ExamType>('act'), [record, setRecord] = useState<LocalRecord | null>(null), [history, setHistory] = useState<LocalHistorySummary[]>([]), [draft, setDraft] = useState<Awaited<ReturnType<typeof preparePhoto>> | null>(null), [remove, setRemove] = useState<string | null>(null), [unsaved, setUnsaved] = useState(false);
+  const [exam, setExam] = useState<ExamType>('general'), [record, setRecord] = useState<LocalRecord | null>(null), [history, setHistory] = useState<LocalHistorySummary[]>([]), [draft, setDraft] = useState<Awaited<ReturnType<typeof preparePhoto>> | null>(null), [remove, setRemove] = useState<string | null>(null), [unsaved, setUnsaved] = useState(false);
   const camera = useRef<HTMLInputElement>(null), gallery = useRef<HTMLInputElement>(null), working = useRef(false), runtimeRef = useRef<PhotoRuntime | null>(null), selected = useRef<string | null>(null), alive = useRef(true), revision = useRef(0);
   async function refresh() { const r = runtimeRef.current; if (!r) return; const rows = await r.repository.listHistory(); if (alive.current) setHistory(rows); }
   useEffect(() => {
@@ -56,7 +56,7 @@ function Workspace({ account, onLogout }: { account: PhotoAccount; onLogout: () 
       await r.engine.start(current.session.id, '', undefined, executePhoto); setRunning(r.engine.actives.length > 0); await refresh();
     } catch (e) { setError(message(e)); } finally { working.current = false; if (alive.current) setBusy(false); }
   }
-  async function open(id: string) { const r = runtimeRef.current; if (!r || busy) return; const ticket = ++revision.current; setError(''); try { const row = await r.repository.read(id); if (alive.current && ticket === revision.current) { selected.current = id; setRecord(row); setExam(row.exam ?? 'act'); setDraft(null); setTab('photo'); } } catch (e) { setError(message(e)); } }
+  async function open(id: string) { const r = runtimeRef.current; if (!r || busy) return; const ticket = ++revision.current; setError(''); try { const row = await r.repository.read(id); if (alive.current && ticket === revision.current) { selected.current = id; setRecord(row); setExam(row.exam ?? 'general'); setDraft(null); setTab('photo'); } } catch (e) { setError(message(e)); } }
   async function logout() { if (working.current) return; setBusy(true); try { await runtime?.engine.cancel(); const r = await fetch('/api/logout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); if (!r.ok) throw new Error('退出失败，请重试。'); onLogout(); } catch (e) { setError(message(e)); setBusy(false); } }
   async function removeRecord() { if (!remove || !runtime) return; try { await runtime.engine.remove(remove); if (selected.current === remove) { selected.current = null; setRecord(null); } setRemove(null); await refresh(); } catch (e) { setError(message(e)); } }
   const run = record?.session.runs.at(-1); const outcome = run?.outcome; const candidate = outcome && 'candidate' in outcome ? outcome.candidate : undefined;
