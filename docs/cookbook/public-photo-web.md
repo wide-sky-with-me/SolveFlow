@@ -26,6 +26,12 @@
 
 Ubuntu现有服务器可使用[安装脚本](../../apps/photo-web/deploy/install.sh)：上传并校验后，在`/home/<用户>/.local/share/solveflow-photo`建立`current`指向版本目录、`shared/config.json`和首次签发的`certbot`目录；以root执行`bash current/deploy/install.sh <服务根目录> <用户>`。只创建`solveflow-photo.service`和`solveflow-photo-renew.timer`；续期脚本固定Certbot镜像摘要。上线后执行`sudo /usr/local/sbin/solveflow-photo-renew <服务根目录> <用户> --dry-run`检查挑战与续期，检查定时器下一次运行时间。更新包后切换`current`并明确重启本服务，重复安装不会隐式中断活跃题目。
 
+已有域名先把A记录指向服务器；用现有webroot签发该域名单独的证书。安装脚本可额外传`<证书名称> <HTTPS端口>`，默认仍为`solveflow-photo 443`。配置`origin`必须是完整域名来源并带所选非默认端口；安装前检查来源与监听端口一致。续期按指定证书执行，手动测试用`solveflow-photo-renew <根目录> <用户> --lineage <证书名称> --dry-run`。
+
+免端口入口使用标准HTTPS443，云安全组需允许TCP443，HTTP80保留证书挑战。若另选18443，访问URL须带`:18443`，Cloudflare记录需保持“仅DNS”；其代理支持的HTTPS端口不含18443，见[端口说明](https://developers.cloudflare.com/fundamentals/reference/network-ports/)。DNS只解析IP，不把默认443自动映射到其他端口。更改域名或端口会形成新的浏览器来源，原来源的本地历史不会自动迁移。
+
+目前是Node单站点直接监听所选端口。以后可由统一反向代理监听443，按域名分流到各站点的本机内部端口；届时调整拍题监听和部署校验，保持公开`origin`不变，同一443可承载多个网站。当前未安装这层反向代理；不应将后续可迁移方案写成已部署能力。
+
 首次上线先验证未登录接口401、跨站403、错误密钥限制、静态构建不含真实密钥、照片解码/取消/重复请求保护，再验证移动页面和真实模型；只有明确授权才发付费请求。源IP定位不能代替手机运营商的实际速度验收。
 
 GitHub Pages只能托管静态资源，不能单独承担本服务。EdgeOne Pages可托管函数，但需对应账号、配额和地区/域名条件；免费额度不能当作模型调用免费。平台选型与本轮公网地址、服务名称、续期验收及命令结果见当次发布报告。
