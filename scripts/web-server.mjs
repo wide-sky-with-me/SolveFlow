@@ -8,7 +8,7 @@ import { webModelProxy } from './web-model-proxy.mjs';
 import { loadWebEnv } from './web-env.mjs';
 import { openWebModelSettings } from './web-model-settings.mjs';
 import { configureWebRequestTimeouts } from './web-request-limits.mjs';
-const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.ttf': 'font/ttf', '.woff': 'font/woff', '.woff2': 'font/woff2' };
+const types = { '.txt': 'text/plain; charset=utf-8', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.ttf': 'font/ttf', '.woff': 'font/woff', '.woff2': 'font/woff2' };
 export function webServerOptions(environment = process.env) {
   const value = environment.SOLVEFLOW_WEB_PORT ?? '3100'; const port = Number(value);
   if (!/^\d{1,5}$/.test(value) || !Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('INVALID_WEB_PORT');
@@ -25,7 +25,7 @@ export function webServer(directory, apiPort = null, environment = null, modelFe
     res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
     if (await modelProxy(req, res)) return;
     if (req.url?.startsWith('/api/v1/')) { if (apiPort === null) { res.writeHead(404); res.end(); } else proxyApi(req, res, apiPort); return; }
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self' https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self' https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
     res.setHeader('Cache-Control', 'no-cache');
     try {
       if (!['GET', 'HEAD'].includes(req.method ?? '')) { res.writeHead(405); res.end(); return; }
@@ -35,6 +35,7 @@ export function webServer(directory, apiPort = null, environment = null, modelFe
       if (!target.startsWith(root + sep) || !Object.hasOwn(types, extname(target))) throw new Error('PATH_DENIED');
       const info = await stat(target); if (!info.isFile()) throw new Error('NOT_FILE');
       res.setHeader('Content-Type', types[extname(target)]); res.setHeader('Content-Length', info.size);
+      if (/^\/heic-codec-\d+-\d+-\d+\.js$/.test(pathname)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       if (req.method === 'HEAD') res.end(); else { const stream = createReadStream(target); stream.on('error', () => res.destroy()); res.on('close', () => stream.destroy()); stream.pipe(res); }
     } catch { res.writeHead(404); res.end('Not found'); }
   });

@@ -18,7 +18,9 @@ export function dragCrop(start: Crop, target: CropDragTarget, dx: number, dy: nu
   };
 }
 export function cropPixels(crop: Crop, width: number, height: number) {
-  if (![width, height].every(value => Number.isInteger(value) && value > 0) || width * height > 20_000_000 || !Object.values(crop).every(Number.isFinite)
+  if (![width, height].every(value => Number.isInteger(value) && value > 0)) throw new Error('图片尺寸无效，请重新拍摄。');
+  if (width * height > 20_000_000) throw new Error('图片分辨率过高，请缩小后重试。');
+  if (!Object.values(crop).every(Number.isFinite)
     || crop.left < 0 || crop.top < 0 || crop.right > 100 || crop.bottom > 100 || crop.right - crop.left < 2 || crop.bottom - crop.top < 2) throw new Error("请保留完整、足够大的题目区域。");
   const x = Math.floor(width * crop.left / 100); const y = Math.floor(height * crop.top / 100);
   return { originX: x, originY: y, width: Math.ceil(width * crop.right / 100) - x, height: Math.ceil(height * crop.bottom / 100) - y };

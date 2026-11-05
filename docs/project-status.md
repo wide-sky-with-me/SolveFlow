@@ -1,13 +1,13 @@
 # 发布状态与待办
 
-核对：2026-11-02（本轮只更新 Mac 发布证据）。试用中，未达生产条件；不同版本、设备和重复样本的成绩不累计。
+核对：2026-11-05（本轮补齐main图片源码，未部署）。试用中，未达生产条件；不同版本、设备和重复样本的成绩不累计。
 
 ## 本机与远程版本
 
 | 环境 | 最近确认的版本与范围 | 证据 |
 | --- | --- | --- |
 | 本机 Web 3100 | 保留10/29图片工作台构建，入口正常；本轮Mac发布未替换本机资源 | [工作台与草稿](postmortem/2026-10-29-ui-workbench-repair.md) |
-| 远程 Mac Web 3131 | 已按`main`源码`92f5c07`发布`20261102-main-095734`，运行代码与10/30版本一致；双入口正常，默认并发32/32，模型设置保留 | [本轮部署](postmortem/2026-11-02-main-mac-deployment.md) |
+| 远程 Mac Web 3131 | 保留11/04发布`20261104-camera-175615`的记录；本轮未探活或部署，32/32与模型设置不改 | [源码恢复](postmortem/2026-11-05-main-camera-input.md)、[此前部署](postmortem/2026-11-02-main-mac-deployment.md) |
 | Android / iOS | 工作区0.1.82/build83，补齐原生取消信号；Android已在隔离模拟器验证插入、共享补图、多份PDF及系统保存/分享。iOS三项模拟器XCTest及真机目标编译通过，IPA未签名；真机与发行另验 | [模拟器与修复](postmortem/2026-10-30-android-emulator.md)、[前轮PDF](postmortem/2026-10-30-native-pdf.md) |
 
 本页汇总最近证据，不执行服务探活。启动、构建和更新步骤归[Web指南](cookbook/local-web.md)，历史报告按[问题导航](postmortem/README.md#按问题查报告)查找。
@@ -26,6 +26,8 @@
 | Android构建与交互 | 0.1.82/code83同证书APK已在API35 ARM64模拟器覆盖安装，PDF、局部重答、插入顺延、系统保存/分享及重启读取通过；未安装真机。真机安装仍为0.1.76/code77，旧完整交互仍有慢帧 | [本轮模拟器](postmortem/2026-10-30-android-emulator.md)、[真机安装](postmortem/2026-10-06-exam-skills-and-android-install.md)、[旧交互与帧](postmortem/2026-10-04-android-install.md) |
 | iOS | 0.1.82/build83三项模拟器XCTest、SQLite和实际文件通过，含PDF、分享、相册/补图/裁剪、设置与横屏；真机目标Release编译通过，IPA未签名；真机、真实联网和发行未验 | [本轮模拟器](postmortem/2026-10-30-android-emulator.md)、[前轮原生PDF](postmortem/2026-10-30-native-pdf.md) |
 | 依赖与工程管理 | 34项依赖版本告警已消除，deepmerge本地补丁保留但原始审计仍失败；CI不放宽。文档分层和本地检查已有，远端CI及分支保护未完成 | [依赖修复](postmortem/2026-10-29-dependency-hardening.md)、[管理修正](postmortem/2026-10-04-project-practice.md) |
+
+main网页图片修复已恢复到本地，见[本次验收](postmortem/2026-11-05-main-camera-input.md)；当前Mac版本未重测，沿用原部署记录。
 
 ## 待完成
 

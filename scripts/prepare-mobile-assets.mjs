@@ -1,3 +1,4 @@
+import { prepareImageCodec } from './prepare-image-codec.mjs';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -19,3 +20,5 @@ await writeFile(resolve(app, '.generated/katex.css'), css);
 console.log('Prepared local KaTeX fonts; prose follows the device font.');
 
 await import('./bundle-mobile-agent.mjs');
+
+await prepareImageCodec(resolve(app, 'public'));

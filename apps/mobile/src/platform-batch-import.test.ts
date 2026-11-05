@@ -54,8 +54,8 @@ it('native applies the same limit when asset sizes need filesystem lookup', asyn
   mock.fileSize++; nativeSelection(Array(100).fill(undefined));
   await expect(nativePick(100)).rejects.toThrow('500MB');
 });
-it('Web keeps the 10 MiB per-image limit and remaining photo capacity', async () => {
-  webSelection([10 * mib + 1]); await expect(webPick(100)).rejects.toThrow('图片超过10MB');
+it('Web keeps the 32 MiB raw-image limit and remaining photo capacity', async () => {
+  webSelection([32 * mib + 1]); await expect(webPick(100)).rejects.toThrow('原图超过32MiB');
   webSelection([1, 1]); await expect(webPick(1)).rejects.toThrow('本批还可添加1张');
   expect(mock.bitmap).not.toHaveBeenCalled();
 });

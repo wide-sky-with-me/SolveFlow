@@ -22,3 +22,8 @@ it("rejects inverted, unbounded, tiny and excessive pixel regions", () => {
   for (const crop of [{ left: 90, top: 0, right: 10, bottom: 100 }, { left: -1, top: 0, right: 100, bottom: 100 }, { left: 0, top: 0, right: NaN, bottom: 100 }, { left: 0, top: 0, right: 1, bottom: 100 }]) expect(() => cropPixels(crop, 100, 100)).toThrow();
   expect(() => cropPixels({ left: 0, top: 0, right: 100, bottom: 100 }, 10000, 10000)).toThrow();
 });
+it('distinguishes bad source dimensions from an invalid selection', () => {
+  expect(() => cropPixels(fullCrop, 5712, 4284)).toThrow('图片分辨率过高');
+  expect(() => cropPixels(fullCrop, 0, 480)).toThrow('图片尺寸无效');
+  expect(() => cropPixels({ ...fullCrop, right: 1 }, 100, 100)).toThrow('题目区域');
+});

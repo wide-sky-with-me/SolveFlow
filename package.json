@@ -11,7 +11,7 @@
     "lint": "node scripts/check-boundaries.mjs && pnpm docs:check",
     "typecheck": "pnpm build:workspace && tsc --noEmit && pnpm --filter @solveflow/mobile typecheck",
     "build": "pnpm build:workspace && pnpm --filter @solveflow/mobile build && node scripts/check-build.mjs",
-    "build:shared": "node scripts/prepare-mobile-agent.mjs && pnpm --filter \"@solveflow/client...\" --filter \"@solveflow/agent...\" -r build",
+    "build:shared": "node scripts/prepare-mobile-agent.mjs && pnpm --filter @solveflow/image-input --filter \"@solveflow/client...\" --filter \"@solveflow/agent...\" -r build",
     "build:server": "pnpm --filter \"@solveflow/api...\" -r build",
     "build:workspace": "node scripts/prepare-mobile-agent.mjs && pnpm --filter \"!@solveflow/mobile\" -r build",
     "build:mobile": "pnpm build:shared && pnpm --filter @solveflow/mobile build && node scripts/check-mobile-build.mjs",

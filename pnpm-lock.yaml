@@ -85,6 +85,9 @@ importers:
 
   apps/mobile:
     dependencies:
+      '@solveflow/image-input':
+        specifier: workspace:*
+        version: link:../../packages/image-input
       '@expo/metro-runtime':
         specifier: 57.0.15
         version: 57.0.15(@expo/log-box@57.0.4)(expo@57.0.23)(react-dom@19.2.3(react@19.2.3))(react-native@0.86.3(@babel/core@7.29.7)(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
@@ -252,6 +255,12 @@ importers:
       '@types/pg':
         specifier: 8.23.1
         version: 8.23.1
+
+  packages/image-input:
+    dependencies:
+      libheif-js:
+        specifier: 1.23.5
+        version: 1.23.5
 
 packages:
 
@@ -4366,6 +4375,10 @@ packages:
     resolution: {integrity: sha512-3lC9BJk4fR5ZJxcGjb0hVnDFOW7KpLXHIebiBmVd4FDRQZVeObztoTKxRUPxlWwSgxrMRONK0u50hBD1aTYEKg==}
     peerDependencies:
       '@types/emscripten': '>=1.39.6'
+
+  libheif-js@1.23.5:
+    resolution: {integrity: sha512-umXZPthnWZtF3iG/5mQG+AZ2V6i0UeYpo3z2CkggTEgL8dKmIIwJT6TDuAMuabXa1yTW8uJ1ZAgR+CxNTklYYw==}
+    engines: {node: '>=8.0.0'}
 
 snapshots:
 
@@ -9291,3 +9304,5 @@ snapshots:
     dependencies:
       '@types/emscripten': 1.41.6
       type-fest: 5.9.0
+
+  libheif-js@1.23.5: {}
