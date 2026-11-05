@@ -1,3 +1,4 @@
+import { background } from '../local/background';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, Platform, type ScrollView } from 'react-native';
 import { z } from 'zod';
@@ -180,9 +181,14 @@ export function useWorkspaceState(runtime: Runtime, onReady: () => void) {
         if (alive.current) setRestored(true);
       }
     })();
+    if (Platform.OS === 'ios' && background.canContinue) runtime.setAppForeground(AppState.currentState === 'active');
     const sub = AppState.addEventListener('change', value => {
-      if (value === 'background' && Platform.OS === 'ios')
-        void runtime.batch.stop().then(() => runtime.engine.cancel());
+      if (Platform.OS !== 'ios') return;
+      if (value === 'active') runtime.setAppForeground(true);
+      else if (value === 'background') {
+        if (background.canContinue) runtime.setAppForeground(false);
+        else void runtime.batch.stop().then(() => runtime.engine.cancel());
+      }
     });
     return () => {
       alive.current = false;

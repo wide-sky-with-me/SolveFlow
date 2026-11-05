@@ -1,16 +1,17 @@
 # 发布状态与待办
 
-核对：2026-10-30。试用中，未达生产条件；不同版本、设备和重复样本的成绩不累计。
+核对：2026-11-05。试用中，未达生产条件；原生沿用原验收日期，成绩不跨版本、设备或重复样本累计。
 
 ## 本机与远程版本
 
 | 环境 | 最近确认的版本与范围 | 证据 |
 | --- | --- | --- |
 | 本机 Web 3100 | 保留10/29图片工作台构建，入口正常；本轮Mac发布未替换本机资源 | [工作台与草稿](postmortem/2026-10-29-ui-workbench-repair.md) |
-| 远程 Mac Web 3131 | 已发布`20261030-workbench-native-135156`，包含重试投影、补图/删除隔离和统一图片工作台；默认并发32/32，模型设置保留 | [本轮部署](postmortem/2026-10-30-mac-web-update.md) |
+| 远程 Mac Web 3131 | main工作树`20261104-camera-175615`，含相机/HEIC大图修复；32/32和模型配置保留 | [输入与部署](postmortem/2026-11-04-iphone-camera-practice.md) |
+| 腾讯云中心考试 | 前端`20261105-student-labels`；HTTP保留，部分网络受阻 | [发布](postmortem/2026-11-05-student-answer-labels.md)、[限制](postmortem/2026-11-05-http-ip-trial.md) |
 | Android / iOS | 工作区0.1.82/build83，补齐原生取消信号；Android已在隔离模拟器验证插入、共享补图、多份PDF及系统保存/分享。iOS三项模拟器XCTest及真机目标编译通过，IPA未签名；真机与发行另验 | [模拟器与修复](postmortem/2026-10-30-android-emulator.md)、[前轮PDF](postmortem/2026-10-30-native-pdf.md) |
 
-本页汇总最近证据，不执行服务探活。启动、构建和更新步骤归[Web指南](cookbook/local-web.md)，历史报告按[问题导航](postmortem/README.md#按问题查报告)查找。
+运行见[Web指南](cookbook/local-web.md)，历史见[问题导航](postmortem/README.md#按问题查报告)。
 
 ## 可核验的交付
 
@@ -27,6 +28,16 @@
 | iOS | 0.1.82/build83三项模拟器XCTest、SQLite和实际文件通过，含PDF、分享、相册/补图/裁剪、设置与横屏；真机目标Release编译通过，IPA未签名；真机、真实联网和发行未验 | [本轮模拟器](postmortem/2026-10-30-android-emulator.md)、[前轮原生PDF](postmortem/2026-10-30-native-pdf.md) |
 | 依赖与工程管理 | 34项依赖版本告警已消除，deepmerge本地补丁保留但原始审计仍失败；CI不放宽。文档分层和本地检查已有，远端CI及分支保护未完成 | [依赖修复](postmortem/2026-10-29-dependency-hardening.md)、[管理修正](postmortem/2026-10-04-project-practice.md) |
 
+## 中心考试分支
+
+iPhone大图预览、公网任务恢复及原生iOS后台收尾已有Chrome/WebKit、隔离中心、Mac编译和2项iOS模拟器证据，见[验收](postmortem/2026-11-03-iphone-input-background.md)。真机后台/低内存未验，Mac及原生本轮未更新。
+
+上传取消、图片及并发见[边界复查](postmortem/2026-11-03-iphone-review.md)；弹窗与流程见[视觉验收](postmortem/2026-11-03-functional-visual.md)；离线停止及期限见[深度复查](postmortem/2026-11-03-deep-review.md)。无安排临时拍题见[输入验收](postmortem/2026-11-04-iphone-camera-practice.md)，定时/不限时及双方结束见[计时验收](postmortem/2026-11-04-exam-timing.md)，均已发布腾讯云。分配改进及计时提醒偶发延迟见[验收](postmortem/2026-11-04-exam-allocations.md)。
+
+`feat/public-photo-web`已新增独立中心考试服务、固定题位、持久红色问题和老师介入。提醒、题型/官方模板及人工确认在隔离PG和Chrome使用假模型验证，见[核验报告](postmortem/2026-11-03-exam-reviews.md)；自由跳题/跳模块、位置跟踪见[导航报告](postmortem/2026-11-03-exam-navigation.md)。过期互斥、保存、登录、恢复已修正，见[边界回归](postmortem/2026-11-03-exam-review-fixes.md)；人工答案、最近答案、错误归属、开考和焦点样式见[界面修复](postmortem/2026-11-03-exam-ui-fixes.md)。题目总览、按题处理队列及可定位答案的持久解决通知见[问题闭环](postmortem/2026-11-03-exam-attention.md)。控制台图表、大屏及14次合成题真实模型请求见[实测](postmortem/2026-11-03-exam-console-live.md)。已拍题的教师AI/手动选项、并发保护和学生同步见[教师作答](postmortem/2026-11-03-teacher-answer.md)。详情布局见[布局验收](postmortem/2026-11-03-exam-dialog-layout.md)，看板/大屏见[本轮](postmortem/2026-11-04-home-layout.md)，分页与选择框见[列表验收](postmortem/2026-11-04-managed-list-pagination.md)。单机Docker/公网验收见上表；真实题图、COS、负载、备份恢复及目标分数规划仍待验。
+
+本地[六项修复](postmortem/2026-11-05-workflow-repairs.md)待发布。
+
 ## 待完成
 
 | 优先级 | 工作 | 完成所需证据 |
@@ -40,4 +51,4 @@
 | P2 | CI远端执行与保护 | 提交后工作流实际通过，并在外部平台配置分支保护 |
 | P2 | 长负载与多设备性能 | 真实长题转录、持续32/32负载、手机大图导入及内存/逐帧验证，不用短请求压测代替 |
 
-当前行为归[子系统导航](README.md#按任务阅读)，新证据归`postmortem/`；历史验收日期、失败与未验证项保留。
+行为见[子系统导航](README.md#按任务阅读)；历史验收日期、失败与未验项保留。

@@ -21,6 +21,9 @@ it('generates an iOS scene lifecycle for builds using the iOS 27 SDK', () => {
     });
     const plist = readFileSync(join(fixture, 'ios/SolveFlow/Info.plist'), 'utf8');
     const delegate = readFileSync(join(fixture, 'ios/SolveFlow/AppDelegate.swift'), 'utf8');
+    const background = readFileSync(join(fixture, 'ios/SolveFlow/SolveBackground.m'), 'utf8');
+    expect(background).toContain('beginBackgroundTaskWithName'); expect(background).not.toContain('__SOLVEFLOW_MAX_JOBS__');
+    expect(readFileSync(join(fixture, 'ios/SolveFlow.xcodeproj/project.pbxproj'), 'utf8')).toContain('SolveBackground.m in Sources');
     expect(plist).toContain('<key>UIApplicationSceneManifest</key>');
     expect(plist).toContain('<string>EXExpoAppSceneDelegate</string>');
     expect(delegate).toContain('ExpoReactNativeFactoryProvider');

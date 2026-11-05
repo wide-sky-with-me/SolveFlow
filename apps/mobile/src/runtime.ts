@@ -1,3 +1,4 @@
+import { BackgroundAdmission } from './local/background-admission';
 // Decision: .agents/notes/implemented/agent/2026-10-09-direct-answer-review.md
 import { isAuxiliaryContext, terminal } from '@solveflow/contracts/http';
 import { z } from 'zod';
@@ -55,7 +56,8 @@ async function openRuntime() {
   const engine = new LocalEngine(repository, Crypto.randomUUID, background);
   engine.configureConcurrency(settings?.concurrency);
   const batch = new LocalBatchQueue(engine);
-  onBackgroundExpired(runId => { if (engine.actives.some(run => run.id === runId && !terminal(run.status))) void engine.cancelRun(runId, 'deadline'); });
+  const backgroundAdmission = new BackgroundAdmission(paused => batch.setDispatchPaused(paused), async id => { if (engine.actives.some(run => run.id === id && !terminal(run.status))) await engine.cancelRun(id, 'deadline'); });
+  onBackgroundExpired(ids => { if (background.canContinue) void backgroundAdmission.expire(ids); else for (const id of ids) if (engine.actives.some(run => run.id === id && !terminal(run.status))) void engine.cancelRun(id, 'deadline'); });
   async function executor() {
     if (!settings) throw new Error('请先在设置中配置模型服务。');
     const snapshot = settings; const credentials = { solver: await readKey(keyName('solver')) ?? '', verifier: await readKey(keyName('verifier')), backup: await readKey(keyName('backup')) };
@@ -98,6 +100,7 @@ async function openRuntime() {
     return execute;
   }
   return {
+    setAppForeground: (value: boolean) => backgroundAdmission.setForeground(value),
     repository, engine, batch,
     async analyzePrintLayout(input: import('@solveflow/contracts/local').BatchPrintLayoutInput, signal: AbortSignal, progress?: (detail: string) => void, refinement?: import('@solveflow/contracts/local').PrintLayoutRefinement) {
       if (savingSettings || printAnalysisActive || engine.actives.length || batch.busy) throw new Error('请先结束当前任务，再识别导出题目。');

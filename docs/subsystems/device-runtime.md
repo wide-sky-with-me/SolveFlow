@@ -62,6 +62,4 @@
 
 ### 平台生命周期
 
-原生[启动](../../apps/mobile/src/startup.native.ts)补齐缺失的 `AbortSignal.throwIfAborted()`，不覆盖已有实现。
-
-Android前台服务支持后台任务与计时；未落盘结果不抗系统杀进程。iOS任务需保持前台，Web需页面存活；刷新后手工密钥重填，环境模式续取临时令牌。历史可离线查看，解题需联网。
+各平台的后台期限、取消信号、重启及连接恢复见[平台生命周期](platform-lifecycle.md)。网页、原生和服务端任务分别验收。

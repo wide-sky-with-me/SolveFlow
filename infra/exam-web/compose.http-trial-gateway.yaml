@@ -1,0 +1,5 @@
+# Apply after compose.existing-tls.yaml in the existing exam project.
+services:
+  gateway:
+    volumes:
+      - ${EXAM_HTTP_TRIAL_CADDY_FILE:?Set an absolute HTTP trial Caddyfile}:/etc/caddy/Caddyfile:ro

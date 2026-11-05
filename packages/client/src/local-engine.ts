@@ -37,6 +37,7 @@ type ActiveRun = {
 
 type PendingSave = { run: RunView; previousOutcome?: SolveOutcome | null };
 type BackgroundLifecycle = {
+  keepAliveWhileWaiting?: boolean;
   start: (runId: string) => Promise<void>;
   stop: (runId: string) => Promise<void>;
   diagnostic?: (entry: LocalDiagnostic) => void;
@@ -415,7 +416,7 @@ export class LocalEngine {
                 active.run = next; publish();
               });
               if (batch && !this.batchVerifications.has(run.id)) {
-                await this.background?.stop(run.id); active.protected = false;
+                if (!this.background?.keepAliveWhileWaiting) { await this.background?.stop(run.id); active.protected = false; }
                 if (controller.signal.aborted) throw new Error('CANCELLED');
                 // Admission already bounds the whole batch. Waiting for verification must
                 // never occupy a solver slot, even when every verifier is busy.
@@ -431,11 +432,11 @@ export class LocalEngine {
               try {
                 diagnose({ schemaVersion: 1, runId: run.id, role: 'runtime', event: 'queue', attempt: 0,
                   elapsedMs: Math.max(0, Math.min(1_000_000, Date.now() - Date.parse(run.createdAt))), durationMs: Math.max(0, Math.min(1_000_000, Math.round(performance.now() - queuedAt))) });
-                active.protected = true; await this.background?.start(run.id);
+                if (!active.protected) { active.protected = true; await this.background?.start(run.id); }
               }
               catch { release(); throw new Error('BACKGROUND_START_FAILED'); }
               return async () => {
-                try { await this.background?.stop(run.id); active.protected = false; }
+                try { if (!this.background?.keepAliveWhileWaiting) { await this.background?.stop(run.id); active.protected = false; } }
                 catch { for (const listener of this.errors) listener('后台服务未能正常结束，请重新打开应用。'); }
                 finally { release(); }
               };

@@ -1,0 +1,61 @@
+/* Reading a question needs more space than a short settings form. */
+dialog { max-width: calc(100% - 24px); }
+dialog.dialog-wide { width: min(1040px, calc(100vw - 48px)); max-height: calc(100dvh - 64px); }
+.dialog-head { gap: 16px; }
+.dialog-head h2 { min-width: 0; overflow-wrap: anywhere; }
+.dialog-footer { flex-wrap: wrap; gap: 10px; }
+.dialog-notice { padding: 18px 24px 0; flex-shrink: 0; max-height: 35dvh; overflow: auto; }
+.dialog-notice .verification-alerts { position: static; margin: 0; }
+.dialog-notice .alert-links { max-height: min(120px, 18dvh); }
+
+.monitor-overview { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 24px; margin: 18px 0 8px; }
+.monitor-overview .section-head { margin: 0; gap: 16px; flex-wrap: wrap; }
+.monitor-overview .section-head > span { font-size: 14px; }
+.monitor-counts { margin: 0; gap: 8px; }
+.monitor-counts > span { padding: 7px 10px; }
+.monitor-tools { display: flex; gap: 12px; flex-wrap: wrap; margin: 4px 0 12px; }
+.monitor-tools > button { font-size: 14px; padding: 8px 12px; }
+
+.review-detail { padding-top: 20px; }
+.review-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px 24px; margin-bottom: 24px; }
+.review-heading .section-head { justify-content: flex-start; gap: 12px; margin: 0; }
+.review-heading .review-actions { margin: 0; }
+.review-layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(320px, 1fr); gap: 28px; align-items: start; }
+.review-question, .review-response { min-width: 0; overflow-wrap: anywhere; }
+.review-question > h3 { margin-top: 20px; }
+.review-question .thumbnails { margin-top: 0; }
+.review-question .thumbnails a { width: 132px; height: 96px; border: 1px solid var(--line); }
+.review-question .option { align-items: flex-start; }
+.review-question .option > :last-child { min-width: 0; }
+.review-response { display: grid; gap: 18px; }
+.review-current-answer { border: 1px solid var(--line); border-radius: 14px; padding: 18px; background: var(--field); }
+.review-current-answer .section-head { align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+.review-current-answer h3 { font-size: 15px; }
+.review-current-answer > p:last-child { margin-bottom: 0; }
+.review-response > details { margin: 0; border-top: 1px solid var(--line); }
+.review-response > details summary { padding-top: 14px; }
+.review-response .human-review { margin: 0; }
+.review-response .human-review > h3 { margin-top: 0; }
+.review-response .human-review .dialog-footer { margin-bottom: 0; }
+.review-response .record-row { padding: 14px 0; }
+.review-choice > div { min-width: 0; }
+
+@media (max-width: 999px) {
+  .review-layout { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+}
+@media (max-width: 640px) {
+  dialog.dialog-wide { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); border-radius: 16px; }
+  .monitor-overview { margin-top: 14px; gap: 10px; }
+  .monitor-overview .section-head { width: 100%; justify-content: space-between; gap: 8px; }
+  .monitor-overview .section-head > span { font-size: 13px; }
+  .monitor-counts > span { padding: 7px 9px; }
+  .dialog-notice { padding: 14px 20px 0; }
+  .monitor-tools { margin-bottom: 12px; gap: 0 16px; }
+  .review-heading { margin-bottom: 18px; gap: 12px; }
+  .review-heading .review-actions { width: 100%; }
+  .review-heading .review-actions button { padding: 10px 8px; font-size: 14px; white-space: nowrap; }
+  .review-current-answer { padding: 16px; }
+  .review-current-answer .section-head { flex-wrap: wrap; }
+  .review-current-answer .badge { white-space: normal; }
+  .review-choice { padding: 10px; gap: 8px; grid-template-columns: 18px 18px minmax(0, 1fr); }
+}

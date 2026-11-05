@@ -57,3 +57,14 @@ it.each([false, true])('passes native camera pixels directly, applies crop/rotat
   } finally { releasePhoto(photo); }
   expect(nativeImage.release).toHaveBeenCalledOnce();
 });
+it('shrinks a 48MP native photo before applying crop and keeps saved image bounds', async () => {
+  const interim = { width: 3072, height: 3072, release: vi.fn() };
+  const image = { saveAsync: vi.fn(async () => ({ uri: 'file:///cache/small.jpg', width: 2048, height: 2048 })), release: vi.fn() };
+  const context = { renderAsync: vi.fn().mockResolvedValueOnce(interim).mockResolvedValueOnce(image), resize: vi.fn(), crop: vi.fn(), release: vi.fn() };
+  mock.manipulate.mockReturnValueOnce(context);
+  const result = await nativeTransform({ uri: 'file:///cache/48mp.heic', width: 8064, height: 6048 }, { left: 0, top: 0, right: 75, bottom: 100 });
+  expect(context.resize).toHaveBeenNthCalledWith(1, { width: 4096, height: 3072 });
+  expect(context.crop).toHaveBeenCalledWith({ originX: 0, originY: 0, width: 3072, height: 3072 });
+  expect(result).toMatchObject({ width: 2048, height: 2048, normalized: true });
+  expect(interim.release).toHaveBeenCalledOnce(); expect(image.release).toHaveBeenCalledOnce(); expect(context.release).toHaveBeenCalledOnce();
+});

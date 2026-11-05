@@ -24,7 +24,7 @@ for (const profile of Object.values(config.models.models)) if (profile && !profi
 const state = process.env.SOLVEFLOW_PHOTO_STATE ?? resolve(dirname(path), 'state');
 const dispatchLimit = process.env.SOLVEFLOW_PHOTO_DISPATCH_LIMIT;
 const dispatch = photoDispatch(dispatchLimit === undefined ? null : Number(dispatchLimit));
-const handler = createPhotoHandler({ origin: config.origin, auth: new PhotoAuth(config.accessKeys, config.secret, origin.protocol === 'https:'), ledger: new PhotoLedger(resolve(state, 'ledger.json')), publicDir: resolve(dirname(fileURLToPath(import.meta.url)), 'public'),
+const handler = createPhotoHandler({ origin: config.origin, auth: new PhotoAuth(config.accessKeys, config.secret, origin.protocol === 'https:'), ledger: new PhotoLedger(resolve(state, 'ledger.json')), publicDir: resolve(dirname(fileURLToPath(import.meta.url)), 'public'), jobDir: resolve(state, 'jobs'),
   async solve(request, accountId, signal, onEvent) {
     const input = SolverInputSchema.parse({ schemaVersion: 1, role: 'solver', identity: { ownerId: accountId, sessionId: request.sessionId, runId: request.requestId }, exam: request.exam, answerMode: 'brief', verificationMode: 'manual', message: '', evidence: [], image: { bytes: Uint8Array.from(Buffer.from(request.image.split(',')[1] ?? '', 'base64')), mimeType: 'image/jpeg' } });
     const result = await solveOnDevice(input, { ...config.models.models, schemaVersion: 1 }, { ...config.models.keys, solver: solverKey }, dispatch, signal, onEvent, undefined, undefined, undefined, preparePhotoActViews);
@@ -50,5 +50,5 @@ const acme = https && acmeRoot ? createHttpServer(async (req, res) => {
 }) : null;
 if (acme) { acme.requestTimeout = 10000; acme.headersTimeout = 5000; acme.listen(80, '0.0.0.0'); }
 if (https) process.on('SIGHUP', () => { if ('setSecureContext' in server) void tls().then(options => server.setSecureContext(options)).catch(() => console.error('TLS reload failed.')); });
-const stop = () => { server.closeAllConnections(); server.close(); acme?.closeAllConnections(); acme?.close(); };
+const stop = () => { void handler.close().finally(() => { server.closeAllConnections(); server.close(); acme?.closeAllConnections(); acme?.close(); }); };
 process.once('SIGTERM', stop); process.once('SIGINT', stop);

@@ -17,3 +17,11 @@ export const PhotoStreamMessageSchema = z.discriminatedUnion('type', [
 ]);
 export type PhotoAccount = z.infer<typeof PhotoAccountSchema>;
 export type PhotoSolveRequest = z.infer<typeof PhotoSolveRequestSchema>;
+
+/** Status reads never dispatch paid work; finished results are retained temporarily for reconnection. */
+export const PhotoJobSnapshotSchema = z.strictObject({
+  schemaVersion: z.literal(1), requestId: z.uuid(), sessionId: z.uuid(),
+  status: z.enum(['running', 'finished', 'cancelled', 'interrupted']),
+  event: PublicAgentEventSchema.nullable(), outcome: SolveOutcomeSchema.nullable(),
+}).refine(value => (value.status === 'finished') === (value.outcome !== null), 'Finished jobs require an outcome.');
+export type PhotoJobSnapshot = z.infer<typeof PhotoJobSnapshotSchema>;

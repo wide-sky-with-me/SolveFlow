@@ -1,0 +1,73 @@
+# Decision: .agents/notes/implemented/architecture/2026-11-04-managed-exam-single-host-deployment.md
+# Optional private object storage for a single-server deployment.
+x-storage-app: &storage-app
+  environment:
+    NODE_EXTRA_CA_CERTS: /run/ca/storage.crt
+  volumes:
+    - ${EXAM_STORAGE_CA_FILE:?Set private storage CA certificate}:/run/ca/storage.crt:ro
+  depends_on:
+    storage: {condition: service_healthy}
+services:
+  storage:
+    image: chrislusf/seaweedfs:4.52
+    restart: unless-stopped
+    init: true
+    command:
+      - mini
+      - -dir=/data
+      - -ip=storage
+      - -ip.bind=0.0.0.0
+      - -s3.config=/run/secrets/storage_config
+      - -s3.domainName=s3.solveflow.internal
+      - -s3.port=8333
+      - -s3.port.https=8443
+      - -s3.cert.file=/run/secrets/storage_tls_cert
+      - -s3.key.file=/run/secrets/storage_tls_key
+      - -s3.port.iceberg=0
+      - -s3.port.lance=0
+      - -s3.autoCreateBucket=false
+      - -bucket=solveflow-private
+      - -admin.ui=false
+      - -webdav=false
+      - -master.telemetry=false
+    volumes:
+      - storage_data:/data
+      - ${EXAM_STORAGE_CA_FILE:?Set private storage CA certificate}:/run/tls/ca.crt:ro
+    secrets: [storage_config, storage_tls_key, storage_tls_cert]
+    networks:
+      backend:
+        aliases: [s3.solveflow.internal, solveflow-private.s3.solveflow.internal]
+    healthcheck:
+      test: [CMD-SHELL, 'test "$$(curl --connect-timeout 2 --max-time 3 --silent --output /dev/null --write-out "%{http_code}" --cacert /run/tls/ca.crt https://s3.solveflow.internal:8443/)" = 403']
+      interval: 5s
+      timeout: 3s
+      retries: 24
+    mem_limit: 512m
+  api:
+    <<: *storage-app
+    ports: ["127.0.0.1:${EXAM_API_PORT:-3191}:3190"]
+  worker:
+    <<: *storage-app
+  events:
+    <<: *storage-app
+  migrate:
+    <<: *storage-app
+  bootstrap:
+    <<: *storage-app
+  gateway:
+    networks:
+      egress:
+        ipv4_address: 172.31.248.2
+networks:
+  egress:
+    ipam:
+      config: [{subnet: 172.31.248.0/24, ip_range: 172.31.248.128/25}]
+volumes:
+  storage_data: {}
+secrets:
+  storage_config:
+    file: ${EXAM_STORAGE_CONFIG_FILE:?Set private S3 identities file}
+  storage_tls_key:
+    file: ${EXAM_STORAGE_KEY_FILE:?Set private storage TLS key}
+  storage_tls_cert:
+    file: ${EXAM_STORAGE_CERT_FILE:?Set storage server certificate}

@@ -11,6 +11,7 @@ const config: ExpoConfig = {
     ['expo-build-properties', { ios: { enableSceneSupport: true } }],
     './plugins/with-android-release-size.cjs',
     './plugins/with-solve-background.cjs',
+    './plugins/with-ios-background.cjs',
     './plugins/with-dom-bootstrap.cjs',
     ['expo-splash-screen', { backgroundColor: '#ffffff', dark: { backgroundColor: '#0e1520' }, image: './assets/app-icon.png', imageWidth: 72, resizeMode: 'contain' }],
     ['expo-camera', { cameraPermission: '允许 SolveFlow 拍摄题目，用于识别和解答。', microphonePermission: false, recordAudioAndroid: false, barcodeScannerEnabled: false }],

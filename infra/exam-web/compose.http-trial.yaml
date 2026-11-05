@@ -1,0 +1,37 @@
+# A separate API uses the existing private database, storage and worker.
+# The HTTPS project and its origin configuration stay independent.
+# Decision: .agents/notes/implemented/architecture/2026-11-05-http-ip-trial.md
+name: solveflow-http-trial
+services:
+  http-trial-api:
+    image: solveflow/exam-web:${EXAM_HTTP_TRIAL_RELEASE:?Set verified image release}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    mem_limit: 384m
+    environment:
+      SOLVEFLOW_EXAM_CONFIG: /run/secrets/http_trial_config
+      SOLVEFLOW_EXAM_HOST: 0.0.0.0
+      SOLVEFLOW_EXAM_ROLE: api
+      NODE_EXTRA_CA_CERTS: /run/ca/storage.crt
+    ports: ["${EXAM_HTTP_TRIAL_PORT:?Set an unused TCP port}:3190"]
+    volumes:
+      - ${EXAM_STORAGE_CA_FILE:?Set private storage CA certificate}:/run/ca/storage.crt:ro
+    secrets: [http_trial_config]
+    networks: [existing_backend, existing_egress]
+    healthcheck:
+      test: [CMD, node, -e, 'fetch("http://127.0.0.1:3190/health").then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))']
+      interval: 10s
+      timeout: 5s
+      retries: 6
+networks:
+  existing_backend:
+    external: true
+    name: solveflow-exams_backend
+  existing_egress:
+    external: true
+    name: solveflow-exams_egress
+secrets:
+  http_trial_config:
+    file: ${EXAM_HTTP_TRIAL_CONFIG_FILE:?Set a private trial configuration path}

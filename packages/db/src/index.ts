@@ -9,3 +9,17 @@ export function connectDatabase(connectionString: string) {
   return { pool, db: drizzle(pool, { schema }), close: () => pool.end() };
 }
 export type Database = ReturnType<typeof connectDatabase>["db"];
+
+export * from './exam-store.js';
+export * from './exam-catalog.js';
+export * from './exam-attempts.js';
+export * from './exam-jobs.js';
+
+export * from './exam-reviews.js';
+export * from './exam-navigation.js';
+export * from './exam-attention.js';
+export * from './exam-dashboard.js';
+
+export * from './exam-lists.js';
+export * from './exam-timing.js';
+export * from './exam-allocations.js';

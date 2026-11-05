@@ -1,14 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import type { SolveOutcome } from '@solveflow/contracts/agent';
 import { LocalBatchSchema, type LocalConcurrency, type LocalRecord } from '@solveflow/contracts/local';
 import { LocalEngine, type DeviceSolve } from './local-engine.js';
 import { LocalBatchQueue } from './local-batch.js';
 import { LocalRepository } from './local-repository.js';
-function setup(concurrency: LocalConcurrency = { solver: 3, verifier: 1 }) {
+function setup(concurrency: LocalConcurrency = { solver: 3, verifier: 1 }, background?: ConstructorParameters<typeof LocalEngine>[2]) {
   const values = new Map<string, string>();
   const repository = new LocalRepository({ async get(key) { return values.get(key) ?? null; }, async put(key, value) { values.set(key, value); }, async remove(key) { values.delete(key); }, async keys() { return [...values.keys()]; } });
-  const engine = new LocalEngine(repository, randomUUID); engine.configureConcurrency(concurrency); const queue = new LocalBatchQueue(engine);
+  const engine = new LocalEngine(repository, randomUUID, background); engine.configureConcurrency(concurrency); const queue = new LocalBatchQueue(engine);
   const batch = { id: randomUUID(), title: 'SAT practice', createdAt: new Date().toISOString(), exam: 'sat' as const };
   const create = (position: number) => engine.create('data:image/jpeg;base64,AQID', 30, 20, 'sat', { ...batch, position });
   return { repository, engine, queue, batch, create };
@@ -251,4 +251,30 @@ it.each([{ solver: 5, verifier: 3 }, { solver: 2, verifier: 4 }, { solver: 8, ve
     await queue.stop(); expect(engine.actives).toEqual([]); expect(queue.busy).toBe(false);
     engine.configureConcurrency({ solver: 1, verifier: 1 }); expect(engine.concurrency).toEqual({ solver: 1, verifier: 1 });
   } finally { await queue.stop(); }
+});
+it('pauses new dispatch in background without cancelling an accepted answer or spinning idle waiters', async () => {
+  const { create, queue, engine, repository } = setup({ solver: 1, verifier: 1 });
+  const first = await create(1), second = await create(2); let release = () => {}, calls = 0;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const execute: DeviceSolve = async () => { calls++; if (calls === 1) await blocked; return answer('2'); };
+  try {
+    await queue.enqueue(first.session.id, execute); await expect.poll(() => calls).toBe(1);
+    queue.setDispatchPaused(true); await queue.enqueue(second.session.id, execute);
+    let idle = false; const waiter = queue.waitForIdle().then(() => { idle = true; });
+    release(); await expect.poll(() => engine.actives.length).toBe(0);
+    expect((await repository.read(first.session.id)).session.runs.at(-1)?.status).toBe('completed'); expect(calls).toBe(1); expect(idle).toBe(false);
+    queue.setDispatchPaused(false); await waiter; expect(calls).toBe(2); expect((await repository.read(second.session.id)).session.runs).toHaveLength(1);
+  } finally { release(); queue.setDispatchPaused(false); await queue.stop(); }
+});
+
+it.each([false, true])('retains an iOS lease through verification waits only when supported=%s', async keepAliveWhileWaiting => {
+  const start = vi.fn(async () => {}), stop = vi.fn(async () => {});
+  const { create, queue } = setup({ solver: 1, verifier: 1 }, { start, stop, keepAliveWhileWaiting });
+  const record = await create(1);
+  await queue.enqueue(record.session.id, async (_input, _signal, _event, _diagnostic, lifecycle) => {
+    const result = answer('2'); if (result.status !== 'completed' || !lifecycle) throw new Error('NO_LIFECYCLE');
+    await lifecycle.candidate(result.candidate); expect(stop).toHaveBeenCalledTimes(keepAliveWhileWaiting ? 0 : 1);
+    const done = await lifecycle.verification(); try { return result; } finally { await done(); }
+  });
+  await queue.waitForIdle(); expect(start).toHaveBeenCalledTimes(keepAliveWhileWaiting ? 1 : 2); expect(stop).toHaveBeenCalledTimes(keepAliveWhileWaiting ? 1 : 2);
 });

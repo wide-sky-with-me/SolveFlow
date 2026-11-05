@@ -3,5 +3,6 @@
   "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
   "scripts": { "build": "tsc -p tsconfig.build.json" },
   "dependencies": { "@solveflow/contracts": "workspace:*", "drizzle-orm": "0.45.2", "pg": "8.23.0", "zod": "4.6.6" },
-  "devDependencies": { "@types/pg": "8.23.1" }
+  "devDependencies": { "@types/pg": "8.23.1" },
+  "files": ["dist", "migrations"]
 }

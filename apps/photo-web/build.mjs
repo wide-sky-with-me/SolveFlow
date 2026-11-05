@@ -1,9 +1,11 @@
+import { prepareImageCodec } from '../../scripts/prepare-image-codec.mjs';
 import { build } from 'esbuild';
 import { cp, mkdir, writeFile, readdir, readFile, rm } from 'node:fs/promises';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist/public', { recursive: true });
-const browser = await build({ entryPoints: ['src/browser/main.tsx'], outdir: 'dist/public', bundle: true, platform: 'browser', format: 'esm', target: ['safari16', 'chrome110'], minify: true, entryNames: '[name]-[hash]', assetNames: '[name]-[hash]', loader: { '.woff2': 'file', '.woff': 'file', '.ttf': 'file', '.svg': 'file' }, metafile: true, define: { 'process.env.NODE_ENV': '"production"' } });
+await prepareImageCodec('dist/public');
+const browser = await build({ entryPoints: ['src/browser/main.tsx'], outdir: 'dist/public', bundle: true, platform: 'browser', jsx: 'automatic', format: 'esm', target: ['safari16', 'chrome110'], minify: true, entryNames: '[name]-[hash]', assetNames: '[name]-[hash]', loader: { '.woff2': 'file', '.woff': 'file', '.ttf': 'file', '.svg': 'file' }, metafile: true, define: { 'process.env.NODE_ENV': '"production"' } });
 for (const file of Object.keys(browser.metafile.inputs)) if (/packages\/(agent|config|db)\/|src\/server\//.test(file)) throw new Error('PRIVATE_SERVER_CODE_IN_BROWSER');
 const js = Object.keys(browser.metafile.outputs).find(p => p.endsWith('.js'));
 const css = Object.keys(browser.metafile.outputs).find(p => p.endsWith('.css'));

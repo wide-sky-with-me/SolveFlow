@@ -1,0 +1,22 @@
+{
+  "name": "@solveflow/image-input",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/browser.d.ts",
+      "default": "./dist/browser.js"
+    },
+    "./formats": {
+      "types": "./dist/formats.d.ts",
+      "default": "./dist/formats.js"
+    }
+  },
+  "dependencies": {
+    "libheif-js": "1.23.5"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  }
+}

@@ -1,0 +1,7 @@
+# Decision: .agents/notes/implemented/architecture/2026-11-04-managed-exam-single-host-deployment.md
+services:
+  gateway:
+    volumes:
+      - ./Caddyfile.existing-tls:/etc/caddy/Caddyfile:ro
+      - ${EXAM_TLS_DIR:?Set existing public certificate directory}:/run/public-tls:ro
+      - ${EXAM_ACME_WEBROOT:?Set certificate challenge webroot}:/var/www/acme:ro

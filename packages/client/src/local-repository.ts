@@ -2,7 +2,7 @@
 import { z } from 'zod';
 import { MAX_LOCAL_RECORDS, LocalBatchEditSchema, type LocalBatchEdit, ReadableLocalRecordSchema, ReadableStoredLocalRecordSchema, StoredLocalRecordSchema, StoredLocalImageSchema, LocalBatchTitleSchema, LocalRecordSchema, LocalFavoriteSchema, LocalDiagnosticsSchema, LocalHistoryExportLineSchema, type LocalHistoryExportLine, type LocalDiagnostic, type LocalRecord, type LocalRecordMetadata, LocalStudyTimerSchema, type LocalStudyTimer } from '@solveflow/contracts/local';
 import { terminal, type SessionView } from '@solveflow/contracts/http';
-import { makeSafeAgentError, type SolveOutcome } from '@solveflow/contracts/agent';
+import { makeSafeAgentError, SolveOutcomeSchema, type SolveOutcome } from '@solveflow/contracts/agent';
 import { LOCAL_HISTORY_ANSWER_STATE_VERSION, LocalHistorySummarySchema, type LocalHistorySummary } from '@solveflow/contracts/local';
 import { readHistoryArchive, type HistoryImportSource, type HistoryImportProgress } from './local-history-import.js';
 import { historyEntry, historyTaskStatus } from './history-payload.js';
@@ -607,6 +607,21 @@ export class LocalRepository {
       await this.batch(keys.map(key => ({ key, value: null })));
       this.damaged.clear();
       this.history = []; this.changed();
+    });
+  }
+  /** Apply an already accepted remote result to the same interrupted run, never a new request. */
+  async recoverRemoteRun(sessionId: string, runId: string, value: unknown): Promise<boolean> {
+    const outcome = SolveOutcomeSchema.parse(value);
+    return this.lock(async () => {
+      if (await this.documents.get(`record.${sessionId}`) === null) return false;
+      const record = await this.loadRecord(sessionId);
+      const previous = record.session.runs.at(-1);
+      if (!previous || previous.id !== runId || previous.status === 'cancelled') return false;
+      if (terminal(previous.status) && !(previous.status === 'failed' && previous.outcome && 'error' in previous.outcome && previous.outcome.error.code === 'WORKER_LOST')) return false;
+      if (outcome.status === 'completed') record.session.subject = outcome.candidate.problem.subject;
+      record.session.runs = record.session.runs.map(run => run.id === runId ? { ...run, status: outcome.status, outcome, seq: run.seq + 1 } : run);
+      await this.batch([{ key: `summary.${sessionId}`, value: null }, { key: `record.${sessionId}`, value: JSON.stringify(record) }, { key: `summary.${sessionId}`, value: JSON.stringify(this.summary(record)) }]);
+      this.history = null; this.changed(); return true;
     });
   }
   async recoverInterrupted() {

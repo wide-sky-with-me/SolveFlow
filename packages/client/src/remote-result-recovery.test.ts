@@ -1,0 +1,20 @@
+import { expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { LocalRepository, type LocalDocuments } from './local-repository.js';
+import { LocalEngine } from './local-engine.js';
+import { makeSafeAgentError, SolveOutcomeSchema } from '@solveflow/contracts/agent';
+const answer = SolveOutcomeSchema.parse({ schemaVersion: 1, status: 'completed', verified: false, warning: null, verification: null, verificationStatus: 'not_requested', candidate: { schemaVersion: 1, kind: 'answer', problem: { text: 'Synthetic', subject: 'math', uncertainties: [] }, answer: '2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] } });
+it('recovers the same interrupted run once, preserving image bytes and respecting deletion/cancellation/newer attempts', async () => {
+  const data = new Map<string, string>();
+  const docs: LocalDocuments = { get: async key => data.get(key) ?? null, keys: async () => [...data.keys()], put: async (key,value) => { data.set(key,value); }, remove: async key => { data.delete(key); }, batch: async changes => { for (const row of changes) if (row.value === null) data.delete(row.key); else data.set(row.key,row.value); } };
+  const repository = new LocalRepository(docs), engine = new LocalEngine(repository, randomUUID);
+  const record = await engine.create('data:image/jpeg;base64,AQID', 30, 20);
+  const run = await engine.start(record.session.id, '', undefined, async input => ({ schemaVersion: 1, status: 'failed', verified: false, error: makeSafeAgentError('WORKER_LOST', input.identity.runId) })); await engine.waitForRun(run.id);
+  const before = data.get('image.' + record.session.id);
+  expect(await repository.recoverRemoteRun(record.session.id, run.id, answer)).toBe(true);
+  expect((await repository.read(record.session.id)).session.runs).toHaveLength(1); expect((await repository.read(record.session.id)).session.runs[0]?.outcome).toEqual(answer); expect(data.get('image.' + record.session.id)).toBe(before);
+  expect(await repository.recoverRemoteRun(record.session.id, run.id, answer)).toBe(false);
+  const next = await engine.start(record.session.id, '', undefined, async input => ({ schemaVersion: 1, status: 'cancelled', verified: false, error: makeSafeAgentError('CANCELLED', input.identity.runId) })); await engine.waitForRun(next.id);
+  expect(await repository.recoverRemoteRun(record.session.id, run.id, answer)).toBe(false); expect(await repository.recoverRemoteRun(record.session.id, next.id, answer)).toBe(false);
+  await repository.remove(record.session.id); expect(await repository.recoverRemoteRun(record.session.id, next.id, answer)).toBe(false); expect(await repository.recordIds()).toHaveLength(0);
+});

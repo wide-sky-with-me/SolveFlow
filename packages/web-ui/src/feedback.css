@@ -1,0 +1,14 @@
+.feedback-tone-info{--feedback-bg:#eff5ff;--feedback-border:#ccdcf6;--feedback-ink:#285ba8;--feedback-icon-bg:#e1edff}
+.feedback-tone-success{--feedback-bg:#eff9f4;--feedback-border:#c6e6d6;--feedback-ink:#166445;--feedback-icon-bg:#dcf0e5}
+.feedback-tone-warning{--feedback-bg:#fff8e9;--feedback-border:#eddbb3;--feedback-ink:#865a13;--feedback-icon-bg:#f9edcf}
+.feedback-tone-error{--feedback-bg:#fff3f1;--feedback-border:#f0c9c4;--feedback-ink:#a3322b;--feedback-icon-bg:#fbe3df}
+.feedback{display:flex;align-items:flex-start;gap:12px;min-width:0;padding:14px 16px;margin:14px 0;border:1px solid var(--feedback-border);border-radius:14px;background:var(--feedback-bg);color:var(--feedback-ink);font-size:14px;line-height:1.6;overflow-wrap:anywhere}
+.feedback-icon{display:grid;place-items:center;flex-shrink:0;width:30px;height:30px;border-radius:9px;background:var(--feedback-icon-bg);color:var(--feedback-ink)}
+.feedback-icon .icon{width:18px;height:18px}
+.feedback-content{flex:1;min-width:0;padding:4px 0}
+.feedback-content>:first-child{margin-top:0}.feedback-content>:last-child{margin-bottom:0}
+.feedback-dismiss{flex-shrink:0;width:44px;min-height:44px;padding:0;margin:-7px -8px -7px 0;color:inherit;border-radius:10px}
+.feedback-dismiss:hover{background:var(--feedback-icon-bg)}.feedback-dismiss .icon{width:17px;height:17px}
+:root[data-theme="dark"] .feedback-tone-info{--feedback-bg:#172a43;--feedback-border:#355172;--feedback-ink:#a9ccff;--feedback-icon-bg:#213d60}:root[data-theme="dark"] .feedback-tone-success{--feedback-bg:#152c25;--feedback-border:#34594a;--feedback-ink:#a1dfbd;--feedback-icon-bg:#234637}:root[data-theme="dark"] .feedback-tone-warning{--feedback-bg:#322a1d;--feedback-border:#695632;--feedback-ink:#efcf8e;--feedback-icon-bg:#4a3b22}:root[data-theme="dark"] .feedback-tone-error{--feedback-bg:#342326;--feedback-border:#70464a;--feedback-ink:#ffb8ae;--feedback-icon-bg:#512e32}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]) .feedback-tone-info{--feedback-bg:#172a43;--feedback-border:#355172;--feedback-ink:#a9ccff;--feedback-icon-bg:#213d60}:root:not([data-theme="light"]) .feedback-tone-success{--feedback-bg:#152c25;--feedback-border:#34594a;--feedback-ink:#a1dfbd;--feedback-icon-bg:#234637}:root:not([data-theme="light"]) .feedback-tone-warning{--feedback-bg:#322a1d;--feedback-border:#695632;--feedback-ink:#efcf8e;--feedback-icon-bg:#4a3b22}:root:not([data-theme="light"]) .feedback-tone-error{--feedback-bg:#342326;--feedback-border:#70464a;--feedback-ink:#ffb8ae;--feedback-icon-bg:#512e32}}
+@media(max-width:640px){.feedback{padding:12px;gap:10px}}

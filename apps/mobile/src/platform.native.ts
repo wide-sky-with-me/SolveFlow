@@ -1,3 +1,4 @@
+import { imagePreviewSize, MAX_SOURCE_IMAGE_BYTES } from '@solveflow/image-input/formats';
 import { Image } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import * as Picker from 'expo-image-picker';
@@ -43,19 +44,24 @@ export async function recoverPhoto(): Promise<Photo | null> {
 }
 export async function transformPhoto(photo: Photo, crop?: Crop, rotate = false, maxDimension = 2048): Promise<Photo> {
   if (!Number.isInteger(maxDimension) || maxDimension < 1 || maxDimension > 2048) throw new Error('图片尺寸无效。');
-  cropPixels(crop ?? { left: 0, top: 0, right: 100, bottom: 100 }, photo.width, photo.height);
+  if (!photo.nativeImage && photo.uri.startsWith('file:') && new File(photo.uri).size > MAX_SOURCE_IMAGE_BYTES) throw new Error('原图超过32MiB，请先缩小。');
+  const preview = imagePreviewSize(photo.width, photo.height);
+  const large = photo.width * photo.height > 20_000_000;
+  const width = large ? preview.width : photo.width, height = large ? preview.height : photo.height;
+  cropPixels(crop ?? { left: 0, top: 0, right: 100, bottom: 100 }, width, height);
   const context = ImageManipulator.manipulate(photo.nativeImage ?? photo.uri);
   try {
-    if (crop) context.crop(cropPixels(crop, photo.width, photo.height));
+    if (large) context.resize({ width, height });
+    if (crop) context.crop(cropPixels(crop, width, height));
     if (rotate) context.rotate(90);
     // Camera references already contain oriented pixels and accurate dimensions.
     // URI inputs still read decoded dimensions (including EXIF orientation).
     const interim = photo.nativeImage ? null : await context.renderAsync();
     try {
-      const box = cropPixels(crop ?? { left: 0, top: 0, right: 100, bottom: 100 }, photo.width, photo.height);
-      const width = interim?.width ?? (rotate ? box.height : box.width);
-      const height = interim?.height ?? (rotate ? box.width : box.height);
-      if (Math.max(width, height) > maxDimension) context.resize(width >= height ? { width: maxDimension } : { height: maxDimension });
+      const box = cropPixels(crop ?? { left: 0, top: 0, right: 100, bottom: 100 }, width, height);
+      const renderWidth = interim?.width ?? (rotate ? box.height : box.width);
+      const renderHeight = interim?.height ?? (rotate ? box.width : box.height);
+      if (Math.max(renderWidth, renderHeight) > maxDimension) context.resize(renderWidth >= renderHeight ? { width: maxDimension } : { height: maxDimension });
     } finally { interim?.release(); }
     const image = await context.renderAsync();
     try { const result = await image.saveAsync({ format: SaveFormat.JPEG, compress: .92 }); return { uri: result.uri, width: result.width, height: result.height, owned: true, normalized: true }; }

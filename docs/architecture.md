@@ -24,9 +24,13 @@ apps/mobile 界面与平台适配
 
 [源码检查](../scripts/check-boundaries.mjs)约束工作区依赖方向、设备/共享核心的 Node 导入和跨包私有文件导入；测试允许使用私有源与 Node 夹具，Pi 导入限制仍适用。移动 Agent 的传递依赖另由[打包器](../scripts/bundle-mobile-agent.mjs)核对，不以源码检查代替产物检查。
 
+三种网页共用 `packages/image-input` 的[本地 HEIC 适配](subsystems/image-input.md)，与原生系统解码和模型执行分开维护。
+
 ## 保留的服务路径
 
 独立[公网手机拍题入口](../apps/photo-web/README.md)仅提供密钥登录、单图解答和浏览器历史；固定模型由专用Node服务执行，凭据不返回前端，不暴露完整版设置/批量/导出。它不改变默认设备路径，也不使用下述服务数据库；鉴权与持久化边界见[部署说明](cookbook/public-photo-web.md)和[决策](../.agents/notes/implemented/architecture/2026-10-31-public-photo-web.md)。
+
+[中心考试平台](subsystems/managed-exams.md)由`apps/exam-web`独立运行，提供用户/考试分配、固定模块题位、中心存储、后台解题和管理跟踪；Web主题/图标来自`packages/web-ui`。它复用数据库包的新增`exam_app`事务，不替换匿名服务或设备存储；生产缺口见其当前文档。
 
 `apps/api` 提供 Hono 路由和 worker；`packages/db` 使用 PostgreSQL/Drizzle，上传存于私有对象存储；`packages/config` 管理服务环境。此路径通过 `server:dev` / `server:start` 显式启动，默认设备应用无需它。服务端身份、幂等、租约、SSE 与终态事务见 [服务语义](subsystems/legacy-server.md)。
 

@@ -1,3 +1,5 @@
+import { MAX_SOURCE_IMAGE_BYTES } from '@solveflow/image-input/formats';
+import { browserImage, IMAGE_INPUT_ACCEPT } from '@solveflow/image-input';
 import { cropPixels, type Crop } from '@solveflow/client/presentation';
 import { type ClientStore } from '@solveflow/client/remote';
 import type { Photo } from './platform.types';
@@ -11,7 +13,7 @@ export const store: ClientStore = {
 };
 export async function pickPhoto(): Promise<Photo | null> {
   return new Promise((resolve, reject) => {
-    const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/jpeg,image/png,image/webp'; input.setAttribute('aria-label', '从相册上传图片'); input.style.display = 'none'; document.body.append(input);
+    const input = document.createElement('input'); input.type = 'file'; input.accept = IMAGE_INPUT_ACCEPT; input.setAttribute('aria-label', '从相册上传图片'); input.style.display = 'none'; document.body.append(input);
     input.oncancel = () => { input.remove(); resolve(null); };
     input.onchange = () => { const file = input.files?.[0]; input.remove(); if (!file) { resolve(null); return; } void samplePhoto(file).then(resolve, reject); };
     input.click();
@@ -20,7 +22,7 @@ export async function pickPhoto(): Promise<Photo | null> {
 export async function pickPhotos(limit: number): Promise<ImportPhoto[]> {
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_BATCH_PHOTOS) throw new Error('批次已满，请新建批次。');
   const files = await new Promise<File[]>((resolve) => {
-    const input = document.createElement('input'); input.type = 'file'; input.multiple = true; input.accept = 'image/jpeg,image/png,image/webp'; input.style.display = 'none'; document.body.append(input);
+    const input = document.createElement('input'); input.type = 'file'; input.multiple = true; input.accept = IMAGE_INPUT_ACCEPT; input.style.display = 'none'; document.body.append(input);
     input.oncancel = () => { input.remove(); resolve([]); };
     input.onchange = () => { const files = Array.from(input.files ?? []); input.remove(); resolve(files); };
     input.click();
@@ -38,8 +40,9 @@ export async function pickPhotos(limit: number): Promise<ImportPhoto[]> {
 }
 export async function recoverPhoto(): Promise<Photo | null> { return null; }
 export async function samplePhoto(blob: Blob): Promise<Photo> {
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(blob.type)) throw new Error('请选择 JPG、PNG 或 WebP 图片。');
-  if (blob.size > 10 * 1024 * 1024) throw new Error('图片超过10MB，请先裁切。');
+  if (blob.size > MAX_SOURCE_IMAGE_BYTES) throw new Error('原图超过32MiB，请先缩小。');
+  blob = await browserImage(blob, { maxBytes: MAX_SOURCE_IMAGE_BYTES, maxPixels: 20_000_000 });
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(blob.type)) throw new Error('请选择 JPG、PNG、WebP 或 HEIC 图片。');
   const bitmap = await createImageBitmap(blob);
   try { cropPixels({ left: 0, top: 0, right: 100, bottom: 100 }, bitmap.width, bitmap.height); return { uri: URL.createObjectURL(blob), width: bitmap.width, height: bitmap.height, owned: true, blob }; }
   finally { bitmap.close(); }

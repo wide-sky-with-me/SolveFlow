@@ -12,6 +12,8 @@ type RunningItem = { batchId: string; started: Promise<RunView>; done: Promise<v
 /** Bounded business queue of photo IDs. Pi still owns each solve and verifier loop. */
 export class LocalBatchQueue {
   private waiting: WaitingItem[] = [];
+  private dispatchPaused = false;
+  setDispatchPaused(paused: boolean) { this.dispatchPaused = paused; this.emit(); if (!paused) this.pump(); }
   private running = new Map<string, RunningItem>();
   private listeners = new Set<() => void>();
   private preparing = Promise.resolve();
@@ -128,7 +130,7 @@ export class LocalBatchQueue {
     this.materialPreparing = completed.then(() => {}, () => {}); return completed;
   }
   private pump() {
-    if (this.stoppingAll) return;
+    if (this.stoppingAll || this.dispatchPaused) return;
     if (this.engine.storageBlocked) {
       this.waiting = [];
       this.error = '结果未能保存，批量任务已停止。请先重试保存，再手动继续待解题。';
@@ -197,6 +199,6 @@ export class LocalBatchQueue {
     if (batchId === undefined) await Promise.all([this.preparing, this.materialPreparing]);
   }
   async waitForIdle() {
-    while (this.busy) await Promise.all([this.preparing, this.materialPreparing, ...[...this.running.values()].map(row => row.done)]);
+    while (this.busy) await new Promise<void>(resolve => { const unsubscribe = this.subscribe(() => { unsubscribe(); resolve(); }); });
   }
 }

@@ -51,7 +51,8 @@
     "react-native-webview": "13.16.1",
     "remark-gfm": "4.0.1",
     "remark-math": "6.0.0",
-    "zod": "4.6.6"
+    "zod": "4.6.6",
+    "@solveflow/image-input": "workspace:*"
   },
   "devDependencies": {
     "@types/katex": "0.16.8",

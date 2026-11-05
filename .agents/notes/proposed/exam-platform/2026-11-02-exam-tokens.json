@@ -1,0 +1,81 @@
+{
+  "status": "proposed",
+  "extractedAt": "2026-11-02",
+  "sources": [
+    "apps/photo-web/src/browser/styles.css",
+    "apps/photo-web/src/browser/icons.tsx",
+    "apps/mobile/src/theme/palette.ts"
+  ],
+  "sourceCssSha256": "322834a6b040af6a8fca3cbdf08f9fe52fa97e55ae7c80b9e6686c56c42522d4",
+  "colors": {
+    "light": {
+      "canvas": "#f5f7fb",
+      "surface": "#fff",
+      "ink": "#172338",
+      "muted": "#607087",
+      "line": "#e3eaf3",
+      "blue": "#2867dd",
+      "accent-ink": "#2867dd",
+      "secondary": "#edf3ff",
+      "field": "#f8faff",
+      "hero-end": "#edf4ff",
+      "art-orbit": "#eaf1ff",
+      "art-back": "#c8dafa",
+      "art-paper": "#fff",
+      "art-line": "#e1e9f6",
+      "shadow": "0 8px 30px #17365d06"
+    },
+    "dark": {
+      "canvas": "#0e1520",
+      "surface": "#182232",
+      "ink": "#e6edf7",
+      "muted": "#a6b5ca",
+      "line": "#334156",
+      "blue": "#2867dd",
+      "accent-ink": "#8bb5ff",
+      "secondary": "#243955",
+      "field": "#111b2a",
+      "hero-end": "#172943",
+      "art-orbit": "#263b59",
+      "art-back": "#3c557b",
+      "art-paper": "#23334c",
+      "art-line": "#405573",
+      "shadow": "0 8px 30px #00000008"
+    }
+  },
+  "typography": {
+    "bodyPx": 15,
+    "labelPx": 14,
+    "smallPx": 13,
+    "pageHeadingPx": 24,
+    "fontFamily": "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Microsoft YaHei, PingFang SC, Noto Sans SC, sans-serif"
+  },
+  "geometry": {
+    "touchMinPx": 44,
+    "controlRadiusPx": 14,
+    "cardRadiusPx": 20,
+    "dialogRadiusPx": 20,
+    "spacingPx": [
+      4,
+      8,
+      12,
+      16,
+      20,
+      24,
+      32
+    ]
+  },
+  "icons": {
+    "viewBox": "0 0 24 24",
+    "strokeWidth": 1.8,
+    "linecap": "round",
+    "linejoin": "round"
+  },
+  "rules": [
+    "shared components for student and admin",
+    "no extra microcopy by default",
+    "thumbnail corner delete; fine editing in a dialog",
+    "no photo color filtering",
+    "visible keyboard focus and reduced motion"
+  ]
+}

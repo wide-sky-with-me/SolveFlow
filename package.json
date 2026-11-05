@@ -11,7 +11,7 @@
     "lint": "node scripts/check-boundaries.mjs && pnpm docs:check",
     "typecheck": "pnpm build:workspace && tsc --noEmit && pnpm --filter @solveflow/mobile typecheck",
     "build": "pnpm build:workspace && pnpm --filter @solveflow/mobile build && node scripts/check-build.mjs",
-    "build:shared": "node scripts/prepare-mobile-agent.mjs && pnpm --filter \"@solveflow/client...\" --filter \"@solveflow/agent...\" -r build",
+    "build:shared": "node scripts/prepare-mobile-agent.mjs && pnpm --filter @solveflow/image-input --filter \"@solveflow/client...\" --filter \"@solveflow/agent...\" -r build",
     "build:server": "pnpm --filter \"@solveflow/api...\" -r build",
     "build:workspace": "node scripts/prepare-mobile-agent.mjs && pnpm --filter \"!@solveflow/mobile\" -r build",
     "build:mobile": "pnpm build:shared && pnpm --filter @solveflow/mobile build && node scripts/check-mobile-build.mjs",
@@ -60,7 +60,10 @@
     "build:photo-web": "pnpm build:shared && pnpm --filter @solveflow/photo-web build",
     "package:photo-web": "pnpm build:photo-web && node apps/photo-web/package-release.mjs",
     "start:photo-web": "node apps/photo-web/dist/server.mjs",
-    "test:photo-web": "node scripts/test-photo-web.mjs"
+    "test:photo-web": "node scripts/test-photo-web.mjs",
+    "build:exam-web": "pnpm build:shared && pnpm --filter @solveflow/db build && pnpm --filter @solveflow/exam-web build",
+    "start:exam-web": "node apps/exam-web/dist/server.mjs",
+    "test:exam-web": "pnpm build:exam-web && node scripts/test-managed-exams.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

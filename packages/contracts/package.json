@@ -7,6 +7,10 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "exports": {
+    "./exam-practice": {
+      "types": "./dist/exam-practice.d.ts",
+      "default": "./dist/exam-practice.js"
+    },
     "./figure": {
       "types": "./dist/figure.d.ts",
       "default": "./dist/figure.js"
@@ -34,6 +38,18 @@
     "./photo": {
       "types": "./dist/photo.d.ts",
       "default": "./dist/photo.js"
+    },
+    "./managed-exam": {
+      "types": "./dist/managed-exam.d.ts",
+      "default": "./dist/managed-exam.js"
+    },
+    "./exam": {
+      "types": "./dist/exam.d.ts",
+      "default": "./dist/exam.js"
+    },
+    "./exam-catalog": {
+      "types": "./dist/exam-catalog.d.ts",
+      "default": "./dist/exam-catalog.js"
     }
   },
   "dependencies": {

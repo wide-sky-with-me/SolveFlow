@@ -8,7 +8,7 @@ export async function migrate(pool: pg.Pool) {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock(5839201001)");
     await client.query("CREATE TABLE IF NOT EXISTS solveflow_migrations (version integer PRIMARY KEY, hash text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())");
-    for (const [version, file] of [[1, "0001_initial.sql"], [2, "0002_run_context.sql"]] as const) {
+    for (const [version, file] of [[1, "0001_initial.sql"], [2, "0002_run_context.sql"], [3, "0003_managed_exams.sql"], [4, "0004_exam_reviews.sql"], [5, "0005_exam_navigation.sql"], [6, "0006_exam_resolutions.sql"], [7, "0007_exam_timing.sql"]] as const) {
       const content = await readFile(new URL(`../migrations/${file}`, import.meta.url), "utf8");
       const hash = createHash("sha256").update(content).digest("hex");
       const result = await client.query<{ hash: string }>("SELECT hash FROM solveflow_migrations WHERE version=$1", [version]);

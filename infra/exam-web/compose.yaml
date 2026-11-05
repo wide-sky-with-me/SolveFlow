@@ -1,0 +1,106 @@
+name: solveflow-exams
+x-app: &app
+  image: solveflow/exam-web:${EXAM_RELEASE:?Set EXAM_RELEASE}
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs: ["/tmp:size=64m,mode=1777"]
+  secrets: [exam_config]
+  environment:
+    SOLVEFLOW_EXAM_CONFIG: /run/secrets/exam_config
+    SOLVEFLOW_EXAM_HOST: 0.0.0.0
+    NODE_OPTIONS: --max-old-space-size=768
+  depends_on:
+    postgres: {condition: service_healthy}
+    redis: {condition: service_healthy}
+  networks: [backend, egress]
+services:
+  postgres:
+    image: postgres:17.11-alpine3.23
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: solveflow
+      POSTGRES_DB: solveflow_exams
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a private PostgreSQL password}
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    networks: [backend]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U solveflow -d solveflow_exams']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 512m
+  redis:
+    image: redis:8.10.3-alpine3.23
+    restart: unless-stopped
+    command: [redis-server, --maxmemory, 128mb, --maxmemory-policy, allkeys-lru, --save, '', --appendonly, 'no']
+    networks: [backend]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 192m
+  migrate:
+    <<: *app
+    restart: 'no'
+    profiles: [tools]
+    environment:
+      SOLVEFLOW_EXAM_CONFIG: /run/secrets/exam_config
+      SOLVEFLOW_EXAM_ROLE: migrate
+  bootstrap:
+    <<: *app
+    restart: 'no'
+    profiles: [tools]
+    environment:
+      SOLVEFLOW_EXAM_CONFIG: /run/secrets/exam_config
+      SOLVEFLOW_EXAM_ROLE: bootstrap
+  api:
+    <<: *app
+    environment:
+      SOLVEFLOW_EXAM_CONFIG: /run/secrets/exam_config
+      SOLVEFLOW_EXAM_HOST: 0.0.0.0
+      SOLVEFLOW_EXAM_ROLE: api
+    mem_limit: 384m
+    healthcheck:
+      test: [CMD, node, -e, 'fetch("http://127.0.0.1:3190/health").then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))']
+      interval: 10s
+      timeout: 5s
+      retries: 6
+  worker:
+    <<: *app
+    environment:
+      SOLVEFLOW_EXAM_CONFIG: /run/secrets/exam_config
+      SOLVEFLOW_EXAM_ROLE: worker
+      NODE_OPTIONS: --max-old-space-size=768
+    mem_limit: 1200m
+  events:
+    <<: *app
+    environment:
+      SOLVEFLOW_EXAM_CONFIG: /run/secrets/exam_config
+      SOLVEFLOW_EXAM_ROLE: events
+    mem_limit: 256m
+  gateway:
+    image: caddy:2.11.7-alpine
+    restart: unless-stopped
+    environment:
+      EXAM_DOMAIN: ${EXAM_DOMAIN:?Set a staging domain}
+    ports: ["${EXAM_HTTP_PORT:-80}:80", "${EXAM_HTTPS_PORT:-443}:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [egress]
+    depends_on:
+      api: {condition: service_healthy}
+    mem_limit: 192m
+networks:
+  backend: {internal: true}
+  egress: {}
+volumes:
+  postgres_data: {}
+  caddy_data: {}
+  caddy_config: {}
+secrets:
+  exam_config:
+    file: ${EXAM_CONFIG_FILE:?Set an absolute private JSON path}

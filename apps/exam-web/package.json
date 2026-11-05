@@ -1,0 +1,38 @@
+{
+  "name": "@solveflow/exam-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/server.mjs"
+  },
+  "dependencies": {
+    "@solveflow/contracts": "workspace:*",
+    "@solveflow/db": "workspace:*",
+    "@solveflow/agent": "workspace:*",
+    "@solveflow/web-ui": "workspace:*",
+    "@hono/node-server": "2.1.3",
+    "hono": "4.13.11",
+    "@aws-sdk/client-s3": "3.1128.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "sharp": "0.35.5",
+    "zod": "4.6.6",
+    "ws": "8.21.3",
+    "redis": "6.3.1",
+    "@node-rs/argon2": "2.2.2",
+    "pg": "8.23.0",
+    "@solveflow/image-input": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@types/ws": "8.18.2",
+    "@types/pg": "8.23.1"
+  },
+  "files": [
+    "dist"
+  ]
+}

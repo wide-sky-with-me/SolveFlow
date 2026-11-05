@@ -8,6 +8,12 @@ test('RN camera captures actual virtual video pixels, releases tracks and crops 
   const stream = await page.locator('video').evaluateHandle(node => node instanceof HTMLVideoElement ? node.srcObject : null);
   expect(await stream.evaluate(value => value instanceof MediaStream && value.getVideoTracks()[0]?.readyState === 'live')).toBe(true);
   expect(await stream.evaluate(value => value instanceof MediaStream && value.getAudioTracks().length)).toBe(0);
+  const captureSize = await stream.evaluate(value => {
+    if (!(value instanceof MediaStream)) throw new Error('STREAM_REQUIRED');
+    const settings = value.getVideoTracks()[0]?.getSettings();
+    return Math.max(settings?.width ?? 0, settings?.height ?? 0);
+  });
+  expect(captureSize).toBeGreaterThanOrEqual(1920);
   await page.setViewportSize({ width: 844, height: 390 }); await expect.poll(async () => { const box = await shutter.boundingBox(); return box ? box.y + box.height : 10000; }).toBeLessThanOrEqual(390);
   await shutter.click(); await expect(page.getByText('确认与裁切题图', { exact: true })).toBeVisible();
   expect(await stream.evaluate(value => value instanceof MediaStream && value.getTracks().every(track => track.readyState === 'ended'))).toBe(true);

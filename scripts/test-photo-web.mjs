@@ -17,7 +17,8 @@ try {
     lines.once('line', line => { clearTimeout(timer); try { resolve(JSON.parse(line).url); } catch (e) { reject(e); } });
   });
   if (typeof url !== 'string' || !url.startsWith('http://127.0.0.1:')) throw new Error('INVALID_FIXTURE_URL');
-  await writeFile(resolve(output, 'server.json'), JSON.stringify({ url, pid: fixture.pid }));
+  // Playwright clears outputDir on startup, so service ownership belongs beside it.
+  await writeFile(output + '.server.json', JSON.stringify({ url, pid: fixture.pid }));
   tests = spawn('pnpm', ['exec', 'playwright', 'test', '--config', 'playwright.photo.config.ts', '--reporter', 'line'], { cwd: root, stdio: 'inherit', env: { ...process.env, SOLVEFLOW_PHOTO_TEST_URL: url, SOLVEFLOW_PHOTO_TEST_OUTPUT: output } });
   const timer = setTimeout(() => tests?.kill('SIGTERM'), 10 * 60000);
   process.exitCode = await new Promise(resolve => { tests.once('error', () => resolve(1)); tests.once('exit', code => resolve(code ?? 1)); });

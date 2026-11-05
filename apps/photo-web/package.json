@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
     "typecheck": "tsc --noEmit",
@@ -20,7 +22,9 @@
     "remark-math": "6.0.0",
     "katex": "0.18.7",
     "sharp": "0.35.5",
-    "zod": "4.6.6"
+    "zod": "4.6.6",
+    "@solveflow/web-ui": "workspace:*",
+    "@solveflow/image-input": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "19.2.14",

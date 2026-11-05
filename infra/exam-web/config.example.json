@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "origin": "https://exams.example.com",
+  "trustedProxyCidrs": ["172.16.0.0/12"],
+  "databaseUrl": "postgresql://solveflow:REPLACE_PRIVATE_PASSWORD@postgres:5432/solveflow_exams",
+  "redisUrl": "redis://redis:6379",
+  "storage": {
+    "type": "s3",
+    "endpoint": "https://cos.ap-shanghai.myqcloud.com",
+    "region": "ap-shanghai",
+    "bucket": "REPLACE_PRIVATE_BUCKET",
+    "accessKeyId": "REPLACE_PRIVATE_ACCESS_KEY",
+    "secretAccessKey": "REPLACE_PRIVATE_SECRET"
+  },
+  "liveCalls": false,
+  "solverConcurrency": 8,
+  "verifierConcurrency": 8,
+  "dailyCallsPerStudent": 1000,
+  "bootstrap": {
+    "username": "exam_admin",
+    "displayName": "管理员",
+    "password": "REPLACE_WITH_PRIVATE_RANDOM_PASSWORD"
+  }
+}

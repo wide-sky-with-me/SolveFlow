@@ -1,0 +1,23 @@
+{
+  auto_https off
+}
+http://{$EXAM_DOMAIN} {
+  request_body {
+    max_size 11MB
+  }
+  handle /.well-known/acme-challenge/* {
+    root * /var/www/acme
+    file_server
+  }
+  handle {
+    reverse_proxy http-trial-api:3190
+  }
+}
+https://{$EXAM_DOMAIN} {
+  tls /run/public-tls/fullchain.pem /run/public-tls/privkey.pem
+  encode zstd gzip
+  request_body {
+    max_size 11MB
+  }
+  reverse_proxy api:3190
+}

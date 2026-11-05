@@ -19,3 +19,6 @@ credentials.json
 *.keystore
 *.p12
 *.mobileprovision
+
+# Versioned HEIC codec and licence assets are generated from the pinned dependency.
+apps/mobile/public/heic-*

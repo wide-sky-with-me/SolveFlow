@@ -1,3 +1,4 @@
+import { PhotoJobs, PhotoJobError } from './jobs.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
@@ -9,7 +10,7 @@ import { PublicAgentEventSchema, SolveOutcomeSchema, type PublicAgentEvent, type
 import { PhotoAuth, LoginThrottle } from './auth.js';
 import { PhotoLedger } from './ledger.js';
 type Solve = (request: PhotoSolveRequest, accountId: string, signal: AbortSignal, onEvent: (event: PublicAgentEvent) => void) => Promise<SolveOutcome>;
-export interface PhotoServiceOptions { origin: string; auth: PhotoAuth; ledger: PhotoLedger; publicDir: string; solve: Solve; maxConcurrent?: number }
+export interface PhotoServiceOptions { origin: string; auth: PhotoAuth; ledger: PhotoLedger; publicDir: string; solve: Solve; maxConcurrent?: number; jobDir?: string }
 function json(res: ServerResponse, status: number, value: unknown) { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(value)); }
 async function body(req: IncomingMessage, limit: number) {
   if (!req.headers['content-type']?.startsWith('application/json')) throw new Error('仅接受JSON请求。');
@@ -21,11 +22,12 @@ async function body(req: IncomingMessage, limit: number) {
   } finally { clearTimeout(timer); }
 }
 export function createPhotoHandler(options: PhotoServiceOptions) {
+  const jobs = options.jobDir ? new PhotoJobs(options.jobDir, options.ledger, options.solve, options.maxConcurrent) : null;
   const throttle = new LoginThrottle(); const active = new Map<string, { account: string; nonce: string; controller: AbortController }>();
   const revoked = new Map<string, number>(); let loginCount = 0; let loginWindow = Date.now();
-  return async (req: IncomingMessage, res: ServerResponse) => {
+  const handle = async (req: IncomingMessage, res: ServerResponse) => {
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
     if (options.origin.startsWith('https:')) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
     try {
@@ -35,8 +37,8 @@ export function createPhotoHandler(options: PhotoServiceOptions) {
     if (session && revoked.has(session.nonce)) session = null;
       if (url.pathname === '/api/session' && req.method === 'GET') { json(res, session ? 200 : 401, session ? { schemaVersion: 1, accountId: session.id } : { message: '请先输入访问密钥。' }); return; }
       if (url.pathname.startsWith('/api/')) {
-        if (req.method !== 'POST') { json(res, 405, { message: '请求方式不支持。' }); return; }
-        if (req.headers.origin !== options.origin || (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin')) { json(res, 403, { message: '仅允许同源请求。' }); return; }
+        if (req.method !== 'POST' && !(req.method === 'GET' && /^\/api\/jobs\/[a-f0-9-]{36}$/.test(url.pathname))) { json(res, 405, { message: '请求方式不支持。' }); return; }
+        if ((req.method !== 'GET' ? req.headers.origin !== options.origin : req.headers.origin && req.headers.origin !== options.origin) || (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin')) { json(res, 403, { message: '仅允许同源请求。' }); return; }
       }
       if (url.pathname === '/api/login') {
         if (Date.now() - loginWindow > 60000) { loginCount = 0; loginWindow = Date.now(); }
@@ -52,10 +54,31 @@ export function createPhotoHandler(options: PhotoServiceOptions) {
         if (revoked.size >= 2048) { json(res, 503, { message: '暂时无法退出，请稍后重试。' }); return; }
         revoked.set(session.nonce, session.expires);
         for (const job of active.values()) if (job.nonce === session.nonce) job.controller.abort();
+        await jobs?.cancelSession(session.nonce);
         res.setHeader('Set-Cookie', options.auth.clearCookie()); json(res, 200, { ok: true }); return;
       }
+      if (url.pathname === '/api/jobs' && session && req.method === 'POST') {
+        if (!jobs) { json(res, 503, { message: '后台答题暂不可用。' }); return; }
+        if (active.size + jobs.activeCount >= (options.maxConcurrent ?? 4) || [...active.values()].filter(job => job.account === session.id).length + jobs.accountCount(session.id) >= 2) { json(res, 429, { message: '当前答题较多，请稍后再试。' }); return; }
+        const reservation = randomUUID(); active.set(reservation, { account: session.id, nonce: session.nonce, controller: new AbortController() });
+        try {
+          const request = PhotoSolveRequestSchema.parse(await body(req, PHOTO_BODY_BYTES));
+          const raw = Buffer.from(request.image.split(',')[1] ?? '', 'base64');
+          if (raw.length > 4 * 1024 * 1024 || raw[0] !== 255 || raw[1] !== 216 || raw[2] !== 255) throw new Error('INVALID_IMAGE');
+          const image = await sharp(raw, { limitInputPixels: 16777216, failOn: 'warning' }).rotate().resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 92 }).toBuffer();
+          const snapshot = await jobs.start(session.id, session.nonce, { ...request, image: 'data:image/jpeg;base64,' + image.toString('base64') }, () => !revoked.has(session.nonce));
+          json(res, 202, snapshot);
+        } finally { active.delete(reservation); }
+        return;
+      }
+      const jobRoute = /^\/api\/jobs\/([a-f0-9-]{36})(\/cancel)?$/.exec(url.pathname);
+      if (jobRoute && session && jobs) {
+        if (jobRoute[2] ? req.method !== 'POST' : req.method !== 'GET') { json(res, 405, { message: '请求方式不支持。' }); return; }
+        const result = jobRoute[2] ? await jobs.cancel(session.id, jobRoute[1]!) : await jobs.status(session.id, jobRoute[1]!);
+        json(res, result ? 200 : 404, result ?? { message: '未找到这次答题。' }); return;
+      }
       if (url.pathname === '/api/solve' && session) {
-        if (active.size >= (options.maxConcurrent ?? 4) || [...active.values()].filter(j => j.account === session.id).length >= 2) { json(res, 429, { message: '当前答题较多，请稍后再试。' }); return; }
+        if (active.size + (jobs?.activeCount ?? 0) >= (options.maxConcurrent ?? 4) || [...active.values()].filter(j => j.account === session.id).length + (jobs?.accountCount(session.id) ?? 0) >= 2) { json(res, 429, { message: '当前答题较多，请稍后再试。' }); return; }
         const jobId = randomUUID(); const controller = new AbortController();
         active.set(jobId, { account: session.id, nonce: session.nonce, controller });
         const cancel = () => { if (!res.writableEnded) controller.abort(); }; res.once('close', cancel); req.once('aborted', cancel);
@@ -89,7 +112,7 @@ export function createPhotoHandler(options: PhotoServiceOptions) {
       const path = decodeURIComponent(url.pathname);
       if (path.includes('\\') || path.includes('\0') || path.split('/').some(p => p.startsWith('.'))) throw new Error('无效路径。');
       const root = await realpath(options.publicDir); const target = await realpath(resolve(root, '.' + (path === '/' ? '/index.html' : path)));
-      const mime: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf' };
+      const mime: Record<string, string> = { '.txt': 'text/plain; charset=utf-8', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf' };
       if (!target.startsWith(root + sep) || !mime[extname(target)] || !(await stat(target)).isFile()) { res.writeHead(404); res.end(); return; }
       res.setHeader('Content-Type', mime[extname(target)]!);
       res.setHeader('Vary', 'Accept-Encoding');
@@ -98,13 +121,16 @@ export function createPhotoHandler(options: PhotoServiceOptions) {
       if (encoding && ['.js', '.css', '.html', '.svg'].includes(extname(target))) {
         try { await stat(target + '.' + encoding); selected += '.' + encoding; res.setHeader('Content-Encoding', encoding === 'gz' ? 'gzip' : 'br'); } catch { /* Uncompressed source remains valid. */ }
       }
-      if (path !== '/' && !path.endsWith('.html')) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      if (/^\/heic-worker-[a-z0-9-]+\.js$/.test(path)) res.setHeader('Cache-Control', 'no-cache');
+      else if (path !== '/' && !path.endsWith('.html')) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       if (req.method === 'HEAD') res.end(); else { const stream = createReadStream(selected); stream.on('error', () => res.destroy()); res.on('close', () => stream.destroy()); stream.pipe(res); }
     } catch (error) {
+      if (error instanceof PhotoJobError) { json(res, error.status, { message: error.message }); return; }
       if (res.headersSent) { if (!res.destroyed) res.destroy(); return; }
       const message = error instanceof Error && ['本次请求已提交，请查看历史记录。', '今日使用次数已达上限。', '额度记录暂不可用，请稍后重试。'].includes(error.message) ? error.message : '请求未完成，请检查图片或稍后重试。';
       json(res, 400, { message });
     }
   };
+  return Object.assign(handle, { close: async () => { for (const job of active.values()) job.controller.abort(); await jobs?.close(); } });
 }
 export function createPhotoTestServer(options: PhotoServiceOptions) { return createServer(createPhotoHandler(options)); }

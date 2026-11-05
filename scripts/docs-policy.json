@@ -4,7 +4,9 @@
     "AGENTS.md",
     "README.md",
     "apps/mobile/README.md",
-    ".github/pull_request_template.md"
+    ".github/pull_request_template.md",
+    "apps/exam-web/README.md",
+    "packages/web-ui/README.md"
   ],
   "scanRoots": [
     "apps",

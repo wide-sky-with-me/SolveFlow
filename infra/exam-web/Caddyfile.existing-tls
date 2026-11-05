@@ -1,0 +1,21 @@
+# Decision: .agents/notes/implemented/architecture/2026-11-04-managed-exam-single-host-deployment.md
+{
+  auto_https off
+}
+http://{$EXAM_DOMAIN} {
+  handle /.well-known/acme-challenge/* {
+    root * /var/www/acme
+    file_server
+  }
+  handle {
+    redir https://{$EXAM_DOMAIN}{uri} permanent
+  }
+}
+https://{$EXAM_DOMAIN} {
+  tls /run/public-tls/fullchain.pem /run/public-tls/privkey.pem
+  encode zstd gzip
+  request_body {
+    max_size 11MB
+  }
+  reverse_proxy api:3190
+}

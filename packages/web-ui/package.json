@@ -1,0 +1,24 @@
+{
+  "name": "@solveflow/web-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./theme.css": "./src/theme.css",
+    "./icons": "./src/icons.tsx",
+    "./rich-text": "./src/rich-text.tsx",
+    "./select": "./src/select.tsx",
+    "./dialog": "./src/dialog.tsx",
+    "./feedback": "./src/feedback.tsx"
+  },
+  "dependencies": {
+    "react": "19.2.3",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
+    "remark-math": "6.0.0",
+    "katex": "0.18.7"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14"
+  }
+}

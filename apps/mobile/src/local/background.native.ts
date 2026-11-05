@@ -1,3 +1,4 @@
+import { MAX_LOCAL_MODEL_RUNS } from '@solveflow/contracts/local';
 import { BackgroundLifetime } from './background-lifetime';
 import { AppRegistry, NativeEventEmitter, NativeModules, PermissionsAndroid, Platform } from 'react-native';
 import { z } from 'zod';
@@ -12,6 +13,8 @@ const moduleSchema = z.object({ armTimer: z.custom<(id: number, ms: number) => v
 function native() { return moduleSchema.parse(NativeModules.SolveBackground); }
 let notificationPermission: Promise<unknown> | null = null;
 export const background = {
+  get keepAliveWhileWaiting() { return background.canContinue; },
+  get canContinue() { return Platform.OS === 'ios' && moduleSchema.safeParse(NativeModules.SolveBackground).success; },
   scheduleTimeout(callback: () => void, ms: number) {
     if (Platform.OS !== 'android') { const id = setTimeout(callback, ms); return () => clearTimeout(id); }
     const id = ++nextTimer; const module = native();
@@ -20,15 +23,15 @@ export const background = {
     return () => { listener.remove(); module.cancelTimer(id); };
   },
   async start(id: string) {
-    if (Platform.OS !== 'android') return;
+    if (Platform.OS !== 'android') { if (background.canContinue) await native().start(id); return; }
     if (Number(Platform.Version) >= 33) { notificationPermission ??= PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS).then(async granted => { if (!granted) await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS); }); await notificationPermission; }
     lifetime.begin(id);
     try { await native().start(id); } catch (error) { lifetime.end(id); throw error; }
   },
-  async stop(id: string) { if (Platform.OS === 'android') { try { await native().stop(id); } finally { lifetime.end(id); } } },
+  async stop(id: string) { if (background.canContinue) { await native().stop(id); return; } if (Platform.OS === 'android') { try { await native().stop(id); } finally { lifetime.end(id); } } },
   diagnostic(entry: LocalDiagnostic) { if (Platform.OS === 'android') native().diagnostic(JSON.stringify(LocalDiagnosticSchema.parse(entry))); },
 };
-export function onBackgroundExpired(callback: (runId: string) => void) {
-  if (Platform.OS !== 'android') return;
-  new NativeEventEmitter(native()).addListener('solveBackgroundExpired', (value: unknown) => { const parsed = z.object({ runId: z.uuid() }).safeParse(value); if (parsed.success) callback(parsed.data.runId); });
+export function onBackgroundExpired(callback: (runIds: readonly string[]) => void) {
+  if (Platform.OS !== 'android' && !background.canContinue) return;
+  new NativeEventEmitter(native()).addListener('solveBackgroundExpired', (value: unknown) => { const parsed = z.union([z.object({ runId: z.uuid() }), z.object({ runIds: z.array(z.uuid()).min(1).max(MAX_LOCAL_MODEL_RUNS) })]).safeParse(value); if (parsed.success) callback('runId' in parsed.data ? [parsed.data.runId] : parsed.data.runIds); });
 }
