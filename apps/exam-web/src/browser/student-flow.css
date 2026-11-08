@@ -1,0 +1,248 @@
+.student-question .current-answer {
+  border-top: 1px solid var(--line);
+  margin-top: 20px;
+  padding-top: 20px;
+  overflow-wrap: anywhere;
+}
+
+.current-answer>.section-head {
+  margin-bottom: 12px;
+}
+
+.current-answer h3 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.current-answer .answer-question-details {
+  margin-top: 14px;
+}
+
+.current-answer .answer-question-details>summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.answer-question-details>summary .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.answer-question-details:not([open])>summary .icon {
+  transform: rotate(-90deg);
+}
+
+.current-answer .question-content {
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.current-answer .question-versions {
+  margin-top: 12px;
+}
+
+.inline-read-error .quiet {
+  margin-top: 6px;
+}
+
+.question-paging {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  justify-content: space-between;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.question-paging>button {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+.question-paging>button:first-child,.question-paging>button:last-child {
+  flex: 1;
+}
+
+.question-paging .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.question-paging .previous-chevron {
+  transform: rotate(180deg);
+}
+
+.question-paging .stop-answer {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.section-answers {
+  padding: 0;
+}
+
+.section-answer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill,minmax(64px,1fr));
+  gap: 8px;
+}
+
+.section-answer-grid>button {
+  position: relative;
+  min-height: 58px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  justify-content: center;
+  align-items: center;
+  padding: 8px;
+  overflow: hidden;
+  background: var(--field);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.section-answer-number {
+  font-size: 13px;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.section-answer-value {
+  display: block;
+  width: 100%;
+  font-size: 14px;
+  line-height: 1.3;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.section-answer-grid>button {
+  min-height: 76px;
+}
+
+.capture-box .inline-actions {
+  justify-content: center;
+  margin-top: 8px;
+  gap: 12px;
+}
+
+.capture-box .inline-actions>button {
+  min-height: 44px;
+}
+
+.capture-box .camera-entry {
+  margin-top: 4px;
+}
+
+.capture-box.with-answer {
+  padding: 14px;
+}
+
+.capture-box.with-answer>.section-head {
+  margin-bottom: 8px;
+}
+
+.capture-box.with-answer .thumbnails {
+  margin: 8px 0;
+}
+
+.capture-box.with-answer .thumbnail {
+  width: 96px;
+  height: 64px;
+}
+
+.capture-box.with-answer .camera-entry {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  flex-direction: row;
+  justify-content: center;
+  padding: 10px 14px;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.capture-box.with-answer .camera-entry .icon {
+  width: 20px;
+  height: 20px;
+}
+
+.student-question .question-jump {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+}
+
+.question-jump .icon {
+  width: 17px;
+  height: 17px;
+}
+
+.student-overview .module-steps {
+  margin-top: 0;
+}
+
+.student-overview .section-answers {
+  margin-top: 18px;
+}
+
+@media(max-width:640px) {
+  .student-question .current-answer {
+    padding-top: 16px;
+    margin-top: 16px;
+  }
+  .section-answer-grid {
+    grid-template-columns: repeat(auto-fill,minmax(72px,1fr));
+    gap: 6px;
+  }
+  .question-paging {
+    gap: 4px;
+  }
+  .question-paging>button {
+    padding: 10px 6px;
+    font-size: 13px;
+  }
+  .capture-box {
+    padding: 14px;
+  }
+}
+
+.question-paging>button {
+  min-width: 0;
+}
+
+.question-paging .icon {
+  flex-shrink: 0;
+}
+
+.next-module-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.section-answer-value>* {
+  display: inline;
+  margin: 0;
+}
+
+.section-answer-value .math.display,.section-answer-value .katex-display {
+  display: inline;
+  margin: 0;
+}
+
+.section-answer-value .katex {
+  font-size: 1.15em;
+}

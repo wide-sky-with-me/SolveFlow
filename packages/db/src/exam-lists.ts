@@ -1,3 +1,4 @@
+// Decision: .agents/notes/implemented/architecture/2026-11-07-archived-exam-visibility.md
 // Decision: .agents/notes/implemented/architecture/2026-11-04-managed-list-pagination.md
 import type pg from 'pg';
 import { z } from 'zod';
@@ -9,7 +10,8 @@ import {
 } from '@solveflow/contracts/managed-exam';
 import { forbidden, isAdmin, one, requireManager, rows, tx, userJson } from './exam-store.js';
 import { templateJson } from './exam-catalog.js';
-import { missedAssignment, availableAssignment, assignmentFrom, assignmentJson, progressJson, userScope } from './exam-list-sql.js';
+import { teacherMessages } from './exam-messages.js';
+import { missedAssignment, availableAssignment, inProgressAssignment, readyAssignment, endedAssignment, assignmentFrom, assignmentJson, progressJson, userScope } from './exam-list-sql.js';
 
 type PageQuery = { from: string; select: string; where: string; values: unknown[]; order: string; id: string; search: string[] };
 const numeric = z.coerce.number().int().nonnegative();
@@ -61,7 +63,7 @@ export async function templatePage(pool: pg.Pool, actor: ExamUser, raw: unknown)
 export async function sittingPage(pool: pg.Pool, actor: ExamUser, raw: unknown) {
     requireManager(actor);const input=ExamSittingPageQuerySchema.parse(raw);
     const select=`jsonb_build_object('id',s.id,'templateId',s.template_id,'title',s.title,'opensAt',s.opens_at,'closesAt',s.closes_at,'state',s.state,'templateTitle',t.title,'assignmentCount',(SELECT count(*) FROM exam_app.exam_assignments a WHERE a.sitting_id=s.id AND a.state<>'revoked'))`;
-    const query: PageQuery={from:'exam_app.exam_sittings s JOIN exam_app.exam_templates t ON t.id=s.template_id',select,where:'($1::boolean OR s.manager_id=$2)',values:[isAdmin(actor),actor.id],order:'s.opens_at DESC,s.id DESC',id:'s.id',search:['s.title','t.title']};
+    const query: PageQuery={from:'exam_app.exam_sittings s JOIN exam_app.exam_templates t ON t.id=s.template_id',select,where:'s.archived_at IS NULL AND ($1::boolean OR s.manager_id=$2)',values:[isAdmin(actor),actor.id],order:'s.opens_at DESC,s.id DESC',id:'s.id',search:['s.title','t.title']};
     if(input.state)add(query,p=>`s.state=${p}`,input.state);
     if(input.exam)add(query,p=>`t.exam_type=${p}`,input.exam);
     return readPage(pool,ExamSittingPageSchema,input,query);
@@ -71,28 +73,31 @@ export async function assignmentPage(pool: pg.Pool, actor: ExamUser, raw: unknow
     if(!own)staff(actor);
     const input=ExamAssignmentPageQuerySchema.parse(raw);
     const query: PageQuery={from:assignmentFrom,select:assignmentJson,where:own?'a.student_id=$2 AND $1::boolean IS NOT NULL AND $3::boolean IS NOT NULL AND $4::boolean IS NOT NULL':'('+staffScope+')',values:scopeValues(actor),order:'a.opens_at DESC,a.id DESC',id:'a.id',search:['u.display_name','u.username','s.title']};
+    if(own)query.order=`CASE WHEN ${inProgressAssignment} THEN 0 WHEN ${readyAssignment} THEN 1 WHEN ${endedAssignment} THEN 2 ELSE 3 END,`+query.order;
+    query.where+=own?` AND (s.archived_at IS NULL OR EXISTS(SELECT 1 FROM exam_app.exam_attempts history WHERE history.assignment_id=a.id AND history.started_at IS NOT NULL))`:` AND s.archived_at IS NULL`;
     const base={where:query.where,values:[...query.values]};
     if(input.sittingId)add(query,p=>`a.sitting_id=${p}`,input.sittingId);
     if(input.studentId)add(query,p=>`a.student_id=${p}`,input.studentId);
     if(input.state==='available')query.where+=' AND ('+available+')';
     if(input.state==='upcoming')query.where+=` AND a.state='assigned' AND a.opens_at>now()`;
     if(input.state==='expired')query.where+=' AND ('+missedAssignment+')';
-    if(input.state==='ended')query.where+=` AND a.state<>'revoked' AND EXISTS(SELECT 1 FROM exam_app.exam_attempts ended_attempt WHERE ended_attempt.assignment_id=a.id AND ended_attempt.started_at IS NOT NULL AND (ended_attempt.ended_at IS NOT NULL OR a.closes_at<=now()))`;
+    if(input.state==='ended')query.where+=' AND ('+endedAssignment+')';
     if(input.state==='revoked')query.where+=` AND a.state='revoked'`;
     if(input.state==='attention')query.where+=' AND '+pending;
+    if(input.phase)query.where+=' AND ('+({in_progress:inProgressAssignment,available:readyAssignment,ended:endedAssignment}[input.phase])+')';
     return readPage(pool,ExamAssignmentPageSchema,input,query,async c=>{
         // Eligibility and global reminders do not depend on the currently displayed history page or search.
         const candidates=await rows(c,ExamAssignmentSchema,`SELECT ${assignmentJson} AS value FROM ${assignmentFrom} WHERE (${base.where}) AND (${available}) ORDER BY a.opens_at DESC,a.id DESC LIMIT 2`,base.values);
         const values=[...base.values,input.excludeAttemptId??null];
-        const attentionTotal=await one(c,numeric,`SELECT count(*)::integer AS value FROM ${assignmentFrom} WHERE (${base.where}) AND ${pending} AND ($5::uuid IS NULL OR NOT EXISTS(SELECT 1 FROM exam_app.exam_attempts xa WHERE xa.assignment_id=a.id AND xa.id=$5))`,values);
+        const attentionTotal=await one(c,numeric,`SELECT count(*)::integer AS value FROM ${assignmentFrom} WHERE (${base.where}) AND s.archived_at IS NULL AND ${pending} AND ($5::uuid IS NULL OR NOT EXISTS(SELECT 1 FROM exam_app.exam_attempts xa WHERE xa.assignment_id=a.id AND xa.id=$5))`,values);
         const missedTotal=await one(c,numeric,`SELECT count(*)::integer AS value FROM ${assignmentFrom} WHERE (${base.where}) AND (${missedAssignment})`,base.values);
-        return {available:candidates,attentionTotal,missedTotal};
+        return {available:candidates,attentionTotal,missedTotal,...own&&input.messages==='1' ? {messages:(await teacherMessages(c,actor)).items} : {}};
     });
 }
 
 export async function progressPage(pool: pg.Pool, actor: ExamUser, raw: unknown) {
     staff(actor);const input=ExamProgressPageQuerySchema.parse(raw);
-    const query: PageQuery={from:assignmentFrom+' '+latestAttempt,select:progressJson,where:'('+staffScope+`) AND a.state<>'revoked'`,values:scopeValues(actor),order:'a.opens_at DESC,a.id DESC',id:'a.id',search:['u.display_name','u.username','s.title']};
+    const query: PageQuery={from:assignmentFrom+' '+latestAttempt,select:progressJson,where:'('+staffScope+`) AND a.state<>'revoked' AND s.archived_at IS NULL`,values:scopeValues(actor),order:'a.opens_at DESC,a.id DESC',id:'a.id',search:['u.display_name','u.username','s.title']};
     if(input.sittingId)add(query,p=>`a.sitting_id=${p}`,input.sittingId);
     if(input.status==='online')query.where+=' AND '+online;
     if(input.status==='attention')query.where+=' AND '+pending;
@@ -107,7 +112,7 @@ export async function progressPage(pool: pg.Pool, actor: ExamUser, raw: unknown)
 export async function studentChoicePage(pool: pg.Pool, actor: ExamUser, raw: unknown) {
     staff(actor);const input=ExamPageQuerySchema.parse(raw);
     const from=`exam_app.users u`;
-    const where=`EXISTS(SELECT 1 FROM exam_app.exam_assignments a JOIN exam_app.exam_sittings s ON s.id=a.sitting_id WHERE a.student_id=u.id AND a.state<>'revoked' AND (${staffScope}))`;
+    const where=`EXISTS(SELECT 1 FROM exam_app.exam_assignments a JOIN exam_app.exam_sittings s ON s.id=a.sitting_id WHERE a.student_id=u.id AND a.state<>'revoked' AND s.archived_at IS NULL AND (${staffScope}))`;
     const query: PageQuery={from,where,select:`jsonb_build_object('id',u.id,'label',u.display_name || ' · ' || u.username)`,values:scopeValues(actor),order:'u.display_name,u.id',id:'u.id',search:['u.display_name','u.username']};
     return readPage(pool,ExamChoicePageSchema,input,query);
 }
@@ -115,7 +120,7 @@ export async function studentChoicePage(pool: pg.Pool, actor: ExamUser, raw: unk
 export async function dashboardSittingPage(pool: pg.Pool, actor: ExamUser, raw: unknown) {
     staff(actor);const input=ExamPageQuerySchema.parse(raw);
     // Students who also have a staff role cannot broaden that staff role's scope through self ownership.
-    const where=`EXISTS(SELECT 1 FROM exam_app.exam_assignments a WHERE a.sitting_id=s.id AND a.state<>'revoked' AND ($1::boolean OR ($3::boolean AND s.manager_id=$2) OR ($4::boolean AND EXISTS(SELECT 1 FROM exam_app.staff_assignments f WHERE f.assignment_id=a.id AND f.staff_id=$2 AND f.revoked_at IS NULL))))`;
+    const where=`s.archived_at IS NULL AND EXISTS(SELECT 1 FROM exam_app.exam_assignments a WHERE a.sitting_id=s.id AND a.state<>'revoked' AND ($1::boolean OR ($3::boolean AND s.manager_id=$2) OR ($4::boolean AND EXISTS(SELECT 1 FROM exam_app.staff_assignments f WHERE f.assignment_id=a.id AND f.staff_id=$2 AND f.revoked_at IS NULL))))`;
     const query: PageQuery={from:'exam_app.exam_sittings s',where,select:`jsonb_build_object('id',s.id,'label',s.title)`,values:scopeValues(actor),order:'s.opens_at DESC,s.id DESC',id:'s.id',search:['s.title']};
     return readPage(pool,ExamChoicePageSchema,input,query);
 }

@@ -1,9 +1,9 @@
 // Decision: .agents/notes/implemented/architecture/2026-11-04-sitting-allocations.md
 import type pg from 'pg';
 import { z } from 'zod';
-import { ExamAllocationAddSchema, ExamAllocationPageSchema, ExamAllocationStaffSchema, ExamAllocationStateSchema, ExamPageQuerySchema, ExamSittingPublishSchema, ExamSittingSchema, type ExamUser } from '@solveflow/contracts/managed-exam';
+import { ExamAllocationAddSchema, ExamAllocationEditSchema, ExamAllocationPageSchema, ExamAllocationPageQuerySchema, ExamAllocationStaffSchema, ExamAllocationStateSchema, ExamSittingPublishSchema, ExamSittingSchema, ExamTemplateSchema, type ExamUser } from '@solveflow/contracts/managed-exam';
 import { audit, conflict, event, hash, isAdmin, lockActor, one, requireManager, rows, tx, userById, userJson, type Queryable } from './exam-store.js';
-import { insertAssignment, insertSitting } from './exam-catalog.js';
+import { insertAssignment, insertSitting, templateJson } from './exam-catalog.js';
 const idResult = z.strictObject({id:z.uuid()});
 
 async function sittingScope(c: Queryable, actor: ExamUser, id: string, write=false) {
@@ -43,14 +43,14 @@ export async function addSittingStudents(pool: pg.Pool, actor: ExamUser, sitting
     },c=>sittingScope(c,actor,sittingId));
 }
 export async function allocationPage(pool: pg.Pool, actor: ExamUser, sittingId: string, raw: unknown) {
-    const input=ExamPageQuerySchema.parse(raw);
+    const input=ExamAllocationPageQuerySchema.parse(raw);
     return tx(pool,async c=>{
         const sitting=await sittingScope(c,actor,sittingId);
         const search='%'+input.q.replace(/[\\%_]/g,'\\$&')+'%';
         const where=`a.sitting_id=$1 AND (u.display_name ILIKE $2 ESCAPE E'\\\\' OR u.username ILIKE $2 ESCAPE E'\\\\')`;
         const total=await one(c,z.number().int(),`SELECT count(*)::integer AS value FROM exam_app.exam_assignments a JOIN exam_app.users u ON u.id=a.student_id WHERE ${where}`,[sittingId,search]);
         const page=Math.min(input.page,Math.max(1,Math.ceil(total/input.pageSize)));
-        const items=await rows(c,z.unknown(),`SELECT jsonb_build_object('id',a.id,'student',${userJson},'support',coalesce((SELECT jsonb_agg(value ORDER BY value->>'displayName',value->>'id') FROM (SELECT ${userJson} AS value FROM exam_app.staff_assignments f JOIN exam_app.users u ON u.id=f.staff_id WHERE f.assignment_id=a.id AND f.revoked_at IS NULL) staff),'[]'::jsonb),'state',a.state,'started',EXISTS(SELECT 1 FROM exam_app.exam_attempts x WHERE x.assignment_id=a.id),'version',a.version) AS value FROM exam_app.exam_assignments a JOIN exam_app.users u ON u.id=a.student_id WHERE ${where} ORDER BY a.created_at,a.id LIMIT $3 OFFSET $4`,[sittingId,search,input.pageSize,(page-1)*input.pageSize]);
+        const items=await rows(c,z.unknown(),`SELECT jsonb_build_object('id',a.id,'student',${userJson},'support',coalesce((SELECT jsonb_agg(value ORDER BY value->>'displayName',value->>'id') FROM (SELECT ${userJson} AS value FROM exam_app.staff_assignments f JOIN exam_app.users u ON u.id=f.staff_id WHERE f.assignment_id=a.id AND f.revoked_at IS NULL) staff),'[]'::jsonb),'state',a.state,'started',EXISTS(SELECT 1 FROM exam_app.exam_attempts x WHERE x.assignment_id=a.id),'version',a.version) || CASE WHEN $5::boolean THEN jsonb_build_object('mode',a.settings_snapshot->>'mode','wrongCounts',a.settings_snapshot->'wrongCounts') ELSE '{}'::jsonb END AS value FROM exam_app.exam_assignments a JOIN exam_app.users u ON u.id=a.student_id WHERE ${where} ORDER BY a.created_at,a.id LIMIT $3 OFFSET $4`,[sittingId,search,input.pageSize,(page-1)*input.pageSize,input.config==='1']);
         return ExamAllocationPageSchema.parse({sitting,items,total,page,pageSize:input.pageSize,selected:null});
     },true);
 }
@@ -72,6 +72,22 @@ async function replaceSupport(c: pg.PoolClient, actor: ExamUser, assignmentId: s
     }
     await c.query('UPDATE exam_app.staff_assignments SET revoked_at=now() WHERE assignment_id=$1 AND revoked_at IS NULL AND NOT (staff_id=ANY($2::uuid[]))',[assignmentId,supportIds]);
     for(const id of supportIds)await c.query(`INSERT INTO exam_app.staff_assignments(assignment_id,staff_id,granted_by) VALUES($1,$2,$3) ON CONFLICT(assignment_id,staff_id) DO UPDATE SET revoked_at=NULL,granted_by=EXCLUDED.granted_by`,[assignmentId,id,actor.id]);
+}
+export async function updateAllocation(pool:pg.Pool,actor:ExamUser,sittingId:string,assignmentId:string,raw:unknown){
+    const input=ExamAllocationEditSchema.parse(raw);
+    return mutation(pool,actor,'assignment.edit',input.requestId,{sittingId,assignmentId,...input},async c=>{
+        const item=await lockAllocation(c,actor,sittingId,assignmentId,input.expectedVersion);if(item.state==='revoked')throw conflict('请先恢复这位学生的分配。');
+        if(input.settings){
+            if(item.attemptId)throw conflict('学生已开始，不能修改本次考试的错题配置。');
+            const template=await one(c,ExamTemplateSchema,`SELECT ${templateJson} AS value FROM exam_app.exam_templates t JOIN exam_app.exam_sittings s ON s.template_id=t.id WHERE s.id=$1`,[sittingId]);
+            const settings=input.settings;
+            if(settings.mode==='original'&&settings.wrongCounts.some(Boolean)||settings.mode==='practice_simulation'&&(settings.wrongCounts.length!==template.modules.length||settings.wrongCounts.some((n,i)=>n>(template.modules[i]?.questionCount??0))))throw conflict('错题数量须与模块对应，并且不超过题数。');
+            await c.query('UPDATE exam_app.exam_assignments SET settings_snapshot=$2 WHERE id=$1',[assignmentId,JSON.stringify(settings)]);
+            await c.query(`UPDATE exam_app.delivery_policies SET state='retired' WHERE assignment_id=$1 AND state='approved'`,[assignmentId]);
+            await c.query(`INSERT INTO exam_app.delivery_policies(id,assignment_id,version,mode,targets,constraints,state,created_by,approved_by) SELECT gen_random_uuid(),$1,coalesce(max(version),0)+1,$2,$3,'{}','approved',$4,$4 FROM exam_app.delivery_policies WHERE assignment_id=$1`,[assignmentId,settings.mode,JSON.stringify({wrongCounts:settings.wrongCounts}),actor.id]);
+        }
+        await replaceSupport(c,actor,assignmentId,input.supportIds);await c.query('UPDATE exam_app.exam_assignments SET version=version+1 WHERE id=$1',[assignmentId]);if(item.attemptId)await event(c,item.attemptId,'assignment.staff-changed');await audit(c,actor.id,'assignment.edit',assignmentId);return{id:assignmentId};
+    },c=>sittingScope(c,actor,sittingId));
 }
 export async function updateAllocationStaff(pool: pg.Pool, actor: ExamUser, sittingId: string, assignmentId: string, raw: unknown) {
     const input=ExamAllocationStaffSchema.parse(raw);

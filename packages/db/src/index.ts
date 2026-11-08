@@ -23,3 +23,6 @@ export * from './exam-dashboard.js';
 export * from './exam-lists.js';
 export * from './exam-timing.js';
 export * from './exam-allocations.js';
+export * from './exam-model-services.js';
+export * from './exam-messages.js';
+export * from './exam-events.js';

@@ -28,3 +28,5 @@
 [契约回归](../../../../packages/contracts/src/managed-exam.test.ts)覆盖格式、多选、缺失选项、长度和旧快照；[隔离集成/Chrome](../../../../apps/exam-web/src/server/managed.integration.test.ts)覆盖拒绝矛盾、乱序/替代版本、人工答案显示、跨题错误、开考与手动返回，并实际截图。命令、首次失败和复测见[验收](../../../../docs/postmortem/2026-11-03-exam-ui-fixes.md)；未做真实模型或生产部署。
 
 全部已拍题的作答入口、当前人工答案初始化与并发令牌见[后续决策](2026-11-03-teacher-question-actions.md)；本页的答案格式及原始结果保护继续有效。
+
+2026-11-05局部替代：学生主页面按[当前题与手动前进](2026-11-05-student-manual-navigation.md)展示，不再显示全场最近答案卡；本页服务端排序、人工格式及身份规则继续有效。

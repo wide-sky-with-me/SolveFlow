@@ -4,11 +4,14 @@ import { ExamClock, EndExamButton } from './exam-clock.js';
 // Decision: .agents/notes/implemented/architecture/2026-11-03-exam-answer-presentation.md
 // Decision: .agents/notes/implemented/architecture/2026-11-03-exam-navigation-and-tracking.md
 // Decision: .agents/notes/implemented/architecture/2026-11-03-durable-exam-reviews.md
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { z } from 'zod';
 import { MAX_ANSWER_CHARACTERS } from '@solveflow/contracts/agent';
 import { ExamDetailSchema, formatExamChoiceAnswer, type ExamAttempt } from '@solveflow/contracts/managed-exam';
-import { RichText } from '@solveflow/web-ui/rich-text';
+import { overviewClass, overviewState, slotState } from './slot-state.js';
+import { SlotStateLegend } from './section-answers.js';
+import { RichText } from './rich-text.js';
+import { AnswerSummary } from './answer-summary.js';
 import { api, idResponse, post } from './api.js';
 import { activeStatuses, Dialog, ErrorText, statusLabels, VerificationAlerts } from './components.js';
 import { useAttempt } from './use-attempt.js';
@@ -25,7 +28,9 @@ function TeacherChoices({ choices, selected, disabled, onSelect }: { choices: No
 export function Monitor({ id, initialSlotId, onClose }: { id: string; initialSlotId?: string; onClose: () => void }) {
     const { attempt, error, refresh } = useAttempt(id);
     const [slotId, setSlotId] = useState<string | null>(initialSlotId ?? null), [detail, setDetail] = useState<Detail | null>(null), [failure, setFailure] = useState(''), [busy, setBusy] = useState(false), [draft, setDraft] = useState<ReviewDraft | null>(null);
-    const [navigationOpen, setNavigationOpen] = useState(false), [activityOpen, setActivityOpen] = useState(false), [preview, setPreview] = useState<string | null>(null);
+    const [navigationOpen, setNavigationOpen] = useState(true), [activityOpen, setActivityOpen] = useState(false), [preview, setPreview] = useState<string | null>(null);
+    const [messageDraft,setMessageDraft]=useState<{slotId:string;revision:number;requestId:string;message:string}|null>(null);
+    const navigationId = useId();
     const retryKey = useRef<{ key: string; id: string } | null>(null);
     const reviewForm = useRef<HTMLFormElement>(null);
     const reviewSlotId = draft?.slotId;
@@ -48,7 +53,16 @@ export function Monitor({ id, initialSlotId, onClose }: { id: string; initialSlo
     const issue = attempt?.alerts.find(a => a.slotId === slotId);
     const currentSlot = attempt?.slots.find(s => s.id === (attempt.viewedSlotId ?? attempt.nextSlotId));
     const currentModule = attempt?.modules.find(m => m.id === currentSlot?.moduleId);
+    const snapshotSlot = detail && attempt?.slots.find(slot => slot.id === detail.slot.id && slot.revision === detail.slot.revision && slot.runId === detail.slot.runId && slot.reviewId === detail.slot.reviewId);
+    const shownAnswer = snapshotSlot?.presentation ?? detail?.slot.presentation;
     const active = !!detail && activeStatuses.has(detail.slot.status);
+    async function sendMessage(event: FormEvent<HTMLFormElement>) {
+        event.preventDefault();if(!messageDraft||busy)return;
+        setBusy(true);setFailure('');
+        try{await api('/admin/slots/'+messageDraft.slotId+'/messages',idResponse,post({requestId:messageDraft.requestId,expectedRevision:messageDraft.revision,message:messageDraft.message}));setMessageDraft(null);await refresh();}
+        catch(error){setFailure(error instanceof Error?error.message:'发送消息失败，请重试。');}
+        finally{setBusy(false);}
+    }
     async function retry(action: 'solve' | 'verify') {
         if (!detail || busy) return;
         const key = [detail.slot.id, detail.slot.revision, detail.slot.runId, detail.slot.reviewId, action].join(':');
@@ -83,20 +97,24 @@ export function Monitor({ id, initialSlotId, onClose }: { id: string; initialSlo
         } catch (e) { setFailure(e instanceof Error ? e.message : '确认失败。'); }
         finally { setBusy(false); }
     }
-    return <Dialog title={attempt?.studentName ?? '学生进度'} size="wide" notice={attempt && attempt.alerts.length > 0 && <VerificationAlerts attempt={attempt} disabled={busy||!!draft} onSelect={s => { if (!busy && !draft) setSlotId(s.id); }}/>} onClose={() => { if (!busy) onClose(); }}>
+    return <Dialog className="monitor-dialog" actions={attempt && <div className="monitor-header-clock"><ExamClock timing={attempt.timing}/></div>} title={attempt?.studentName ?? '学生进度'} size="wide" notice={attempt && attempt.alerts.length > 0 && <VerificationAlerts attempt={attempt} disabled={busy||!!draft} onSelect={s => { if (!busy && !draft) setSlotId(s.id); }}/>} onClose={() => { if (!busy) onClose(); }}>
       <ErrorText error={error}/>
+      {messageDraft&&<Dialog title="通知学生" notice={failure ? <ErrorText error={failure}/> : null} onClose={()=>{if(!busy)setMessageDraft(null);}}><form onSubmit={event=>void sendMessage(event)}><label>消息内容<textarea required maxLength={2000} rows={5} disabled={busy} value={messageDraft.message} onChange={event=>setMessageDraft(current=>current?{...current,message:event.target.value,requestId:current.message.trim()===event.target.value.trim()?current.requestId:newRequestId()}:null)}/></label><div className="dialog-footer"><button type="button" disabled={busy} onClick={()=>setMessageDraft(null)}>取消</button><button className="primary" type="submit" disabled={busy||!messageDraft.message.trim()}>{busy?'发送中…':'发送消息'}</button></div></form></Dialog>}
       {!attempt && !error && <p className="empty" role="status">正在同步学生进度…</p>}
       {attempt && <>
-        <div className="exam-session-tools monitor-session"><ExamClock timing={attempt.timing}/><EndExamButton id={id} timing={attempt.timing} title={attempt.title} studentName={attempt.studentName} onEnded={refresh}/></div>
+        <div className="exam-session-tools monitor-session"><EndExamButton id={id} timing={attempt.timing} title={attempt.title} studentName={attempt.studentName} onEnded={refresh}/></div>
         <div className="monitor-overview">
           <div className="section-head"><span>{currentSlot ? "学生位置：" + currentModule?.title + " · 第" + currentSlot.position + "题" : attempt.title}</span>{currentSlot && <button className="quiet" disabled={busy||!!draft} onClick={() => setSlotId(currentSlot.id)}>定位当前题</button>}</div>
-          <div className="monitor-counts">{[["已答", attempt.slots.filter(s => s.completedOnce).length], ["未拍", attempt.slots.filter(s => !s.revision).length], ["跳过", attempt.slots.filter(s => s.skipped && !s.completedOnce).length]].map(([label, count]) => <span key={label}>{label}<strong>{count}</strong></span>)}</div>
+          <div className="monitor-counts">{[["已答", attempt.slots.filter(s => s.presentation).length], ["未拍", attempt.slots.filter(s => !s.revision).length], ["跳过", attempt.slots.filter(s => slotState(s).tone === 'skipped').length]].map(([label, count]) => <span key={label}>{label}<strong>{count}</strong></span>)}</div>
         </div>
         <div className="monitor-tools">
-          <button className="secondary" disabled={busy||!!draft} onClick={()=>setNavigationOpen(true)}><Icon name="grid"/>题目导航</button>
+          <button className="secondary" disabled={busy||!!draft} aria-expanded={navigationOpen} aria-controls={navigationId} onClick={()=>setNavigationOpen(open=>!open)}><Icon name="grid"/>题目导航</button>
           <button className="quiet" onClick={()=>setActivityOpen(true)}><Icon name="history"/>操作记录</button>
         </div>
-        {navigationOpen && <Dialog title="题目导航" onClose={()=>setNavigationOpen(false)}><div className="question-nav monitor-navigation">{attempt.modules.map(m => <section key={m.id}><h3>{m.title}</h3><div className="slot-grid">{attempt.slots.filter(s => s.moduleId === m.id).map(s => <button key={s.id} aria-label={m.title+' · 第'+s.position+'题'} className={(s.completedOnce?'done ':s.skipped?'skipped ':'')+(s.id===slotId?'current ':'')+(attempt.alerts.some(a=>a.slotId===s.id)?'red-flag':'')} onClick={()=>{setSlotId(s.id);setNavigationOpen(false);}}>{s.position}</button>)}</div></section>)}</div></Dialog>}
+        {navigationOpen && <><SlotStateLegend/><section id={navigationId} className="question-nav monitor-navigation" aria-label="题目导航">{attempt.modules.map(m => <section key={m.id}><h3>{m.title}</h3><div className="slot-grid">{attempt.slots.filter(s => s.moduleId === m.id).map(s => {
+            const flagged = attempt.alerts.some(a=>a.slotId===s.id), state = overviewState(s, flagged);
+            return <button key={s.id} aria-label={m.title+' · 第'+s.position+'题'} aria-current={s.id===slotId?'step':undefined} className={overviewClass(state)+(s.id===slotId?' current':'')} title={state.detail} disabled={busy||!!draft} onClick={()=>setSlotId(s.id)}>{s.position}<span className="navigation-phase overview-phase"><span className="slot-state-dot" aria-hidden="true"/>{state.label}</span>{flagged && <span className="section-answer-alert feedback-tone-error" aria-label="待处理">!</span>}</button>;
+        })}</div></section>)}</section></>}
         {activityOpen && <Dialog title="操作记录" onClose={()=>setActivityOpen(false)}><div className="activity-history monitor-activity">{attempt.activity.length ? <ol>{attempt.activity.map(a=><li key={a.id}><span>{activityLabels[a.action]} {a.moduleTitle}{a.position?' · 第'+a.position+'题':''}{a.affectedCount>1?'（'+a.affectedCount+'题）':''}</span><time dateTime={a.createdAt}>{new Date(a.createdAt).toLocaleTimeString()}</time></li>)}</ol> : <p className="empty">暂无操作记录</p>}</div></Dialog>}
       </>}
       {detail && detail.slot.id === slotId && <section className="review-detail">
@@ -105,6 +123,7 @@ export function Monitor({ id, initialSlotId, onClose }: { id: string; initialSlo
           {detail.slot.revision > 0 && !draft && <div className="toolbar review-actions">
             <button className="primary" disabled={busy || active} onClick={() => void retry('solve')}>AI 答题</button>
             <button className="secondary" disabled={busy} onClick={beginReview}>手动作答</button>
+            <button className="secondary" disabled={busy} onClick={()=>{setFailure('');setMessageDraft({slotId:detail.slot.id,revision:detail.slot.revision,requestId:newRequestId(),message:''});}}>发消息</button>
             <button className="quiet" disabled={busy || active || candidate?.kind !== 'answer' || !!detail.slot.reviewId} onClick={() => void retry('verify')}>重新核验</button>
           </div>}
         </div>
@@ -114,13 +133,13 @@ export function Monitor({ id, initialSlotId, onClose }: { id: string; initialSlo
             {problem && <QuestionContent problem={problem} hideOptions={!!draft?.choices} selectedOptions={detail.slot.presentation?.selectedOptions ?? []}/>}
           </section>
           <section className="review-response" aria-label="答案与处理">
-            {detail.slot.presentation && <div className="review-current-answer"><div className="section-head"><h3>学生当前答案</h3><span className="badge">{detail.slot.presentation.humanConfirmed ? '老师已确认' : detail.slot.presentation.simulated ? '错题模拟' : detail.slot.presentation.verified ? 'AI 已核验' : '待核验'}</span></div><RichText text={detail.slot.presentation.answer}/></div>}
+            {detail.slot.presentation && <div className="review-current-answer"><div className="section-head"><h3>学生当前答案</h3><span className="badge">{detail.slot.presentation.humanConfirmed ? '老师已确认' : detail.slot.presentation.simulated ? '错题模拟' : detail.slot.presentation.verified ? 'AI 已核验' : '待核验'}</span></div><AnswerSummary answer={shownAnswer ?? detail.slot.presentation} options={problem?.options}/></div>}
             {draft && <form ref={reviewForm} className="human-review" onSubmit={e => void confirm(e)}>
               <h3>人工确认 · 第{detail.slot.position}题 · 第{draft.revision}版</h3>
               {draft.choices && <TeacherChoices choices={draft.choices} selected={draft.options} disabled={busy} onSelect={chooseOption}/>}
-              <label>确认答案<textarea required maxLength={MAX_ANSWER_CHARACTERS} rows={draft.choices ? 2 : 5} disabled={busy} readOnly={draft.choices !== null} value={draft.answer} onChange={e => { if (!draft.choices) edit({ answer: e.target.value }); }}/></label>
+              {!draft.choices && <label>确认答案<textarea required maxLength={MAX_ANSWER_CHARACTERS} rows={5} disabled={busy} value={draft.answer} onChange={e => edit({ answer: e.target.value })}/></label>}
               <label>处理意见<textarea required maxLength={2000} rows={3} disabled={busy} value={draft.note} onChange={e => edit({ note: e.target.value })}/></label>
-              <div className="dialog-footer"><button type="button" disabled={busy} onClick={() => setDraft(null)}>取消</button><button className="primary" type="submit" disabled={busy || !draft.answer.trim() || !draft.note.trim()}>{busy ? '提交中…' : '确认并通知学生'}</button></div>
+              <div className="dialog-footer"><button type="button" disabled={busy} onClick={() => setDraft(null)}>取消</button><button className="primary" type="submit" disabled={busy || !draft.answer.trim() || !draft.note.trim()}>{busy ? '提交中…' : '保存并通知学生'}</button></div>
             </form>}
             <ErrorText error={failure}/>
             {detail.outcome?.status === 'completed' && detail.outcome.verification && <details open={!!issue}><summary>AI 核验意见</summary>{detail.outcome.verification.issues.map((i, n) => <p key={n}>{i.message}</p>)}<span className="badge">{detail.outcome.verification.verdict === 'pass' ? '通过' : detail.outcome.verification.verdict === 'fail' ? '未通过' : '无法确认'}</span></details>}

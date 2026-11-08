@@ -1,0 +1,343 @@
+/* Application finishing layer. Preserve geometry while data updates in place. */
+
+:root {
+  --ui-fast: 140ms;
+  --ui-enter: 200ms;
+  --ui-ease: cubic-bezier(.2,.7,.2,1);
+  --ui-card-shadow: 0 2px 8px #17365d06, 0 8px 24px #17365d04;
+  --ui-overlay-shadow: 0 24px 80px #11213e26, 0 4px 16px #11213e12;
+}
+
+:root[data-theme="dark"] {
+  --ui-card-shadow: 0 2px 8px #0000000d;
+  --ui-overlay-shadow: 0 24px 80px #00000066, 0 4px 16px #00000026;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ui-card-shadow: 0 2px 8px #0000000d;
+    --ui-overlay-shadow: 0 24px 80px #00000066, 0 4px 16px #00000026;
+  }
+}
+
+.workspace-view>.toolbar {
+  margin-bottom: 20px;
+}
+
+.card, .paged-panel, .issue-queue {
+  box-shadow: var(--ui-card-shadow);
+}
+
+.badge {
+  min-height: 26px;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  font-weight: 550;
+  line-height: 1.4;
+}
+
+.badge.green {
+  border-color: var(--sf-success-border);
+}
+
+.badge.amber {
+  border-color: var(--sf-warning-border);
+}
+
+.badge.red {
+  border-color: var(--sf-error-border);
+}
+
+.badge.blue {
+  border-color: var(--sf-info-border);
+}
+
+.primary, .secondary, .quiet, .icon-button:not(.sidebar-trigger) {
+  border-radius: 12px;
+}
+
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 3px;
+}
+
+.dialog-head>.icon-button {
+  border-radius: 11px;
+  color: var(--muted);
+}
+
+.dialog-head>.icon-button>.icon {
+  width: 20px;
+  height: 20px;
+}
+
+.primary:active:not(:disabled) {
+  background: #2058c2;
+  box-shadow: inset 0 2px 4px #11213e26;
+}
+
+.secondary:active:not(:disabled), .quiet:active:not(:disabled), .icon-button:active:not(:disabled) {
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+input:not([type=checkbox]):not([type=radio]), textarea, .select-trigger, .list-search {
+  transition: border-color var(--ui-fast) ease, box-shadow var(--ui-fast) ease;
+}
+
+.list-search:focus-within {
+  box-shadow: 0 0 0 3px var(--secondary);
+}
+
+input[type=checkbox], input[type=radio] {
+  accent-color: var(--blue);
+}
+
+.management-tabs {
+  width: fit-content;
+  max-width: 100%;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 20px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: var(--field);
+}
+
+.management-tabs>button {
+  min-height: 44px;
+  padding: 10px 18px;
+  border-radius: 11px;
+  color: var(--muted);
+}
+
+.management-tabs>button[aria-selected=true] {
+  background: var(--surface);
+  color: var(--accent-ink);
+  box-shadow: 0 1px 4px #1723380d;
+}
+
+.module-steps {
+  gap: 6px;
+  scrollbar-width: thin;
+}
+
+.module-steps>button {
+  min-height: 44px;
+  border-radius: 13px;
+}
+
+.module-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capture-box {
+  border-style: solid;
+  border-color: var(--line);
+}
+
+.current-answer>.section-head, .review-current-answer>.section-head {
+  gap: 12px;
+}
+
+.answer-summary>:last-child {
+  margin-bottom: 0;
+}
+
+.event-record .section-head, .assignment-card .section-head {
+  align-items: flex-start;
+}
+
+.event-record-actions .icon, .event-list-tools>.primary .icon, .event-toolbar-actions>.primary .icon {
+  width: 16px;
+  height: 16px;
+}
+
+dialog {
+  --dialog-pad-y: 22px;
+  box-shadow: var(--ui-overlay-shadow);
+}
+
+dialog::backdrop {
+  background: #0b172b73;
+}
+
+.dialog-head {
+  align-items: center;
+}
+
+.dialog-notice>.error {
+  margin: 0;
+}
+
+.dialog-body {
+  scroll-padding-block: 14px 100px;
+}
+
+.dialog-body>form>.dialog-footer {
+  position: sticky;
+  bottom: calc(-1 * var(--dialog-pad-y));
+  margin-bottom: calc(-1 * var(--dialog-pad-y));
+  padding: 16px 0;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  z-index: 2;
+}
+
+.account-options, .appearance-options, .select-options {
+  box-shadow: var(--ui-overlay-shadow);
+}
+
+.teacher-attention-heading>.icon, .account-trigger>.icon, .select-trigger>.icon:last-child {
+  transition: transform var(--ui-fast) var(--ui-ease);
+}
+
+.account-trigger[aria-expanded=true]>.icon, .select-trigger[aria-expanded=true]>.icon:last-child {
+  transform: rotate(180deg);
+}
+
+@media (hover:hover) and (pointer:fine) {
+  .quiet:hover:not(:disabled), .icon-button:hover:not(:disabled), .account-trigger:hover:not(:disabled), .student-exam-status:hover {
+    background: var(--secondary);
+    color: var(--accent-ink);
+  }
+  .secondary:hover:not(:disabled), .module-steps>button:hover:not(:disabled) {
+    border-color: var(--accent-ink);
+  }
+  .question-jump:hover:not(:disabled) {
+    background: var(--secondary);
+  }
+}
+
+@media (max-width:640px) {
+  dialog {
+    --dialog-pad-y: 18px;
+  }
+  .management-tabs {
+    width: 100%;
+  }
+  .management-tabs>button {
+    flex: 1;
+    padding-inline: 10px;
+  }
+  .module-steps:not(:has(>button:nth-child(5))) {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0,1fr);
+  }
+  .module-steps>button {
+    min-width: 0;
+    padding: 10px 6px;
+  }
+  .module-steps:has(>button:nth-child(5))>button {
+    flex-shrink: 0;
+    min-width: 100px;
+  }
+  .dialog-body>form>.dialog-footer {
+    gap: 8px;
+    padding: 12px 0;
+  }
+  .dialog-body>form>.dialog-footer>button {
+    min-height: 44px;
+    flex: 1;
+  }
+  .module-steps:not(:has(>button:nth-child(5))) .module-title {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+}
+
+/* Entry only: closing, cancellation and focus restoration remain immediate. */
+
+@media (prefers-reduced-motion:no-preference) {
+  .workspace-view {
+    animation: ui-page-enter 180ms var(--ui-ease);
+  }
+  .current-answer {
+    animation: ui-answer-enter 160ms ease-out;
+  }
+  dialog[open] {
+    animation: ui-dialog-enter var(--ui-enter) var(--ui-ease);
+  }
+  dialog[open]::backdrop {
+    animation: ui-backdrop-enter var(--ui-enter) ease-out;
+  }
+  dialog.image-viewer[open] {
+    animation-name: ui-page-enter;
+  }
+  dialog.navigation-drawer[open] {
+    animation-name: ui-drawer-enter;
+  }
+  .account-options, .appearance-options, .select-options {
+    animation: ui-menu-enter 150ms var(--ui-ease);
+  }
+  .question-notices details[open]>.alert-links {
+    animation: ui-answer-enter 160ms ease-out;
+  }
+}
+
+@keyframes ui-page-enter {
+  from {
+    opacity: .5;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ui-answer-enter {
+  from {
+    opacity: .55;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ui-dialog-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes ui-backdrop-enter {
+  from {
+    background-color: #0b172b00;
+  }
+  to {
+    background-color: #0b172b73;
+  }
+}
+
+@keyframes ui-menu-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes ui-drawer-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

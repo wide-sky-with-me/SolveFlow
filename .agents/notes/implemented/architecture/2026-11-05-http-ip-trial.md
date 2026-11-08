@@ -25,3 +25,9 @@
 ## 验证
 
 [传输单元](../../../../apps/exam-web/src/server/transport.test.ts)、[UUID单元](../../../../apps/exam-web/src/browser/request-id.test.ts)与[隔离浏览器](../../../../apps/exam-web/src/server/managed.integration.test.ts)覆盖显式开关、来源、Cookie、上传和通知。18项定向单元与129项隔离回归通过；HTTP并行入口已部署。公网、Mac与域名部分网络仍被拦截的范围以验收记录为准，不据此声明iPhone真机通过。
+
+## 2026-11-06 内存预算调整
+
+[试用API](../../../../infra/exam-web/compose.http-trial.yaml)的`mem_limit`从384m提到512m。依据是同日[延迟排查](../../../../docs/postmortem/2026-11-06-teacher-image-latency.md)记录的持续换页：`memory.events`的`max`计数8小时内累计34072次，`memory.swap.current`约200MiB，匿名内存与换出量合计约507MiB，等于真实需求已超出原配额。宿主当时约1.8GiB可用，单容器提高128MiB不影响既有容器配额。
+
+未把swap上限一并调大，也未加`--max-old-space-size`：Docker按两倍内存推导总限额，容器最多可用1GiB；先观察512m下`max`事件与换出是否归零，若不归零再压V8堆上限或继续提高配额。调整只重建`http-trial-api`，原HTTPS项目、数据库、存储和worker不改；回退只需恢复同目录`compose.http-trial.yaml.bak-20261106-1718`并重新`up -d`。

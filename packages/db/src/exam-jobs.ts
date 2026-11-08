@@ -1,6 +1,7 @@
 // Decision: .agents/notes/implemented/architecture/2026-11-03-exam-answer-presentation.md
 // Decision: .agents/notes/implemented/architecture/2026-11-02-managed-exam-foundation.md
 // Decision: .agents/notes/implemented/architecture/2026-11-03-durable-exam-reviews.md
+import { ExamModelServiceRefSchema } from '@solveflow/contracts/exam-model-services';
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import { z } from 'zod';
@@ -11,11 +12,11 @@ import { audit, conflict, event, one, rows, scope, tx, type Queryable } from './
 import { advanceCursor, openIncident } from './exam-review-state.js';
 import { attemptAssignment } from './exam-attempts.js';
 const jobWindow = `(CASE WHEN r.initiated_by IS NULL THEN (x.ended_at IS NULL OR x.end_reason='deadline') AND (a.closes_at IS NULL OR now()<a.closes_at+make_interval(secs=>s.accepted_job_grace_seconds)) ELSE now()<r.review_deadline AND EXISTS(SELECT 1 FROM exam_app.users staff WHERE staff.id=r.initiated_by AND staff.state='active' AND (EXISTS(SELECT 1 FROM exam_app.user_roles ur JOIN exam_app.roles role ON role.id=ur.role_id WHERE ur.user_id=staff.id AND (role.code='admin' OR (role.code='manager' AND s.manager_id=staff.id) OR (role.code='support' AND EXISTS(SELECT 1 FROM exam_app.staff_assignments f WHERE f.assignment_id=a.id AND f.staff_id=staff.id AND f.revoked_at IS NULL)))))) END)`;
-const jobSchema = z.object({ id: z.uuid(), slotId: z.uuid(), revisionId: z.uuid(), attemptId: z.uuid(), studentId: z.uuid(), exam: ExamTypeSchema, module: ExamModuleSchema, purpose: z.enum(['solve', 'verify']), sourceRunId: z.uuid().nullable(), leaseToken: z.uuid() });
+const jobSchema = z.object({ id: z.uuid(), slotId: z.uuid(), revisionId: z.uuid(), attemptId: z.uuid(), studentId: z.uuid(), exam: ExamTypeSchema, module: ExamModuleSchema, purpose: z.enum(['solve', 'verify']), sourceRunId: z.uuid().nullable(), modelService: ExamModelServiceRefSchema.nullable().optional(), leaseToken: z.uuid() });
 export type ExamJob = z.infer<typeof jobSchema>;
 export async function claimJob(pool: pg.Pool) {
     return tx(pool, async (c) => {
-        const job = (await rows(c, jobSchema, `SELECT jsonb_build_object('id',r.id,'slotId',r.slot_id,'revisionId',r.revision_id,'attemptId',q.attempt_id,'studentId',r.student_id,'exam',x.template_snapshot->>'exam','module',(SELECT m.rules_snapshot FROM exam_app.attempt_modules m WHERE m.id=q.module_id),'purpose',r.purpose,'sourceRunId',r.source_result_run_id,'leaseToken',$1::text) AS value FROM exam_app.answer_runs r JOIN exam_app.question_slots q ON q.id=r.slot_id JOIN exam_app.exam_attempts x ON x.id=q.attempt_id JOIN exam_app.exam_assignments a ON a.id=x.assignment_id JOIN exam_app.exam_sittings s ON s.id=a.sitting_id JOIN exam_app.users u ON u.id=r.student_id WHERE r.status='queued' AND r.id=q.current_run_id AND r.cancel_requested_at IS NULL AND a.state IN ('assigned','completed') AND s.state='published' AND u.state='active' AND ${jobWindow} ORDER BY r.created_at LIMIT 1 FOR UPDATE OF r SKIP LOCKED`, [randomUUID()]))[0];
+        const job = (await rows(c, jobSchema, `SELECT jsonb_build_object('id',r.id,'slotId',r.slot_id,'revisionId',r.revision_id,'attemptId',q.attempt_id,'studentId',r.student_id,'exam',x.template_snapshot->>'exam','module',(SELECT m.rules_snapshot FROM exam_app.attempt_modules m WHERE m.id=q.module_id),'purpose',r.purpose,'sourceRunId',r.source_result_run_id,'modelService',CASE WHEN r.model_service_code IS NULL THEN NULL ELSE jsonb_build_object('code',r.model_service_code,'version',r.model_service_version) END,'leaseToken',$1::text) AS value FROM exam_app.answer_runs r JOIN exam_app.question_slots q ON q.id=r.slot_id JOIN exam_app.exam_attempts x ON x.id=q.attempt_id JOIN exam_app.exam_assignments a ON a.id=x.assignment_id JOIN exam_app.exam_sittings s ON s.id=a.sitting_id JOIN exam_app.users u ON u.id=r.student_id WHERE r.status='queued' AND r.id=q.current_run_id AND r.cancel_requested_at IS NULL AND a.state IN ('assigned','completed') AND s.state='published' AND u.state='active' AND ${jobWindow} ORDER BY r.created_at LIMIT 1 FOR UPDATE OF r SKIP LOCKED`, [randomUUID()]))[0];
         if (!job)
             return null;
         await c.query(`UPDATE exam_app.answer_runs SET status='understanding',lease_owner=$2,lease_token=$2,lease_expires_at=now()+interval '45 seconds' WHERE id=$1`, [job.id, job.leaseToken]);
@@ -61,6 +62,25 @@ export async function admitCall(pool: pg.Pool, job: ExamJob, role: 'solver' | 'v
     });
 }
 export async function settleCall(pool: pg.Pool, callId: string, success: boolean) { await tx(pool, async (c) => { await c.query(`UPDATE exam_app.model_call_attempts SET status=$2,finished_at=now() WHERE id=$1 AND status='started'`, [callId, success ? 'completed' : 'failed']); await c.query(`UPDATE exam_app.usage_reservations SET status='settled',settled_at=now() WHERE model_call_id=$1`, [callId]); await c.query('UPDATE exam_app.execution_permits SET holder_call_id=NULL,lease_token=NULL,lease_expires_at=NULL WHERE holder_call_id=$1', [callId]); }); }
+
+/** Provisional answer for display while verification runs. Additive only: the
+ * queued run row, immutable run_results and answer_presentations are untouched.
+ * Decision: .agents/notes/implemented/architecture/2026-11-07-early-answer-publish.md */
+export async function publishDraft(pool: pg.Pool, job: ExamJob, candidate: z.infer<typeof AnswerCandidateSchema>) {
+    if (candidate.kind !== 'answer')
+        return false;
+    const responseMatches = !candidate.questions && job.module.responseKinds.includes(candidate.problem.response?.type ?? (candidate.problem.options ? 'single-choice' : 'short-answer')) && (!job.module.wordLimit || candidate.answer.trim().split(/\s+/u).length <= job.module.wordLimit);
+    if (!responseMatches)
+        return false;
+    return tx(pool, async (c) => {
+        const valid = await one(c, z.boolean(), `SELECT EXISTS(SELECT 1 FROM exam_app.answer_runs r JOIN exam_app.question_slots q ON q.id=r.slot_id JOIN exam_app.exam_attempts x ON x.id=q.attempt_id JOIN exam_app.exam_assignments a ON a.id=x.assignment_id JOIN exam_app.exam_sittings s ON s.id=a.sitting_id JOIN exam_app.users u ON u.id=r.student_id WHERE r.id=$1 AND r.lease_token=$2 AND r.lease_expires_at>now() AND r.finished_at IS NULL AND r.cancel_requested_at IS NULL AND q.current_run_id=r.id AND q.current_revision_id=r.revision_id AND NOT EXISTS(SELECT 1 FROM exam_app.answer_plan_items pi JOIN exam_app.answer_plans plan ON plan.id=pi.plan_id WHERE pi.slot_id=q.id AND plan.state='frozen' AND pi.action='simulate_alternative') AND a.state IN ('assigned','completed') AND s.state='published' AND u.state='active' AND ${jobWindow} FOR UPDATE OF r) AS value`, [job.id, job.leaseToken]);
+        if (!valid)
+            return false;
+        await c.query('INSERT INTO exam_app.answer_drafts(slot_id,student_id,run_id,answer_text,selected_options) VALUES($1,$2,$3,$4,$5) ON CONFLICT(slot_id,student_id) DO UPDATE SET run_id=excluded.run_id,answer_text=excluded.answer_text,selected_options=excluded.selected_options,created_at=now()', [job.slotId, job.studentId, job.id, candidate.answer, candidate.selectedOptions ? JSON.stringify(candidate.selectedOptions) : null]);
+        return true;
+    });
+}
+
 export async function finishJob(pool: pg.Pool, job: ExamJob, raw: SolveOutcome | null, errorCode: string | null) {
     const outcome = raw ? SolveOutcomeSchema.parse(raw) : null;
     return tx(pool, async (c) => {
@@ -75,6 +95,10 @@ export async function finishJob(pool: pg.Pool, job: ExamJob, raw: SolveOutcome |
         if (outcome)
             await c.query('INSERT INTO exam_app.run_results(run_id,slot_id,student_id,outcome) VALUES($1,$2,$3,$4)', [job.id, job.slotId, job.studentId, JSON.stringify(outcome)]);
         await c.query('UPDATE exam_app.answer_runs SET status=$3,finished_at=now(),error_code=$4 WHERE id=$1 AND lease_token=$2', [job.id, job.leaseToken, status, errorCode ?? (outcome && 'error' in outcome ? outcome.error.code : null)]);
+        // The draft is the answer the student already saw before verification. Keep it
+        // as the baseline for the "answer revised" notice, then clear it.
+        const draft = (await rows(c, z.object({ answerText: z.string(), selectedOptions: z.unknown().nullable() }), `SELECT jsonb_build_object('answerText',answer_text,'selectedOptions',selected_options) AS value FROM exam_app.answer_drafts WHERE run_id=$1 AND slot_id=$2 AND student_id=$3`, [job.id, job.slotId, job.studentId]))[0] ?? null;
+        await c.query('DELETE FROM exam_app.answer_drafts WHERE slot_id=$1 AND student_id=$2', [job.slotId, job.studentId]);
         if (completed && candidate?.kind === 'answer') {
             const plan = await one(c, z.object({ id: z.uuid(), alternative: z.boolean() }), `SELECT jsonb_build_object('id',i.id,'alternative',i.action='simulate_alternative') AS value FROM exam_app.answer_plan_items i JOIN exam_app.answer_plans p ON p.id=i.plan_id WHERE i.slot_id=$1 AND p.state='frozen' ORDER BY p.version DESC LIMIT 1`, [job.slotId]);
             let answer = candidate.answer;
@@ -97,6 +121,10 @@ export async function finishJob(pool: pg.Pool, job: ExamJob, raw: SolveOutcome |
             await c.query('UPDATE exam_app.question_slots SET published_presentation_id=$2,completed_once_at=coalesce(completed_once_at,now()),version=version+1 WHERE id=$1', [job.slotId, presentationId]);
             await c.query('UPDATE exam_app.question_slots SET published_review_id=NULL WHERE id=$1', [job.slotId]);
             await advanceCursor(c, job.attemptId, job.slotId);
+            // Notify only when the published answer differs from the provisional one the
+            // student was shown. A matching verification result stays silent.
+            if (draft && (draft.answerText !== answer || JSON.stringify(draft.selectedOptions ?? null) !== JSON.stringify(selected ?? null)))
+                await c.query('INSERT INTO exam_app.answer_revisions(id,slot_id,attempt_id,student_id,revision_id,run_id) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(run_id) DO NOTHING', [randomUUID(), job.slotId, job.attemptId, job.studentId, job.revisionId, job.id]);
         }
         if (completed && outcome?.verified) {
             await c.query("UPDATE exam_app.verification_incidents SET resolved_at=now(),resolution='ai_pass' WHERE slot_id=$1 AND resolved_at IS NULL", [job.slotId]);
@@ -113,6 +141,7 @@ export async function cancelJob(pool: pg.Pool, actor: ExamUser, runId: string) {
         const attemptId = await one(c, z.uuid(), 'SELECT q.attempt_id AS value FROM exam_app.answer_runs r JOIN exam_app.question_slots q ON q.id=r.slot_id WHERE r.id=$1', [runId]);
         await scope(c, actor, await attemptAssignment(c, attemptId), true);
         await c.query('SELECT id FROM exam_app.exam_attempts WHERE id=$1 FOR UPDATE', [attemptId]);
+        await c.query('DELETE FROM exam_app.answer_drafts WHERE run_id=$1', [runId]);
         const changed = await c.query(`UPDATE exam_app.answer_runs SET status='cancelled',cancel_requested_at=now(),finished_at=now(),error_code='CANCELLED' WHERE id=$1 AND finished_at IS NULL`, [runId]);
         if (changed.rowCount) {
             await event(c, attemptId, 'run.cancelled');
@@ -131,6 +160,7 @@ export async function recoverJobs(pool: pg.Pool) {
             const changed = await c.query(`UPDATE exam_app.answer_runs r SET status='interrupted',finished_at=now(),error_code='WORKER_LOST' FROM exam_app.question_slots q,exam_app.exam_attempts x,exam_app.exam_assignments a,exam_app.exam_sittings s,exam_app.users u WHERE r.id=$1 AND r.finished_at IS NULL AND q.id=r.slot_id AND x.id=q.attempt_id AND a.id=x.assignment_id AND s.id=a.sitting_id AND u.id=r.student_id AND ((r.status<>'queued' AND r.lease_expires_at<now()) OR NOT ${jobWindow} OR u.state<>'active' OR a.state='revoked' OR s.state<>'published')`, [job.id]);
             if (!changed.rowCount) continue;
             recovered++;
+            await c.query('DELETE FROM exam_app.answer_drafts WHERE run_id=$1', [job.id]);
             const slot = (await rows(c, z.object({ slotId: z.uuid(), revisionId: z.uuid() }), `SELECT jsonb_build_object('slotId',slot_id,'revisionId',revision_id) AS value FROM exam_app.answer_runs WHERE id=$1 AND id=(SELECT current_run_id FROM exam_app.question_slots WHERE id=slot_id)`, [job.id]))[0];
             if (slot) await openIncident(c, slot.slotId, slot.revisionId, job.id, 'interrupted');
             await event(c, job.attemptId, 'run.interrupted');

@@ -1,7 +1,7 @@
 import type { ProblemStatement } from '@solveflow/contracts/agent';
 import type { ExamSlot } from '@solveflow/contracts/managed-exam';
 import { Icon } from '@solveflow/web-ui/icons';
-import { RichText } from '@solveflow/web-ui/rich-text';
+import { RichText } from './rich-text.js';
 
 export function QuestionImages({ images, onOpen }: { images: ExamSlot['images']; onOpen: (src: string) => void }) {
     if (!images.length) return null;

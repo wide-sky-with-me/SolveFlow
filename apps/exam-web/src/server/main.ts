@@ -14,6 +14,7 @@ import { buildCatalogTemplate } from '@solveflow/contracts/exam-catalog';
 import { collectGarbage } from './maintenance.js';
 import { PracticeJobs } from './practice.js';
 import { practiceSolver } from './practice-solver.js';
+import { ModelServices } from './model-services.js';
 async function main() {
     const controller = new AbortController();
     const stop = () => controller.abort();
@@ -49,20 +50,22 @@ async function main() {
             console.info(JSON.stringify({ event: 'exam.bootstrap.complete' }));
         }
         else {
-            const version = await database.pool.query('SELECT 1 FROM solveflow_migrations WHERE version=7');
+            const version = await database.pool.query('SELECT 1 FROM solveflow_migrations WHERE version=11');
             if (version.rowCount !== 1)
                 throw new Error('EXAM_MIGRATION_REQUIRED');
             if (storage instanceof PrivateS3Storage)
                 await storage.verifyPrivate();
             if (config.redisUrl)
                 cache = await connectCache(config.redisUrl);
+            const modelServices = config.modelSettingsKey ? new ModelServices(database.pool,config.modelSettingsKey,config.models,config.secondaryModels,config.allowedModelOrigins) : undefined;
+            await modelServices?.initialize();
             const tasks: Promise<unknown>[] = [];
             if (role === 'all' || role === 'api') {
-                if (config.liveCalls && config.models && cache) {
+                if (config.liveCalls && (config.models || modelServices) && cache) {
                     const quota = cache;
-                    practice = new PracticeJobs(practiceSolver(config.models, userId => quota.claimPractice(userId, Math.min(100, config.dailyCallsPerStudent))));
+                    practice = new PracticeJobs(practiceSolver(async request => {if(modelServices)return modelServices.resolve(request.modelService);if(!config.models)throw new Error('MODELS_REQUIRED');return config.models;}, userId => quota.claimPractice(userId, Math.min(100, config.dailyCallsPerStudent)),modelServices?.network),Date.now,4,modelServices ? owner=>modelServices.capture(owner) : undefined);
                 }
-                const service = createExamService({ pool: database.pool, storage, origin: config.origin, insecureHttpTrial: config.insecureHttpTrial, httpTrialAliases: config.httpTrialAliases, trustedProxyCidrs: config.trustedProxyCidrs, publicDir: resolve(dirname(fileURLToPath(import.meta.url)), 'public'), canSolve: () => config.liveCalls && !!config.models?.models.solver && !!config.models?.models.verifier, ...practice ? { practice } : {} });
+                const service = createExamService({ pool: database.pool, storage, origin: config.origin, insecureHttpTrial: config.insecureHttpTrial, httpTrialAliases: config.httpTrialAliases, trustedProxyCidrs: config.trustedProxyCidrs, publicDir: resolve(dirname(fileURLToPath(import.meta.url)), 'public'), canSolve: () => config.liveCalls && (!!modelServices || !!config.models?.models.solver && !!config.models?.models.verifier),...(modelServices ? {modelServices} : {}), ...practice ? { practice } : {} });
                 const port = Number(process.env.SOLVEFLOW_EXAM_PORT ?? 3190);
                 if (!Number.isSafeInteger(port) || port < 1 || port > 65535)
                     throw new Error('INVALID_PORT');
@@ -84,9 +87,9 @@ async function main() {
                 tasks.push(new Promise<void>(resolve => controller.signal.addEventListener('abort', () => resolve(), { once: true })));
             }
             if (role === 'worker' || role === 'all' && config.liveCalls) {
-                if (!config.liveCalls || !config.models)
+                if (!config.liveCalls || !config.models && !modelServices)
                     throw new Error('LIVE_MODELS_NOT_ENABLED');
-                tasks.push(workerLoop(database.pool, modelSolver(database.pool, storage, config.models, { solver: config.solverConcurrency, verifier: config.verifierConcurrency, daily: config.dailyCallsPerStudent }), controller.signal, Math.min(32, config.solverConcurrency + config.verifierConcurrency)));
+                tasks.push(workerLoop(database.pool, modelSolver(database.pool, storage, async job => {if(modelServices)return modelServices.resolve(job.modelService);if(!config.models)throw new Error('MODELS_REQUIRED');return config.models;}, { solver: config.solverConcurrency, verifier: config.verifierConcurrency, daily: config.dailyCallsPerStudent },modelServices?.network), controller.signal, Math.min(32, config.solverConcurrency + config.verifierConcurrency)));
             }
             if (role === 'events' || role === 'all')
                 tasks.push((async () => {

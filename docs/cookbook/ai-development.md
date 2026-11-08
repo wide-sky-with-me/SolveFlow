@@ -17,7 +17,9 @@
 | 模型协议、非流式与响应限制 | [设备传输](../../packages/agent/src/pi/mobile.ts)、[JSON适配](../../packages/agent/src/pi/non-stream-response.ts) | [非流式回归](../../packages/agent/src/pi/mobile-non-stream.test.ts)、[传输回归](../../packages/agent/src/pi/mobile-transport.test.ts) |
 | 考试、校验、超时和备用接手 | [业务编排](../../packages/agent/src/orchestration/solve.ts)、[考试契约](../../packages/contracts/src/exam.ts) | [考试回归](../../packages/agent/src/pi/mobile-exams.test.ts)、[备用回归](../../packages/agent/src/pi/mobile-backup.test.ts) |
 | Web环境配置和固定角色代理 | [配置读取](../../scripts/web-env.mjs)、[代理](../../scripts/web-model-proxy.mjs) | [环境回归](../../tests/unit/web-env.test.ts)、[代理回归](../../tests/unit/web-model-proxy.test.ts) |
-| 中心考试平台、用户/场次、补图及实时管理 | [平台语义](../subsystems/managed-exams.md)、[HTTP](../../apps/exam-web/src/server/service.ts)、[题位事务](../../packages/db/src/exam-attempts.ts) | [隔离集成与浏览器](../../apps/exam-web/src/server/managed.integration.test.ts) |
+| 中心考试的场次、具体考试与人员分配 | [场次规则](../subsystems/managed-exam-events.md)、[列表](../../apps/exam-web/src/browser/exam-events.tsx)、[编辑表单](../../apps/exam-web/src/browser/exam-event-editors.tsx) | [场次与消息回归](../../apps/exam-web/src/server/exam-management.integration.test.ts) |
+| 中心考试的拍题、答案、教师介入与实时跟踪 | [平台语义](../subsystems/managed-exams.md)、[代码定位](../../apps/exam-web/README.md#代码定位)、[题位事务](../../packages/db/src/exam-attempts.ts) | [隔离集成与浏览器](../../apps/exam-web/src/server/managed.integration.test.ts) |
+| 中心考试的主题、状态色、弹窗与动效 | [界面约定](../subsystems/managed-interface.md)、[共用组件](../../packages/web-ui/README.md)、[应用样式](../../apps/exam-web/src/browser/design.css) | [视觉与交互回归](../../apps/exam-web/src/server/ui-polish.integration.test.ts) |
 | 服务端任务、身份、SSE | [API](../../apps/api/src/app.ts)、[worker](../../apps/api/src/worker.ts) | [隔离集成](../../apps/api/src/app.integration.test.ts) |
 | 文档规则与检查 | [检查器](../../scripts/check-project-docs.mjs)、[扫描策略](../../scripts/docs-policy.json) | [管理回归](../../scripts/test-project-docs.mjs) |
 | 启动、页面状态、照片/提交/删除交互 | [入口](../../apps/mobile/src/app.tsx)、[工作区状态](../../apps/mobile/src/workspace/use-workspace-state.ts)、[操作](../../apps/mobile/src/workspace/use-workspace-actions.ts) | 浏览器 workspace/navigation 与相关故障回归 |

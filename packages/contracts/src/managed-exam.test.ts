@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { ExamAssignmentCreateSchema, ExamSittingCreateSchema, ExamSubmissionSchema, ExamTemplateCreateSchema, ExamUserCreateSchema } from './managed-exam.js';
+import { ExamStudentRunSchema, ExamAssignmentCreateSchema, ExamSittingCreateSchema, ExamSubmissionSchema, ExamTemplateCreateSchema, ExamUserCreateSchema } from './managed-exam.js';
 const id = '00000000-0000-4000-8000-000000000001';
 describe('managed exam input boundaries', () => {
+    it('limits student reruns to a known revision and explicit request without staff or model inputs', () => {
+        const base={requestId:id,expectedRevision:1,expectedRunId:id,expectedReviewId:null};expect(ExamStudentRunSchema.safeParse(base).success).toBe(true);
+        for(const extra of [{studentId:id},{action:'verify'},{model:'arbitrary'},{assetIds:[id]},{expectedRevision:0}])expect(ExamStudentRunSchema.safeParse({...base,...extra}).success).toBe(false);
+    });
     it('rejects identity injection, duplicate assets and unbounded image lists', () => {
         const base = { requestId: id, expectedRevision: 0, kind: 'initial', assetIds: [id] };
         expect(ExamSubmissionSchema.safeParse(base).success).toBe(true);
@@ -128,5 +132,16 @@ describe('server admission and submission receipts', () => {
         expect(ExamSubmissionReceiptSchema.parse({runId:null})).toEqual({runId:null});
         expect(ExamSubmissionReceiptSchema.parse({runId:id})).toEqual({runId:id});
         for(const extra of [{runId:'unknown'},{studentId:id},{accepted:true}])expect(ExamSubmissionReceiptSchema.safeParse({runId:null,...extra}).success).toBe(false);
+    });
+});
+
+
+describe('published fill response values', () => {
+    it('keeps legacy presentations valid and prevents values leaking across presentation sources', () => {
+        const base = {answer:'解释',selectedOptions:null,simulated:false,verified:true,humanConfirmed:false,notAppliedReason:null};
+        expect(ExamPresentationSchema.parse(base)).not.toHaveProperty('responseValue');
+        expect(ExamPresentationSchema.parse({...base,responseValue:'0'}).responseValue).toBe('0');
+        for (const extra of [{responseValue:''},{responseValue:'x'.repeat(81)},{responseValue:'29',selectedOptions:['B']},{responseValue:'29',simulated:true},{responseValue:'29',verified:false,humanConfirmed:true}])
+            expect(ExamPresentationSchema.safeParse({...base,...extra}).success).toBe(false);
     });
 });

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { z } from 'zod';
 import { Icon } from '@solveflow/web-ui/icons';
 import { Select } from '@solveflow/web-ui/select';
-import { api } from './api.js';
+import { api, RequestError } from './api.js';
 
 export function pageUrl(endpoint: string, params: Record<string,string|number|undefined>) {
     const query=new URLSearchParams();for(const [key,value] of Object.entries(params))if(value!==undefined&&value!=='')query.set(key,String(value));
@@ -12,7 +12,7 @@ export function pageUrl(endpoint: string, params: Record<string,string|number|un
 
 /** Poll silently; manual refresh adopts the same in-flight request. Query changes fence old results. */
 export function usePageResource<T>(schema: z.ZodType<T>, url: string|null, interval=5000) {
-    const [snapshot,setSnapshot]=useState<{key:string;data:T}|null>(null),[failure,setFailure]=useState<{key:string;message:string}|null>(null),[manualKey,setManualKey]=useState<string|null>(null);
+    const [snapshot,setSnapshot]=useState<{key:string;data:T}|null>(null),[failure,setFailure]=useState<{key:string;message:string;status:number|null}|null>(null),[manualKey,setManualKey]=useState<string|null>(null);
     const active=useRef<{key:string;controller:AbortController;promise:Promise<void>;manual:boolean}|null>(null);
     const read=useCallback((force=false,manual=false)=>{
         if(!url)return Promise.resolve();
@@ -22,14 +22,14 @@ export function usePageResource<T>(schema: z.ZodType<T>, url: string|null, inter
         }
         active.current?.controller.abort();const controller=new AbortController();
         const request={key:url,controller,promise:Promise.resolve(),manual};active.current=request;setManualKey(manual?url:null);
-        request.promise=api(url,schema,{signal:controller.signal}).then(data=>{if(!controller.signal.aborted&&active.current===request){setSnapshot({key:url,data});setFailure(null);}}).catch(error=>{if(!controller.signal.aborted&&active.current===request)setFailure({key:url,message:error instanceof Error?error.message:'读取失败。'});}).finally(()=>{if(active.current===request){active.current=null;if(request.manual)setManualKey(null);}});
+        request.promise=api(url,schema,{signal:controller.signal}).then(data=>{if(!controller.signal.aborted&&active.current===request){setSnapshot({key:url,data});setFailure(null);}}).catch(error=>{if(!controller.signal.aborted&&active.current===request)setFailure({key:url,message:error instanceof Error?error.message:'读取失败。',status:error instanceof RequestError?error.status:null});}).finally(()=>{if(active.current===request){active.current=null;if(request.manual)setManualKey(null);}});
         return request.promise;
     },[schema,url]);
     const refresh=useCallback((force=false)=>read(force),[read]);
     const refreshManually=useCallback(()=>read(false,true),[read]);
     useEffect(()=>{void refresh();const timer=url&&interval?setInterval(()=>void refresh(),interval):null;return()=>{if(timer)clearInterval(timer);const old=active.current;active.current=null;old?.controller.abort();};},[refresh,url,interval]);
     const data=snapshot?.key===url?snapshot.data:null,error=failure?.key===url?failure.message:'';
-    return {data,error,loading:!!url&&data===null&&!error,refreshing:manualKey===url&&!!active.current?.manual,refresh,refreshManually};
+    return {data,error,errorStatus:failure?.key===url?failure.status:null,loading:!!url&&data===null&&!error,refreshing:manualKey===url&&!!active.current?.manual,refresh,refreshManually};
 }
 
 export function useListQuery() {

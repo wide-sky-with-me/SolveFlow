@@ -1,13 +1,15 @@
+import { pinRunModelService } from './exam-model-services.js';
 // Decision: .agents/notes/implemented/architecture/2026-11-03-teacher-question-actions.md
 // Decision: .agents/notes/implemented/architecture/2026-11-03-exam-answer-presentation.md
 // Decision: .agents/notes/implemented/architecture/2026-11-03-exam-review-hardening.md
 // Decision: .agents/notes/implemented/architecture/2026-11-03-durable-exam-reviews.md
+// Decision: .agents/notes/implemented/architecture/2026-11-06-student-rerun.md
 // Teacher operations never overwrite an AI result, nor borrow the student's submission authority.
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import { z } from 'zod';
 import { AnswerCandidateSchema } from '@solveflow/contracts/agent';
-import { ExamDeferSchema, ExamTeacherConfirmSchema, ExamTeacherRunSchema, formatExamChoiceAnswer, type ExamUser } from '@solveflow/contracts/managed-exam';
+import { ExamDeferSchema, ExamStudentRunSchema, ExamTeacherConfirmSchema, ExamTeacherRunSchema, formatExamChoiceAnswer, type ExamUser } from '@solveflow/contracts/managed-exam';
 import { audit, conflict, event, forbidden, hash, lockActor, one, rows, scope, tx } from './exam-store.js';
 import { attemptAssignment } from './exam-attempts.js';
 import { advanceCursor } from './exam-review-state.js';
@@ -25,23 +27,48 @@ async function lockReview(c: pg.PoolClient, actor: ExamUser, slotId: string, stu
     const slot = await one(c, z.object({ revision: z.number(), revisionId: z.uuid().nullable(), runId: z.uuid().nullable(), studentId: z.uuid(), allowed: z.boolean(), active: z.boolean(), open: z.boolean(), reviewId: z.uuid().nullable() }), `SELECT jsonb_build_object('revision',coalesce(v.revision,0),'revisionId',v.id,'runId',q.current_run_id,'studentId',q.student_id,'reviewId',(SELECT h.id FROM exam_app.teacher_reviews h WHERE h.id=q.published_review_id AND h.revision_id=q.current_revision_id),'active',coalesce(r.finished_at IS NULL AND r.id IS NOT NULL,false),'open',EXISTS(SELECT 1 FROM exam_app.verification_incidents i WHERE i.slot_id=q.id AND i.resolved_at IS NULL),'allowed',u.state='active' AND a.state IN ('assigned','completed') AND s.state='published' AND ((x.ended_at IS NULL AND x.state IN ('in_progress','completed')) OR (NOT $2::boolean AND (x.ended_at IS NOT NULL OR x.state='closed' AND now()>=a.closes_at)))) AS value FROM exam_app.question_slots q JOIN exam_app.exam_attempts x ON x.id=q.attempt_id JOIN exam_app.exam_assignments a ON a.id=x.assignment_id JOIN exam_app.exam_sittings s ON s.id=a.sitting_id JOIN exam_app.users u ON u.id=q.student_id LEFT JOIN exam_app.question_revisions v ON v.id=q.current_revision_id LEFT JOIN exam_app.answer_runs r ON r.id=q.current_run_id WHERE q.id=$1 FOR UPDATE OF q`, [slotId, studentOnly]);
     return { ...slot, attemptId };
 }
-function reviewDigest(slotId: string, input: z.infer<typeof ExamTeacherRunSchema> | z.infer<typeof ExamTeacherConfirmSchema>) {
+function reviewDigest(slotId: string, input: z.infer<typeof ExamStudentRunSchema> | z.infer<typeof ExamTeacherRunSchema> | z.infer<typeof ExamTeacherConfirmSchema>) {
     // A null review token preserves pre-token idempotency receipts.
     const { expectedReviewId, ...legacy } = input;
     return hash(JSON.stringify({ slotId, ...legacy, ...(expectedReviewId ? { expectedReviewId } : {}) }));
 }
-async function receipt(c: pg.PoolClient, actorId: string, requestId: string, digest: string) {
-    const previous = (await rows(c, z.object({ hash: z.string(), id: z.uuid() }), `SELECT jsonb_build_object('hash',input_sha256,'id',response->>'id') AS value FROM exam_app.idempotency_requests WHERE actor_id=$1 AND operation='teacher-review' AND request_id=$2`, [actorId, requestId]))[0];
+type ReviewOperation = 'teacher-review' | 'student-rerun';
+async function receipt(c: pg.PoolClient, actorId: string, requestId: string, digest: string, operation: ReviewOperation = 'teacher-review') {
+    const previous = (await rows(c, z.object({ hash: z.string(), id: z.uuid() }), `SELECT jsonb_build_object('hash',input_sha256,'id',response->>'id') AS value FROM exam_app.idempotency_requests WHERE actor_id=$1 AND operation=$3 AND request_id=$2`, [actorId, requestId, operation]))[0];
     if (previous && previous.hash !== digest) throw conflict('同一请求标识不能用于不同处理。');
     return previous;
 }
-async function saveReceipt(c: pg.PoolClient, actor: ExamUser, requestId: string, digest: string, id: string) {
-    await c.query(`INSERT INTO exam_app.idempotency_requests(actor_id,operation,request_id,input_sha256,status,response_status,response,expires_at) VALUES($1,'teacher-review',$2,$3,'completed',200,$4,now()+interval '180 days')`, [actor.id, requestId, digest, JSON.stringify({ id })]);
+async function saveReceipt(c: pg.PoolClient, actor: ExamUser, requestId: string, digest: string, id: string, operation: ReviewOperation = 'teacher-review') {
+    await c.query(`INSERT INTO exam_app.idempotency_requests(actor_id,operation,request_id,input_sha256,status,response_status,response,expires_at) VALUES($1,$5,$2,$3,'completed',200,$4,now()+interval '180 days')`, [actor.id, requestId, digest, JSON.stringify({ id }), operation]);
 }
 function checkCurrent(slot: { revision: number; runId: string | null; reviewId: string | null; allowed: boolean; open: boolean }, input: { expectedRevision: number; expectedRunId: string | null; expectedReviewId?: string | null }, incidentOnly = false) {
     if (slot.revision !== input.expectedRevision || slot.runId !== input.expectedRunId || input.expectedReviewId !== undefined && slot.reviewId !== input.expectedReviewId) throw conflict('本题已更新，请同步后重新处理。');
     if (!slot.allowed) throw conflict('本场考试当前不可处理，或已被撤销。');
     if (incidentOnly && !slot.open) throw conflict('本题当前没有待处理问题。');
+}
+export async function studentRun(pool: pg.Pool, actor: ExamUser, slotId: string, raw: unknown) {
+    const input = ExamStudentRunSchema.parse(raw);
+    return tx(pool, async c => {
+        const slot = await lockReview(c, actor, slotId, true);
+        const digest = reviewDigest(slotId, input);
+        const previous = await receipt(c, actor.id, input.requestId, digest, 'student-rerun');
+        if (previous) return { id: previous.id };
+        checkCurrent(slot, input);
+        if (slot.active) throw conflict('本题正在处理中，请先等待完成或停止本题。');
+        const allowed = await one(c, z.boolean(), 'SELECT now()>=a.opens_at AND (a.closes_at IS NULL OR now()<a.closes_at) AS value FROM exam_app.exam_attempts x JOIN exam_app.exam_assignments a ON a.id=x.assignment_id WHERE x.id=$1', [slot.attemptId]);
+        if (!allowed) throw conflict('当前不在可答题的考试时间内。');
+        if (!slot.revisionId || !await one(c, z.boolean(), `SELECT EXISTS(SELECT 1 FROM exam_app.revision_images i JOIN exam_app.media_assets m ON m.id=i.asset_id WHERE i.revision_id=$1 AND i.role='primary' AND m.state='ready') AS value`, [slot.revisionId])) throw conflict('请先上传本题图片。');
+        if ((await rows(c, z.uuid(), 'SELECT id AS value FROM exam_app.answer_runs WHERE student_id=$1 AND client_request_id=$2', [actor.id, input.requestId])).length) throw conflict('该请求已用于其他答题操作，请重新发起。');
+        const id = randomUUID();
+        // A student run keeps the ordinary exam deadline; it never receives staff review authority.
+        await c.query(`INSERT INTO exam_app.answer_runs(id,slot_id,revision_id,student_id,client_request_id,purpose,status,input_manifest,model_policy_version) VALUES($1,$2,$3,$4,$5,'solve','queued','{}','managed-v1')`, [id, slotId, slot.revisionId, actor.id, input.requestId]);
+        await pinRunModelService(c, id, actor.id);
+        await c.query('UPDATE exam_app.question_slots SET current_run_id=$2,skipped_at=NULL,deferred_at=NULL,version=version+1 WHERE id=$1', [slotId, id]);
+        await saveReceipt(c, actor, input.requestId, digest, id, 'student-rerun');
+        await audit(c, actor.id, 'student.solve', slotId, 'slot');
+        await event(c, slot.attemptId, 'student.run-requested');
+        return { id };
+    });
 }
 export async function teacherRun(pool: pg.Pool, actor: ExamUser, slotId: string, raw: unknown) {
     const input = ExamTeacherRunSchema.parse(raw);
@@ -57,6 +84,7 @@ export async function teacherRun(pool: pg.Pool, actor: ExamUser, slotId: string,
         if (input.action === 'verify' && !source) throw conflict('当前题图没有可重新核验的答案，请先重新解答或人工处理。');
         const id = randomUUID();
         await c.query(`INSERT INTO exam_app.answer_runs(id,slot_id,revision_id,student_id,client_request_id,purpose,source_result_run_id,status,input_manifest,model_policy_version,initiated_by,review_deadline) VALUES($1,$2,$3,$4,$5,$6,$7,'queued','{}','managed-v1',$8,now()+interval '7 minutes')`, [id, slotId, slot.revisionId, slot.studentId, input.requestId, input.action, source?.id ?? null, actor.id]);
+        await pinRunModelService(c, id, slot.studentId);
         await c.query('UPDATE exam_app.question_slots SET current_run_id=$2,version=version+1 WHERE id=$1', [slotId, id]);
         await saveReceipt(c, actor, input.requestId, digest, id);
         await audit(c, actor.id, 'teacher.' + input.action, slotId, 'slot');

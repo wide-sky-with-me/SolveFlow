@@ -1,12 +1,14 @@
+import { Icon } from './icons.js';
 import { useEffect, useId, useRef, type ReactNode, type RefObject } from 'react';
 
 /** The browser owns modal focus containment and inert background content. */
-export function Dialog({ title, children, onClose, size = 'default', notice, className, initialFocus, returnFocus }: {
+export function Dialog({ title, children, onClose, size = 'default', notice, actions, className, initialFocus, returnFocus }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   size?: 'default' | 'wide';
   notice?: ReactNode;
+  actions?: ReactNode;
   className?: string;
   initialFocus?: RefObject<HTMLElement | null>;
   returnFocus?: RefObject<HTMLElement | null>;
@@ -30,7 +32,7 @@ export function Dialog({ title, children, onClose, size = 'default', notice, cla
     const box = event.currentTarget.getBoundingClientRect();
     if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) close.current();
   }}>
-    <header className="dialog-head"><h2 id={label}>{title}</h2><button className="icon-button" onClick={onClose} aria-label="关闭">×</button></header>
+    <header className="dialog-head"><h2 id={label}>{title}</h2>{actions}<button className="icon-button" onClick={onClose} aria-label="关闭"><Icon name="close"/></button></header>
     {notice && <div className="dialog-notice">{notice}</div>}
     <div className="dialog-body">{children}</div>
   </dialog>;

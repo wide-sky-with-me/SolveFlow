@@ -1,3 +1,4 @@
+// Decision: .agents/notes/implemented/architecture/2026-11-07-archived-exam-visibility.md
 // Decision: .agents/notes/implemented/architecture/2026-11-03-exam-console-dashboard.md
 import { availableAssignment, assignmentJson, progressJson, userScope } from './exam-list-sql.js';
 import { randomUUID } from 'node:crypto';
@@ -52,9 +53,11 @@ export async function updateUser(pool: pg.Pool, actor: ExamUser, id: string, raw
         await c.query('INSERT INTO exam_app.user_roles(user_id,role_id) SELECT $1,id FROM exam_app.roles WHERE code=$2', [id, role]); await audit(c, actor.id, 'user.update', id, 'user'); return userById(c, id); });
 }
 /** Internal transaction helper; callers must requireManager and lockActor first. */
-export async function insertSitting(c: pg.PoolClient, actor: ExamUser, raw: unknown) {
+export async function insertSitting(c: pg.PoolClient, actor: ExamUser, raw: unknown, eventId: string | null = null) {
     const input = ExamSittingCreateSchema.parse(raw), id = randomUUID();
-    const inserted = await c.query(`INSERT INTO exam_app.exam_sittings(id,template_id,title,opens_at,closes_at,state,manager_id) SELECT $1,id,$3,$4,$5,'published',$6 FROM exam_app.exam_templates WHERE id=$2 AND state='published'`, [id,input.templateId,input.title,input.opensAt,input.closesAt,actor.id]);
+    const inserted = eventId===null
+        ? await c.query(`INSERT INTO exam_app.exam_sittings(id,template_id,title,opens_at,closes_at,state,manager_id) SELECT $1,id,$3,$4,$5,'published',$6 FROM exam_app.exam_templates WHERE id=$2 AND state='published'`,[id,input.templateId,input.title,input.opensAt,input.closesAt,actor.id])
+        : await c.query(`INSERT INTO exam_app.exam_sittings(id,template_id,title,opens_at,closes_at,state,manager_id,event_id) SELECT $1,t.id,$3,$4,$5,'published',e.manager_id,e.id FROM exam_app.exam_templates t JOIN exam_app.exam_events e ON e.id=$7::uuid AND e.template_id=t.id AND e.archived_at IS NULL AND ($8::boolean OR e.manager_id=$6) WHERE t.id=$2 AND t.state='published'`, [id,input.templateId,input.title,input.opensAt,input.closesAt,actor.id,eventId,isAdmin(actor)]);
     if (inserted.rowCount !== 1) throw forbidden();
     await audit(c,actor.id,'sitting.publish',id,'sitting'); return {id};
 }
@@ -62,7 +65,7 @@ export async function createSitting(pool: pg.Pool, actor: ExamUser, raw: unknown
     requireManager(actor);
     return tx(pool, async c => { await lockActor(c,actor); return insertSitting(c,actor,raw); });
 }
-export async function sittings(pool: pg.Pool, actor: ExamUser) { requireManager(actor); return rows(pool, ExamSittingSchema, `SELECT jsonb_build_object('id',id,'templateId',template_id,'title',title,'opensAt',opens_at,'closesAt',closes_at,'state',state) AS value FROM exam_app.exam_sittings WHERE $1::boolean OR manager_id=$2 ORDER BY opens_at DESC LIMIT 200`, [isAdmin(actor), actor.id]); }
+export async function sittings(pool: pg.Pool, actor: ExamUser) { requireManager(actor); return rows(pool, ExamSittingSchema, `SELECT jsonb_build_object('id',id,'templateId',template_id,'title',title,'opensAt',opens_at,'closesAt',closes_at,'state',state) AS value FROM exam_app.exam_sittings WHERE archived_at IS NULL AND ($1::boolean OR manager_id=$2) ORDER BY opens_at DESC LIMIT 200`, [isAdmin(actor), actor.id]); }
 /** Internal transaction helper; callers must requireManager and lockActor first. */
 export async function insertAssignment(c: pg.PoolClient, actor: ExamUser, raw: unknown) {
     const input = ExamAssignmentCreateSchema.parse(raw);
@@ -97,7 +100,7 @@ export async function createAssignment(pool: pg.Pool, actor: ExamUser, raw: unkn
     return tx(pool, async c => { await lockActor(c,actor); return insertAssignment(c,actor,raw); });
 }
 export async function assignments(pool: pg.Pool, actor: ExamUser) {
-    return rows(pool, ExamAssignmentSchema, `SELECT ${assignmentJson} AS value FROM exam_app.exam_assignments a JOIN exam_app.users u ON u.id=a.student_id JOIN exam_app.exam_sittings s ON s.id=a.sitting_id JOIN exam_app.exam_templates t ON t.id=s.template_id WHERE $1::boolean OR a.student_id=$2 OR ($3::boolean AND s.manager_id=$2) OR ($4::boolean AND EXISTS(SELECT 1 FROM exam_app.staff_assignments f WHERE f.assignment_id=a.id AND f.staff_id=$2 AND f.revoked_at IS NULL)) ORDER BY a.opens_at DESC LIMIT 500`, [isAdmin(actor), actor.id, actor.roles.includes('manager'), actor.roles.includes('support')]);
+    return rows(pool, ExamAssignmentSchema, `SELECT ${assignmentJson} AS value FROM exam_app.exam_assignments a JOIN exam_app.users u ON u.id=a.student_id JOIN exam_app.exam_sittings s ON s.id=a.sitting_id JOIN exam_app.exam_templates t ON t.id=s.template_id WHERE (s.archived_at IS NULL OR a.student_id=$2 AND EXISTS(SELECT 1 FROM exam_app.exam_attempts history WHERE history.assignment_id=a.id AND history.started_at IS NOT NULL)) AND ($1::boolean OR a.student_id=$2 OR ($3::boolean AND s.manager_id=$2) OR ($4::boolean AND EXISTS(SELECT 1 FROM exam_app.staff_assignments f WHERE f.assignment_id=a.id AND f.staff_id=$2 AND f.revoked_at IS NULL))) ORDER BY a.opens_at DESC LIMIT 500`, [isAdmin(actor), actor.id, actor.roles.includes('manager'), actor.roles.includes('support')]);
 }
 export async function bootstrap(pool: pg.Pool, username: string, displayName: string, passwordHash: string) {
     return tx(pool, async (c) => {
@@ -118,7 +121,7 @@ export async function progress(pool: pg.Pool, actor: ExamUser) {
         throw forbidden();
     const visible = await assignments(pool, actor);
     const ids = visible.map(a => a.id);
-    return rows(pool, ExamProgressSchema, `SELECT ${progressJson} AS value FROM exam_app.exam_assignments a JOIN exam_app.users u ON u.id=a.student_id JOIN exam_app.exam_sittings s ON s.id=a.sitting_id LEFT JOIN exam_app.exam_attempts x ON x.assignment_id=a.id WHERE a.id=ANY($1::uuid[]) ORDER BY a.opens_at DESC`, [ids]);
+    return rows(pool, ExamProgressSchema, `SELECT ${progressJson} AS value FROM exam_app.exam_assignments a JOIN exam_app.users u ON u.id=a.student_id JOIN exam_app.exam_sittings s ON s.id=a.sitting_id LEFT JOIN exam_app.exam_attempts x ON x.assignment_id=a.id WHERE s.archived_at IS NULL AND a.id=ANY($1::uuid[]) ORDER BY a.opens_at DESC`, [ids]);
 }
 
 export async function hasAvailableExam(pool: pg.Pool, studentId: string) { return one(pool, z.boolean(), `SELECT EXISTS(SELECT 1 FROM exam_app.exam_assignments a JOIN exam_app.exam_sittings s ON s.id=a.sitting_id WHERE a.student_id=$1 AND (${availableAssignment})) AS value`, [studentId]); }

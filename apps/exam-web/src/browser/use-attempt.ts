@@ -1,12 +1,12 @@
 // Decision: .agents/notes/implemented/architecture/2026-11-03-exam-review-hardening.md
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ExamAttemptSchema, ExamWsServerSchema, type ExamAttempt } from '@solveflow/contracts/managed-exam';
+import { EXAM_ANSWER_VALUES_HEADER, ExamAttemptSchema, ExamWsServerSchema, type ExamAttempt } from '@solveflow/contracts/managed-exam';
 import { api } from './api.js';
 export function useAttempt(id: string) {
     const [attempt, setAttempt] = useState<ExamAttempt | null>(null), [error, setError] = useState(''), [online, setOnline] = useState(false);
     const current = useRef<ExamAttempt | null>(null);
     const refresh = useCallback(async (signal?: AbortSignal) => { try {
-        const next = await api('/attempts/' + id + '/snapshot', ExamAttemptSchema, signal ? { signal } : {});
+        const next = await api('/attempts/' + id + '/snapshot', ExamAttemptSchema, {headers:{[EXAM_ANSWER_VALUES_HEADER]:'1'},...signal?{signal}:{}});
         if (current.current && next.lastSeq < current.current.lastSeq)
             return current.current;
         if (!signal?.aborted) {

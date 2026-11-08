@@ -1,0 +1,96 @@
+.slot-state-working {
+  color: var(--accent-ink)!important;
+  background: var(--secondary)!important;
+  border-color: var(--blue)!important;
+}
+
+.slot-state-answered,.slot-state-failed,.slot-state-paused,.slot-state-skipped {
+  background: var(--feedback-bg)!important;
+  color: var(--feedback-ink)!important;
+}
+
+.section-answer-grid .flagged {
+  border-color: var(--feedback-border)!important;
+  color: var(--feedback-ink)!important;
+}
+
+.slot-overview:not(.slot-overview-unanswered) {
+  background: var(--feedback-bg)!important;
+  color: var(--feedback-ink)!important;
+  border-color: var(--feedback-border)!important;
+}
+
+.slot-overview.current {
+  background: var(--secondary)!important;
+  color: var(--accent-ink)!important;
+  border-color: var(--blue)!important;
+  box-shadow: inset 0 0 0 1px var(--blue),0 0 0 2px var(--secondary);
+}
+
+.slot-overview.current:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 3px;
+}
+
+.slot-overview.current .section-answer-alert {
+  color: var(--feedback-ink);
+}
+
+.section-answer-alert {
+  position: absolute;
+  top: 3px;
+  right: 5px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--feedback-ink);
+}
+
+.slot-state-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.slot-state-legend li {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.slot-state-legend .slot-overview {
+  background: transparent!important;
+  color: var(--muted)!important;
+}
+
+.slot-state-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--feedback-ink,var(--muted));
+  flex-shrink: 0;
+}
+
+.overview-phase {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.overview-phase .slot-state-dot {
+  width: 5px;
+  height: 5px;
+  background: var(--feedback-ink,var(--muted));
+}

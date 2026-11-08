@@ -1,3 +1,4 @@
+// Decision: .agents/notes/implemented/architecture/2026-11-07-archived-exam-visibility.md
 // Decision: .agents/notes/implemented/architecture/2026-11-03-exam-console-dashboard.md
 import type pg from 'pg';
 import { z } from 'zod';
@@ -11,7 +12,7 @@ const visible = `permitted AS (
     SELECT a.id AS assignment_id,a.student_id,u.display_name AS student_name,s.id AS sitting_id,s.title,a.opens_at,a.closes_at,s.template_id,x.id AS attempt_id,t.exam_type,u.state AS student_state,u.auth_version
     FROM exam_app.exam_assignments a JOIN exam_app.exam_sittings s ON s.id=a.sitting_id JOIN exam_app.users u ON u.id=a.student_id JOIN exam_app.exam_templates t ON t.id=s.template_id
     LEFT JOIN LATERAL(SELECT id FROM exam_app.exam_attempts WHERE assignment_id=a.id ORDER BY attempt_no DESC LIMIT 1) x ON true
-    WHERE a.state<>'revoked' AND ($1::boolean OR ($2::boolean AND s.manager_id=$4) OR ($3::boolean AND EXISTS(SELECT 1 FROM exam_app.staff_assignments f WHERE f.assignment_id=a.id AND f.staff_id=$4 AND f.revoked_at IS NULL)))
+    WHERE s.archived_at IS NULL AND a.state<>'revoked' AND ($1::boolean OR ($2::boolean AND s.manager_id=$4) OR ($3::boolean AND EXISTS(SELECT 1 FROM exam_app.staff_assignments f WHERE f.assignment_id=a.id AND f.staff_id=$4 AND f.revoked_at IS NULL)))
 ), visible AS (SELECT * FROM permitted WHERE $5::uuid IS NULL OR sitting_id=$5), slots AS (
     SELECT q.id,q.attempt_id,q.module_id,q.current_revision_id,
       (p.id IS NOT NULL OR (h.id IS NOT NULL AND h.revision_id=q.current_revision_id)) AS answered,

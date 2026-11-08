@@ -7,6 +7,10 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "exports": {
+    "./math-text": {
+      "types": "./dist/math-text.d.ts",
+      "default": "./dist/math-text.js"
+    },
     "./exam-practice": {
       "types": "./dist/exam-practice.d.ts",
       "default": "./dist/exam-practice.js"
@@ -50,6 +54,14 @@
     "./exam-catalog": {
       "types": "./dist/exam-catalog.d.ts",
       "default": "./dist/exam-catalog.js"
+    },
+    "./exam-model-services": {
+      "types": "./dist/exam-model-services.d.ts",
+      "default": "./dist/exam-model-services.js"
+    },
+    "./exam-events": {
+      "types": "./dist/exam-events.d.ts",
+      "default": "./dist/exam-events.js"
     }
   },
   "dependencies": {

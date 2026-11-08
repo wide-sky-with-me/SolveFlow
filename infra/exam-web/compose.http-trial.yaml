@@ -9,7 +9,7 @@ services:
     init: true
     read_only: true
     tmpfs: ["/tmp:size=64m,mode=1777"]
-    mem_limit: 384m
+    mem_limit: 512m
     environment:
       SOLVEFLOW_EXAM_CONFIG: /run/secrets/http_trial_config
       SOLVEFLOW_EXAM_HOST: 0.0.0.0

@@ -44,7 +44,8 @@ export const ExamSittingPublishSchema = z.strictObject({ requestId: id, sitting:
 export const ExamAllocationAddSchema = z.strictObject({ requestId: id, ...allocationFields });
 export const ExamAllocationStaffSchema = z.strictObject({ requestId: id, expectedVersion: z.number().int().positive(), supportIds: uniqueIds(32) });
 export const ExamAllocationStateSchema = z.strictObject({ requestId: id, expectedVersion: z.number().int().positive(), action: z.enum(['revoke', 'restore']) });
-export const ExamAllocationSchema = z.strictObject({ id, student: ExamUserSchema, support: z.array(ExamUserSchema).max(32), state: z.enum(['assigned','revoked','completed']), started: z.boolean(), version: z.number().int().positive() });
+export const ExamAllocationSchema = z.strictObject({ id, student: ExamUserSchema, support: z.array(ExamUserSchema).max(32), state: z.enum(['assigned','revoked','completed']), started: z.boolean(), version: z.number().int().positive(), mode:z.enum(['original','practice_simulation']).optional(), wrongCounts:z.array(z.number().int().min(0).max(300)).max(16).optional() });
+export const ExamAllocationEditSchema=ExamAllocationStaffSchema.extend({settings:z.strictObject({mode:z.enum(['original','practice_simulation']),wrongCounts:z.array(z.number().int().min(0).max(300)).max(16)}).optional()});
 export type ExamAllocation = z.infer<typeof ExamAllocationSchema>;
 export const ExamAssignmentEntrySchema = z.enum(['available', 'upcoming', 'ended', 'expired', 'revoked', 'unavailable']);
 export const ExamAssignmentSchema = z.strictObject({ id, studentId: id, studentName: text(80), sittingId: id, title: text(120), exam: ExamTypeSchema, opensAt: z.iso.datetime({ offset: true }), closesAt: z.iso.datetime({ offset: true }).nullable(), state: z.enum(['assigned', 'revoked', 'completed']), attemptId: id.nullable(), attemptEnded: z.boolean().default(false), expired: z.boolean().default(false), pendingReviewCount: z.number().int().nonnegative().default(0), entryState: ExamAssignmentEntrySchema.nullable().default(null) });
@@ -65,7 +66,8 @@ export type ExamNavigationAction = NavigationAction<ExamNavigation>;
 export const ExamNavigationResultSchema = z.strictObject({ id, slotId: id.nullable(), navigationVersion: z.number().int().nonnegative() });
 export const ExamActivitySchema = z.strictObject({ id, action: z.enum(['select_slot', 'select_module', 'skip_slot', 'skip_module']), moduleTitle: text(80), position: z.number().int().positive().nullable(), targetSlotId: id.nullable(), affectedCount: z.number().int().nonnegative(), createdAt: z.iso.datetime({ offset: true }) });
 export const ExamUploadQuerySchema = z.strictObject({ slotId: id });
-export const ExamPresentationSchema = z.strictObject({ answer: z.string().max(MAX_ANSWER_CHARACTERS), selectedOptions: z.array(text(10)).max(10).nullable(), simulated: z.boolean(), verified: z.boolean(), humanConfirmed: z.boolean().default(false), notAppliedReason: z.string().max(200).nullable() }).refine(v => !v.humanConfirmed || (!v.verified && !v.simulated));
+export const EXAM_ANSWER_VALUES_HEADER = 'x-solveflow-answer-values';
+export const ExamPresentationSchema = z.strictObject({ responseValue: text(80).optional(), answer: z.string().max(MAX_ANSWER_CHARACTERS), selectedOptions: z.array(text(10)).max(10).nullable(), simulated: z.boolean(), verified: z.boolean(), humanConfirmed: z.boolean().default(false), notAppliedReason: z.string().max(200).nullable() }).refine(v => !v.humanConfirmed || (!v.verified && !v.simulated)).refine(v => !v.responseValue || (!v.simulated && !v.humanConfirmed && !v.selectedOptions?.length));
 export type ExamPresentation = z.infer<typeof ExamPresentationSchema>;
 /** Shared by the teacher form and server; selection is the single source for choice answers. */
 export function formatExamChoiceAnswer(options: readonly { label: string; text: string }[], selected: readonly string[]): string | null {
@@ -84,11 +86,13 @@ export const ExamAlertSchema = z.strictObject({ id, slotId: id, moduleId: id, mo
 export type ExamAlert = z.infer<typeof ExamAlertSchema>;
 export const ExamResolutionSchema = z.strictObject({ id, slotId: id, moduleId: id, moduleTitle: text(80), position: z.number().int().positive(), revision: z.number().int().positive(), resolution: z.enum(['ai_pass', 'human_confirmed']), resolvedAt: z.iso.datetime({ offset: true }) });
 export type ExamResolution = z.infer<typeof ExamResolutionSchema>;
+export const ExamAnswerRevisionSchema = z.strictObject({ id, slotId: id, moduleId: id, moduleTitle: text(80), position: z.number().int().positive(), revision: z.number().int().positive(), createdAt: z.iso.datetime({ offset: true }) });
+export type ExamAnswerRevision = z.infer<typeof ExamAnswerRevisionSchema>;
 export const ExamIssueQueueQuerySchema = z.strictObject({ limit: z.coerce.number().int().min(1).max(100).default(30), cursor: text(512).optional(), q: z.string().trim().max(120).optional(), sittingId: id.optional(), studentId: id.optional(), reason: ExamAlertReasonSchema.optional() });
 export const ExamIssueQueueItemSchema = ExamAlertSchema.extend({ attemptId: id, studentId: id, studentName: text(80), title: text(120) });
 export type ExamIssueQueueItem = z.infer<typeof ExamIssueQueueItemSchema>;
 export const ExamIssueQueueSchema = z.strictObject({ items: z.array(ExamIssueQueueItemSchema).max(100), total: z.number().int().nonnegative(), nextCursor: text(512).nullable() });
-export const ExamSlotSchema = z.strictObject({ id, moduleId: id, position: z.number().int().positive(), ordinal: z.number().int().positive(), revision: z.number().int().nonnegative(), status: z.enum(['empty', 'queued', 'understanding', 'solving', 'verifying', 'revising', 'completed', 'needs_clarification', 'failed', 'cancelled', 'interrupted']), completedOnce: z.boolean(), deferred: z.boolean().default(false), skipped: z.boolean().default(false), runId: id.nullable(), reviewId: id.nullable().default(null), errorCode: z.string().max(100).nullable(), presentation: ExamPresentationSchema.nullable(), images: z.array(z.strictObject({ id, role: z.enum(['primary', 'material']) })).max(EXAM_MATERIAL_COUNT + 1) });
+export const ExamSlotSchema = z.strictObject({ id, moduleId: id, position: z.number().int().positive(), ordinal: z.number().int().positive(), revision: z.number().int().nonnegative(), status: z.enum(['empty', 'queued', 'understanding', 'solving', 'verifying', 'revising', 'completed', 'needs_clarification', 'failed', 'cancelled', 'interrupted']), completedOnce: z.boolean(), deferred: z.boolean().default(false), skipped: z.boolean().default(false), runId: id.nullable(), reviewId: id.nullable().default(null), errorCode: z.string().max(100).nullable(), presentation: ExamPresentationSchema.nullable(), draft: z.strictObject({ answer: text(MAX_ANSWER_CHARACTERS), selectedOptions: z.array(text(10)).max(10).nullable(), createdAt: z.iso.datetime({ offset: true }) }).nullable().default(null), images: z.array(z.strictObject({ id, role: z.enum(['primary', 'material']) })).max(EXAM_MATERIAL_COUNT + 1) });
 export type ExamSlot = z.infer<typeof ExamSlotSchema>;
 export const ExamTimingSchema = z.strictObject({
     startedAt: z.iso.datetime({ offset: true }).nullable(), endedAt: z.iso.datetime({ offset: true }).nullable(),
@@ -97,13 +101,18 @@ export const ExamTimingSchema = z.strictObject({
 });
 export type ExamTiming = z.infer<typeof ExamTimingSchema>;
 const legacyTiming = { startedAt: null, endedAt: null, endedBy: null, elapsedSeconds: 0, remainingSeconds: null, serverNow: '1970-01-01T00:00:00.000Z' } as const;
-export const ExamAttemptSchema = z.strictObject({ id, assignmentId: id, studentId: id, studentName: text(80), title: text(120), exam: ExamTypeSchema, timing: ExamTimingSchema.default(legacyTiming), state: z.enum(['ready', 'in_progress', 'completed', 'closed', 'cancelled']), opensAt: z.iso.datetime({ offset: true }), closesAt: z.iso.datetime({ offset: true }).nullable(), nextSlotId: id.nullable(), latestAnswerSlotId: id.nullable().default(null), viewedSlotId: id.nullable().default(null), lastSeq: z.number().int().nonnegative(), navigationVersion: z.number().int().nonnegative().default(0), activity: z.array(ExamActivitySchema).max(30).default([]), simulation: z.boolean(), modules: z.array(ExamModuleSchema.extend({ id, position: z.number().int().positive(), state: z.enum(['locked', 'available', 'in_progress', 'completed']) })).max(16), slots: z.array(ExamSlotSchema).max(4800), alerts: z.array(ExamAlertSchema).max(4800).default([]), resolutions: z.array(ExamResolutionSchema).max(4800).default([]) });
+export const ExamAttemptSchema = z.strictObject({ id, assignmentId: id, studentId: id, studentName: text(80), title: text(120), exam: ExamTypeSchema, timing: ExamTimingSchema.default(legacyTiming), state: z.enum(['ready', 'in_progress', 'completed', 'closed', 'cancelled']), opensAt: z.iso.datetime({ offset: true }), closesAt: z.iso.datetime({ offset: true }).nullable(), nextSlotId: id.nullable(), latestAnswerSlotId: id.nullable().default(null), viewedSlotId: id.nullable().default(null), lastSeq: z.number().int().nonnegative(), navigationVersion: z.number().int().nonnegative().default(0), activity: z.array(ExamActivitySchema).max(30).default([]), simulation: z.boolean(), modules: z.array(ExamModuleSchema.extend({ id, position: z.number().int().positive(), state: z.enum(['locked', 'available', 'in_progress', 'completed']) })).max(16), slots: z.array(ExamSlotSchema).max(4800), alerts: z.array(ExamAlertSchema).max(4800).default([]), resolutions: z.array(ExamResolutionSchema).max(4800).default([]), answerRevisions: z.array(ExamAnswerRevisionSchema).max(4800).default([]) });
 export type ExamAttempt = z.infer<typeof ExamAttemptSchema>;
 export const ExamHumanReviewSchema = z.strictObject({ id, revision: z.number().int().positive(), teacherName: text(80), answer: text(MAX_ANSWER_CHARACTERS), selectedOptions: z.array(text(10)).max(10).nullable(), note: text(2000), createdAt: z.iso.datetime({ offset: true }) });
 export const ExamDetailSchema = z.strictObject({ slot: ExamSlotSchema, problem: ProblemStatementSchema.nullable(), outcome: SolveOutcomeSchema.nullable(), humanReviews: z.array(ExamHumanReviewSchema).max(100).default([]), revisions: z.array(z.strictObject({ revision: z.number().int().positive(), reason: text(20), createdAt: z.iso.datetime({ offset: true }) })).max(100) });
 const reviewVersion = { requestId: id, expectedRevision: z.number().int().positive(), expectedRunId: id.nullable(), expectedReviewId: id.nullable().default(null) };
+export const ExamStudentRunSchema = z.strictObject(reviewVersion);
 export const ExamTeacherRunSchema = z.strictObject({ ...reviewVersion, action: z.enum(['solve', 'verify']) });
 export const ExamTeacherConfirmSchema = z.strictObject({ ...reviewVersion, answer: text(MAX_ANSWER_CHARACTERS), selectedOptions: z.array(text(10)).min(1).max(10).refine(v => new Set(v).size === v.length).nullable(), note: text(2000) });
+export const ExamTeacherMessageCreateSchema = z.strictObject({ requestId: id, expectedRevision: z.number().int().nonnegative(), message: text(2000) });
+export const ExamTeacherMessageSchema = z.strictObject({ id, attemptId: id, slotId: id, moduleTitle: text(80), position: z.number().int().positive(), examTitle: text(120), teacherName: text(80), message: text(2000), createdAt: z.iso.datetime({ offset: true }) });
+export type ExamTeacherMessage = z.infer<typeof ExamTeacherMessageSchema>;
+export const ExamTeacherMessagesSchema = z.strictObject({ items: z.array(ExamTeacherMessageSchema).max(100) });
 export const ExamDeferSchema = z.strictObject({ expectedRevision: z.number().int().positive(), expectedRunId: id });
 export const ExamEventSchema = z.strictObject({ schemaVersion: z.literal(1), attemptId: id, seq: z.number().int().positive(), type: text(80) });
 export const ExamEventsSchema = z.strictObject({ events: z.array(ExamEventSchema).max(100), lastSeq: z.number().int().nonnegative(), reset: z.boolean() });
@@ -136,16 +145,17 @@ export function examPageSchema<T extends z.ZodType>(item: T) {
     return z.strictObject({ items: z.array(item).max(100), total: count, page: count.min(1), pageSize: count.min(1).max(100), selected: item.nullable() });
 }
 export const ExamUserPageQuerySchema = ExamPageQuerySchema.extend({ role: ExamRoleSchema.optional(), state: ExamUserSchema.shape.state.optional(), purpose: z.enum(['management', 'student-assignment', 'support-assignment']).default('management') });
+export const ExamAllocationPageQuerySchema=ExamPageQuerySchema.extend({config:z.literal('1').optional()});
 export const ExamTemplatePageQuerySchema = ExamPageQuerySchema.extend({ exam: ExamTypeSchema.optional() });
 export const ExamSittingPageQuerySchema = ExamPageQuerySchema.extend({ state: ExamSittingSchema.shape.state.optional(), exam: ExamTypeSchema.optional() });
-export const ExamAssignmentPageQuerySchema = ExamPageQuerySchema.extend({ entryState: z.literal('1').optional(), state: z.enum(['available', 'upcoming', 'ended', 'expired', 'attention', 'revoked']).optional(), sittingId: id.optional(), studentId: id.optional(), excludeAttemptId: id.optional() });
+export const ExamAssignmentPageQuerySchema = ExamPageQuerySchema.extend({ entryState: z.literal('1').optional(), messages: z.literal('1').optional(), phase: z.enum(['in_progress', 'available', 'ended']).optional(), state: z.enum(['available', 'upcoming', 'ended', 'expired', 'attention', 'revoked']).optional(), sittingId: id.optional(), studentId: id.optional(), excludeAttemptId: id.optional() });
 export const ExamProgressPageQuerySchema = ExamPageQuerySchema.extend({ status: z.enum(['online', 'attention', 'active']).optional(), sittingId: id.optional() });
 export const ExamUserPageSchema = examPageSchema(ExamUserSchema);
 export const ExamTemplatePageSchema = examPageSchema(ExamTemplateSchema);
 export const ExamSittingListItemSchema = ExamSittingSchema.extend({ templateTitle: z.string(), assignmentCount: count });
 export const ExamSittingPageSchema = examPageSchema(ExamSittingListItemSchema);
 export const ExamAllocationPageSchema = examPageSchema(ExamAllocationSchema).extend({ sitting: ExamSittingSchema });
-export const ExamAssignmentPageSchema = examPageSchema(ExamAssignmentSchema).extend({ available: z.array(ExamAssignmentSchema).max(2), attentionTotal: count, missedTotal: count.default(0) });
+export const ExamAssignmentPageSchema = examPageSchema(ExamAssignmentSchema).extend({ available: z.array(ExamAssignmentSchema).max(2), attentionTotal: count, missedTotal: count.default(0), messages: z.array(ExamTeacherMessageSchema).max(100).default([]) });
 export const ExamProgressPageSchema = examPageSchema(ExamProgressSchema).extend({ onlineTotal: count });
 export const ExamChoiceSchema = z.strictObject({ id, label: text(200) });
 export const ExamChoicePageSchema = examPageSchema(ExamChoiceSchema);

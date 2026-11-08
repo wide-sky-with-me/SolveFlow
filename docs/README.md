@@ -24,6 +24,7 @@
 | 超时、重试、流式/非流式及诊断 | [模型预算与传输](subsystems/model-transport.md) |
 | 公式、图文、切题与原生绘制 | [阅读渲染](subsystems/rendering.md) |
 | Hono、任务事务与 SSE | [保留服务路径](subsystems/legacy-server.md) |
+| 中心考试的场次、分配、拍题、教师介入与界面 | [平台导航](subsystems/managed-exams.md)、[代码入口](../apps/exam-web/README.md)、[操作与升级](cookbook/managed-exams.md) |
 | 清理临时构建，同时保留运行服务与验收证据 | [开发产物清理](cookbook/development-cleanup.md) |
 | 怎样改动和留下决策 | [变更流程](cookbook/change-management.md) |
 | 文档放哪里、怎样命名与编写 | [编写约定](cookbook/documentation.md) |

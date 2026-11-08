@@ -41,6 +41,8 @@
 
 先构建 Web 并启动自己负责的静态服务，记录准确 URL，再设置 `SOLVEFLOW_TEST_WEB_URL` 运行 `pnpm exec playwright test tests/mobile-e2e/<目标文件>`。默认配置在 [playwright.config.ts](../playwright.config.ts)；可用 `SOLVEFLOW_TEST_CHROME` 指定已安装浏览器。禁止借用未知服务或把 fixture 端点当作真实模型。
 
+[考试平台验收脚本](../scripts/test-managed-exams.mjs)为子进程合并既有`NO_PROXY`/`no_proxy`并补充回环地址，防止WebKit将本机HTTP夹具送入系统代理；不改变产品代理或放宽测试超时。[复现与复测](postmortem/2026-11-08-managed-ui-polish.md)分别保留。
+
 `pnpm test:e2e` 保留完整功能与性能集合。两个分层入口复用相同设备、单 worker、45 秒超时及断言；性能组按文件划分，改动分页器仍须运行对应性能文件中的正确性回归。收集检查可以加 `--list`，但不算浏览器执行通过。
 
 覆盖相机拒绝/上传/裁切、窄屏公式、错误重试、追问键盘、未验证标记、取消迟到和存储失败。浏览器合成图、隔离 IndexedDB 及服务 mock 不代表手机相机、SQLite 或上游模型已通过。

@@ -102,6 +102,16 @@ export async function imageAccess(pool: Pool, actor: ExamUser, id: string, view:
 export async function readImage(pool: Pool, storage: ExamStorage, actor: ExamUser, id: string, view: ExamMediaView) {
     return storage.get((await imageAccess(pool, actor, id, view)).key);
 }
+// Solver input budget. The student-facing preview keeps the 2048px/q92 copy; the model
+// receives a smaller copy so the paid call carries fewer image bytes. Measured on real
+// cloud questions: 819KB primary + 1.4MB act views -> 354KB + 453KB, first token 2.2s -> 1.5s.
+// Evidence: .runtime/speed-2026-11-07/ab-report.json
+// Decision: .agents/notes/implemented/architecture/2026-11-07-solver-image-budget.md
+export const SOLVER_IMAGE_WIDTH = 1600;
+export const SOLVER_IMAGE_QUALITY = 85;
+export async function solverImage(bytes: Uint8Array) {
+    return sharp(bytes, { limitInputPixels: 20000000 }).resize({ width: SOLVER_IMAGE_WIDTH, height: SOLVER_IMAGE_WIDTH, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: SOLVER_IMAGE_QUALITY }).toBuffer();
+}
 export async function prepareActViews(input: SolverInput, signal: AbortSignal): Promise<NormalizedImage[]> {
     const info = await sharp(input.image.bytes, { limitInputPixels: 20000000 }).metadata();
     if (!info.width || !info.height)
@@ -111,7 +121,7 @@ export async function prepareActViews(input: SolverInput, signal: AbortSignal): 
     for (const fraction of [0, .35]) {
         signal.throwIfAborted();
         const left = Math.min(info.width - width, Math.floor(info.width * fraction));
-        const bytes = await sharp(input.image.bytes).extract({ left, top: 0, width, height: info.height }).resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 96 }).toBuffer();
+        const bytes = await sharp(input.image.bytes).extract({ left, top: 0, width, height: info.height }).resize({ width: SOLVER_IMAGE_WIDTH, height: SOLVER_IMAGE_WIDTH, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: SOLVER_IMAGE_QUALITY }).toBuffer();
         if (bytes.length <= EXAM_MODEL_IMAGE_BYTES)
             result.push({ bytes: Uint8Array.from(bytes), mimeType: 'image/jpeg' });
     }

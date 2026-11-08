@@ -6,7 +6,7 @@ import { ExamPracticeSnapshotSchema, type ExamPracticeSnapshot } from '@solveflo
 import { EXAM_LABELS, ExamTypeSchema, type ExamType } from '@solveflow/contracts/exam';
 import { Icon } from '@solveflow/web-ui/icons';
 import { Select } from '@solveflow/web-ui/select';
-import { RichText } from '@solveflow/web-ui/rich-text';
+import { RichText } from './rich-text.js';
 import { api, RequestError } from './api.js';
 import { ErrorText, statusLabels } from './components.js';
 import { ImageViewer } from './image-viewer.js';

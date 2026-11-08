@@ -9,21 +9,25 @@ import { z } from 'zod';
 import { serve } from '@hono/node-server';
 import { Server, createServer, request as proxyRequest } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
-import { chromium, webkit, type Page } from '@playwright/test';
+import { chromium, webkit, type Page, type Locator } from '@playwright/test';
 import { WebSocket as NodeWebSocket } from 'ws';
 import { realtime } from './realtime.js';
 import { processJob, modelSolver } from './worker.js';
 import { WebStoredModelsSchema } from '@solveflow/contracts/local';
 import { collectGarbage } from './maintenance.js';
 import { seedV3Attempt } from './legacy-attempt.test-support.js';
-import { one, connectDatabase, migrate, bootstrap, createTemplate, createUser, createSitting, createAssignment, startAttempt, enterModule, snapshot, submit, claimJob, heartbeatJob, finishJob, slotDetail, cancelJob, recoverJobs, admitCall, settleCall, events, updateUser, templates, teacherRun, teacherConfirm, deferSlot, jobVerificationTarget, progress, navigateAttempt } from '@solveflow/db';
+import { one, connectDatabase, migrate, bootstrap, createTemplate, createUser, createSitting, createAssignment, startAttempt, enterModule, snapshot, submit, claimJob, heartbeatJob, finishJob, slotDetail, cancelJob, recoverJobs, admitCall, settleCall, publishDraft, readAnswerRevision, events, updateUser, templates, teacherRun, teacherConfirm, deferSlot, jobVerificationTarget, progress, navigateAttempt } from '@solveflow/db';
 import { SolveOutcomeSchema, AnswerCandidateSchema } from '@solveflow/contracts/agent';
-import { ExamAssignmentSchema, ExamAssignmentPageSchema, ExamSessionSchema, ExamUserSchema, ExamProgressSchema, ExamDashboardSchema, ExamAttemptSchema, type ExamUser } from '@solveflow/contracts/managed-exam';
+import { ExamStudentRunSchema, ExamAssignmentSchema, ExamAssignmentPageSchema, ExamSessionSchema, ExamUserSchema, ExamProgressSchema, ExamDashboardSchema, ExamAttemptSchema, ExamNavigationSchema, type ExamUser } from '@solveflow/contracts/managed-exam';
 import sharp from 'sharp';
 import { build } from 'esbuild';
 import { createExamService, hashPassword } from './service.js';
 import { LocalExamStorage } from './storage.js';
 import { upload } from './images.js';
+async function enlargePicture(viewer: Locator) {
+    const viewport = viewer.getByLabel('题目原图查看区域');
+    await viewport.focus(); await viewport.press('+');
+}
 const url = process.env.SOLVEFLOW_EXAM_TEST_DATABASE_URL;
 if (url) {
     const parsed = new URL(url);
@@ -50,7 +54,7 @@ async function adminNavigate(page: Page, title: string) {
     await button.click();
 }
 async function browserHarness(contents: string) {
-    const result = await build({ stdin: { contents: `import './src/browser/styles.css';import './src/browser/review.css';import './src/browser/notifications.css';import './src/browser/console.css';import './src/browser/home.css';import './src/browser/wall.css';import './src/browser/paging.css';import './src/browser/practice.css';import './src/browser/exam-clock.css';${contents}`, resolveDir: join(process.cwd(), 'apps/exam-web'), loader: 'tsx' }, outfile: 'harness.js', bundle: true, write: false, platform: 'browser', jsx: 'automatic', format: 'esm', loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl', '.svg': 'dataurl' }, define: { 'process.env.NODE_ENV': '"production"' } });
+    const result = await build({ stdin: { contents: `import './src/browser/styles.css';import './src/browser/review.css';import './src/browser/notifications.css';import './src/browser/console.css';import './src/browser/home.css';import './src/browser/paging.css';import './src/browser/practice.css';import './src/browser/exam-clock.css';import './src/browser/design.css';${contents}`, resolveDir: join(process.cwd(), 'apps/exam-web'), loader: 'tsx' }, outfile: 'harness.js', bundle: true, write: false, platform: 'browser', jsx: 'automatic', format: 'esm', loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl', '.svg': 'dataurl' }, define: { 'process.env.NODE_ENV': '"production"' } });
     const js = result.outputFiles.find(file => file.path.endsWith('.js'))?.text;
     const css = result.outputFiles.find(file => file.path.endsWith('.css'))?.text;
     if (!js || !css) throw new Error('MISSING_BROWSER_HARNESS');
@@ -75,7 +79,7 @@ async function queuedReviewSlot(username: string) {
     const slot = (await snapshot(pool(), child, attempt.id)).slots[0];
     if (!slot) throw new Error('NO_SLOT');
     const run = await submit(pool(), child, slot.id, { requestId: randomUUID(), expectedRevision: 0, kind: 'initial', assetIds: [await asset(slot.id, child)] });
-    return { child, slot, run };
+    return { child, slot, run, attemptId: attempt.id };
 }
 describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
     beforeAll(async () => {
@@ -128,7 +132,9 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
     it('keeps legacy migrations intact and resume does not duplicate slots', async () => {
         expect((await startAttempt(pool(), student, assignmentId)).id).toBe(attemptId);
         expect((await snapshot(pool(), student, attemptId)).slots).toHaveLength(5);
-        expect((await pool().query('SELECT count(*) FROM solveflow_migrations')).rows[0]?.count).toBe('7');
+        expect((await pool().query('SELECT count(*) FROM solveflow_migrations')).rows[0]?.count).toBe('11');
+        expect((await pool().query('SELECT e.id,e.title,s.event_id FROM exam_app.exam_sittings s JOIN exam_app.exam_events e ON e.id=s.event_id WHERE s.id=$1', [sittingId])).rows[0]).toMatchObject({ id: sittingId, event_id: sittingId, title: '合成考试' });
+        expect((await pool().query('SELECT count(*) FROM solveflow_migrations WHERE version<=7')).rows[0]?.count).toBe('7');
         expect((await pool().query('SELECT id FROM owners WHERE id=$1', [legacyOwnerId])).rowCount).toBe(1);
         expect((await pool().query('SELECT approved_by FROM exam_app.answer_plans WHERE attempt_id=$1', [attemptId])).rows[0]?.approved_by).toBe(admin.id);
     });
@@ -641,24 +647,23 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             step = 'capture';
             await page.getByRole('button', { name: '拍摄第1题', exact: true }).waitFor();
             step = 'skip-and-jump';
-            await page.getByRole('button', { name: '跳过本题', exact: true }).click();
+            await page.getByRole('button', { name: '下一题', exact: true }).click();
             await page.getByRole('button', { name: '拍摄第2题', exact: true }).waitFor();
-            await page.getByRole('button', { name: '跳过本题', exact: true }).click();
+            await page.getByRole('button', { name: '下一题', exact: true }).click();
             await page.getByRole('button', { name: '拍摄第3题', exact: true }).waitFor();
             await page.getByRole('navigation', { name: '考试模块' }).getByRole('button', { name: '模块二', exact: true }).click();
-            await page.getByRole('button', { name: '选择题号', exact: true }).click();
+            await page.getByRole('button', { name: '总览', exact: true }).click();
             await page.getByRole('dialog').getByRole('button', { name: '第2题', exact: true }).click();
             await page.getByRole('dialog').waitFor({ state: 'hidden' });
             const jumpedId = (await startAttempt(pool(), child, assigned.id)).id;
             const jumped = await snapshot(pool(), child, jumpedId);
             expect(jumped.nextSlotId).toBe(jumped.slots[4]?.id);
-            expect((await progress(pool(), admin)).find(p => p.assignmentId === assigned.id)).toMatchObject({ currentPosition: 2, moduleTitle: '模块二', skipped: 2, answered: 0 });
+            expect((await progress(pool(), admin)).find(p => p.assignmentId === assigned.id)).toMatchObject({ currentPosition: 2, moduleTitle: '模块二', skipped: 0, answered: 0 });
             await page.reload();
             await page.getByRole('button', { name: '拍摄第2题', exact: true }).waitFor();
-            await page.getByRole('button', { name: '模块操作', exact: true }).click();
-            await page.getByRole('button', { name: '跳过本模块', exact: true }).click();
+            expect(await page.getByRole('button',{name:'模块操作',exact:true}).count()).toBe(0);
             await page.getByRole('navigation', { name: '考试模块' }).getByRole('button', { name: '模块一', exact: true }).click();
-            await page.getByRole('button', { name: '选择题号', exact: true }).click();
+            await page.getByRole('button', { name: '总览', exact: true }).click();
             const jumpDialog = page.getByRole('dialog');
             expect(await jumpDialog.getByRole('button', { name: '第1题', exact: true }).isEnabled()).toBe(true);
             const navigationScreens = join(process.cwd(), '.runtime/managed-exams-browser');
@@ -673,9 +678,13 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await page.getByRole('button', { name: '保存并解答', exact: true }).click();
             await page.getByRole('dialog').getByRole('alert').waitFor();
             await page.getByRole('button', { name: '保存并解答', exact: true }).click();
-            step = 'answer-and-advance';
-            await page.getByRole('button', { name: '拍摄第3题', exact: true }).waitFor({ timeout: 10000 });
-            await page.getByRole('heading', { name: '最近答案 · 模块一 · 第1题', exact: true }).waitFor();
+            step = 'answer-and-manual-next';
+            await page.locator('.current-answer').getByText('B. 4', { exact: true }).waitFor({ timeout: 10000 });
+            expect(await page.locator('.capture-box > .section-head h2').innerText()).toBe('第1题');
+            await page.getByRole('button', { name: '下一题', exact: true }).click();
+            await page.getByRole('button', { name: '拍摄第2题', exact: true }).waitFor();
+            await page.getByRole('button', { name: '下一题', exact: true }).click();
+            await page.getByRole('button', { name: '拍摄第3题', exact: true }).waitFor();
             expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
             await page.getByRole('region', { name: '待处理核验问题' }).getByText('待处理 · 1 题', { exact: true }).waitFor();
             step = 'reload';
@@ -684,17 +693,18 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await page.getByRole('button', { name: '拍摄第3题', exact: true }).waitFor();
             await page.getByRole('region', { name: '待处理核验问题' }).getByText('待处理 · 1 题', { exact: true }).waitFor();
             step = 'supplement';
-            await page.getByRole('button', { name: '选择题号', exact: true }).click();
+            await page.getByRole('button', { name: '总览', exact: true }).click();
             await page.getByRole('dialog').getByRole('button', { name: '第1题', exact: true }).click();
             const materialChooser = page.waitForEvent('filechooser');
             await page.getByRole('button', { name: '补图', exact: true }).click();
             await (await materialChooser).setFiles({ name: 'material.png', mimeType: 'image/png', buffer: image });
             await page.getByRole('button', { name: '保存并解答', exact: true }).click();
-            await page.getByRole('button', { name: '选择题号', exact: true }).click();
+            await page.getByRole('button', { name: '总览', exact: true }).click();
             await page.getByRole('dialog').getByRole('button', { name: '第3题', exact: true }).click();
             await page.getByRole('button', { name: '拍摄第3题', exact: true }).waitFor();
             const current = (await startAttempt(pool(), child, assigned.id)).id;
-            await page.getByRole('heading', { name: '最近答案 · 模块一 · 第1题', exact: true }).waitFor({ timeout: 10000 });
+            await expect.poll(async () => (await snapshot(pool(), child, current)).slots[0]?.status, { timeout: 10000 }).toBe('completed');
+            expect(await page.locator('.current-answer').getByText('B. 4', { exact: true }).count()).toBe(0);
             const snap = await snapshot(pool(), child, current);
             expect(snap.slots[0]?.revision).toBe(2);
             expect(snap.nextSlotId).toBe(snap.slots[2]?.id);
@@ -713,7 +723,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await managerPage.getByLabel('密码', { exact: true }).fill('synthetic-password-123');
             await managerPage.getByRole('button', { name: '登录', exact: true }).click();
             await managerPage.getByRole('main',{name:'看板首页',exact:true}).waitFor();
-            await managerPage.getByRole('combobox',{name:'考试场次',exact:true}).click();
+            await managerPage.getByRole('combobox',{name:'具体考试',exact:true}).click();
             const filtered=managerPage.waitForResponse(response=>{const url=new URL(response.url());return url.pathname==='/api/v2/admin/dashboard'&&url.searchParams.get('sittingId')===browserSitting.id;});
             await managerPage.getByRole('option',{name:'浏览器端到端场次',exact:true}).click();expect((await filtered).status()).toBe(200);
             await managerPage.getByText('3 位在线', { exact: true }).waitFor();
@@ -728,10 +738,12 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await monitor.getByRole('button', { name: '手动作答', exact: true }).click();
             await monitor.getByLabel('处理意见', { exact: true }).fill('核对原图，正确答案为B。');
             await managerPage.screenshot({ path: join(screens, 'navigation-teacher-review.png'), fullPage: true });
-            await monitor.getByRole('button', { name: '确认并通知学生', exact: true }).click();
+            await monitor.getByRole('button', { name: '保存并通知学生', exact: true }).click();
             await monitor.getByRole('region', { name: '待处理核验问题' }).waitFor({ state: 'hidden', timeout: 10000 });
             await page.getByRole('region', { name: '待处理核验问题' }).waitFor({ state: 'hidden', timeout: 10000 });
-            await page.getByText('老师已确认', { exact: true }).waitFor();
+            const resolved = page.getByRole('dialog', { name: '答案已更新', exact: true });
+            await resolved.locator('.alert-links button').first().click();
+            await page.getByRole('dialog').getByText('老师已确认', { exact: true }).waitFor();
             await monitor.getByRole('button', { name: '关闭', exact: true }).click();
             await adminNavigate(managerPage,'考试安排');
             await managerPage.setViewportSize({ width: 390, height: 844 });
@@ -931,7 +943,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
         const final = await slotDetail(pool(), child, slot.id);
         expect(solves).toBe(1); expect(final.slot.status).toBe('failed'); expect(final.slot.errorCode).toBe('SOLVE_FAILED');
     });
-    it('regression: reloading while a job is active must still auto-advance on its completion', async () => {
+    it('regression: reloading an active job keeps its answer until explicit Next', async () => {
         const child = await createUser(pool(), admin, { username: 'review_reload', displayName: 'Review reload', password: 'synthetic-password-123', roles: ['student'] }, password);
         const assigned = await createAssignment(pool(), admin, { sittingId, studentId: child.id });
         const attempt = await startAttempt(pool(), child, assigned.id), slot = (await snapshot(pool(), child, attempt.id)).slots[0];
@@ -956,14 +968,16 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await page.getByRole('button', { name: '重拍本题', exact: true }).waitFor();
             const job = await claimJob(pool()); if (!job || job.slotId !== slot.id) throw new Error('WRONG_JOB');
             await finishJob(pool(), job, outcome(), null);
-            await page.getByRole('heading', { name: '最近答案 · 模块一 · 第1题', exact: true }).waitFor();
+            await page.locator('.current-answer').getByText('B. 4', { exact: true }).waitFor();
             expect((await snapshot(pool(), child, attempt.id)).nextSlotId).not.toBe(slot.id);
+            expect((await snapshot(pool(), child, attempt.id)).viewedSlotId).toBe(slot.id);
+            await page.getByRole('button', { name: '下一题', exact: true }).click();
             await page.getByRole('button', { name: '拍摄第2题', exact: true }).waitFor({ timeout: 5500 });
             const second = (await snapshot(pool(), child, attempt.id)).slots[1]; if (!second) throw new Error('NO_SLOT');
             await submit(pool(), child, second.id, { requestId: randomUUID(), expectedRevision: 0, kind: 'initial', assetIds: [await asset(second.id, child)] });
             await page.reload();
             await page.getByText('排队中', { exact: true }).waitFor();
-            await page.getByRole('button', { name: '选择题号', exact: true }).click();
+            await page.getByRole('button', { name: '总览', exact: true }).click();
             await page.getByRole('dialog').getByRole('button', { name: '第3题', exact: true }).click();
             await page.getByRole('button', { name: '拍摄第3题', exact: true }).waitFor();
             const background = await claimJob(pool()); if (!background || background.slotId !== second.id) throw new Error('WRONG_JOB');
@@ -971,6 +985,41 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await expect.poll(async () => (await page.getByRole('region', { name: '待处理核验问题' }).innerText()).includes('待处理 · 2 题'), { timeout: 5500 }).toBe(true);
             expect(await page.getByRole('button', { name: '拍摄第3题', exact: true }).isVisible()).toBe(true);
         } finally { await browser.close(); closeWs(); http.closeAllConnections(); await new Promise<void>(r => http.close(() => r())); }
+    });
+    it('shows a solver draft while running and notifies only when the final answer changes', async () => {
+        const { child, slot: target, attemptId: owned } = await queuedReviewSlot('revision_notice_changed');
+        const attempt = await snapshot(pool(), child, owned);
+        const job = await claimJob(pool()); if (!job || job.slotId !== target.id) throw new Error('WRONG_JOB');
+        const draftCandidate = AnswerCandidateSchema.parse({ schemaVersion: 1, kind: 'answer', problem: { text: 'What is 2 + 2?', subject: 'math', uncertainties: [], response: { type: 'single-choice' }, options: [{ label: 'A', text: '3' }, { label: 'B', text: '4' }, { label: 'C', text: '5' }, { label: 'D', text: '6' }] }, selectedOptions: ['B'], answer: 'DRAFT-ANSWER', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] });
+        await publishDraft(pool(), job, draftCandidate);
+        const during = (await snapshot(pool(), child, attempt.id)).slots.find(s => s.id === target.id);
+        expect(during?.presentation).toBeNull();
+        expect(during?.draft).toMatchObject({ answer: 'DRAFT-ANSWER' });
+        await finishJob(pool(), job, outcome(), null);
+        const after = await snapshot(pool(), child, attempt.id);
+        expect(after.slots.find(s => s.id === target.id)?.draft).toBeNull();
+        expect(after.slots.find(s => s.id === target.id)?.presentation?.answer).toBe('B. 4');
+        expect((await pool().query('SELECT count(*) FROM exam_app.answer_drafts')).rows[0]?.count).toBe('0');
+        // The student saw DRAFT-ANSWER, the published answer is B. 4: notify the revision.
+        expect(after.answerRevisions).toHaveLength(1);
+        expect(after.answerRevisions[0]).toMatchObject({ slotId: target.id, position: target.position, revision: 1 });
+        await readAnswerRevision(pool(), child, after.answerRevisions[0]!.id);
+        expect((await snapshot(pool(), child, attempt.id)).answerRevisions).toHaveLength(0);
+    });
+    it('keeps a matching verification result silent', async () => {
+        const { child, slot: target, attemptId: owned } = await queuedReviewSlot('revision_notice_silent');
+        const attempt = await snapshot(pool(), child, owned);
+        const job = await claimJob(pool()); if (!job || job.slotId !== target.id) throw new Error('WRONG_JOB');
+        const baseline = outcome();
+        if (!('candidate' in baseline)) throw new Error('NO_CANDIDATE');
+        await publishDraft(pool(), job, AnswerCandidateSchema.parse(baseline.candidate));
+        const verified = SolveOutcomeSchema.parse({ ...baseline, verified: true, verificationStatus: undefined, verification: { schemaVersion: 1, verdict: 'pass', checked: ['transcription', 'logic'], issues: [] } });
+        await finishJob(pool(), job, verified, null);
+        const after = await snapshot(pool(), child, attempt.id);
+        expect(after.slots.find(s => s.id === target.id)?.presentation?.answer).toBe('B. 4');
+        expect(after.slots.find(s => s.id === target.id)?.presentation?.verified).toBe(true);
+        expect(after.answerRevisions).toHaveLength(0);
+        expect((await pool().query('SELECT count(*) FROM exam_app.answer_revisions WHERE run_id=$1', [job.id])).rows[0]?.count).toBe('0');
     });
     it('regression: a WS update arriving during an HTTP refresh must trigger a follow-up refresh', async () => {
         const base = await snapshot(pool(), student, attemptId);
@@ -1057,34 +1106,32 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             const dialog=teacher.getByRole('dialog'); await dialog.getByRole('region',{name:'待处理核验问题'}).locator('summary').click(); await dialog.locator('.alert-links button').filter({hasText:'第1题'}).click();
             await dialog.getByRole('button',{name:'手动作答',exact:true}).click();
             await dialog.getByRole('radio',{name:'C',exact:true}).check();
-            const answer=dialog.locator('.human-review textarea').first();
-            expect(await answer.inputValue()).toBe('C. 5'); expect(await answer.getAttribute('readonly')).not.toBeNull();
+            expect(await dialog.locator('.review-choice.selected').innerText()).toContain('5'); expect(await dialog.getByRole('textbox',{name:'确认答案',exact:true}).count()).toBe(0);
             await dialog.getByLabel('处理意见',{exact:true}).fill('合成界面回归：检查选项与答案一致。');
             await teacher.screenshot({path:join(screens,'manual-choice-desktop.png'),animations:'disabled'});
             await teacher.setViewportSize({width:390,height:844}); await teacher.emulateMedia({colorScheme:'dark'});
             const note=dialog.getByRole('textbox',{name:'处理意见',exact:true}); await note.focus();
             expect(await note.evaluate(el=>getComputedStyle(el).outlineColor)).toBe('rgb(139, 181, 255)');
             await teacher.screenshot({path:join(screens,'manual-choice-mobile-dark.png'),animations:'disabled'});
-            await dialog.getByRole('button',{name:'确认并通知学生',exact:true}).click();
+            await dialog.getByRole('button',{name:'保存并通知学生',exact:true}).click();
             await expect.poll(async()=> (await slotDetail(pool(),child,first.id)).slot.presentation?.answer).toBe('C. 5');
             const studentPage=await signedIn('ui_browser_student',390,844);
-            await studentPage.getByRole('button',{name:'拍摄第2题',exact:true}).waitFor();
-            await studentPage.getByRole('heading',{name:'最近答案 · 模块一 · 第1题',exact:true}).waitFor();
-            await studentPage.reload(); await studentPage.getByRole('heading',{name:'最近答案 · 模块一 · 第1题',exact:true}).waitFor();
             const resolvedReminder = studentPage.getByRole('dialog', { name: '答案已更新', exact: true });
             await resolvedReminder.waitFor(); await resolvedReminder.getByRole('button', { name: '稍后查看', exact: true }).click();
-            await expect.poll(async()=>{const current=await snapshot(pool(),child,attempt.id);return current.nextSlotId===current.viewedSlotId;}).toBe(true);
-            await studentPage.getByRole('button',{name:'选择题号',exact:true}).click(); await studentPage.getByRole('dialog').getByRole('button',{name:'第1题',exact:true}).click();
-            await studentPage.getByRole('button',{name:'查看本题答案',exact:true}).click();
-            const detail=studentPage.getByRole('dialog'); await detail.getByText('老师已确认',{exact:true}).waitFor();
+            await studentPage.getByRole('heading',{name:'第1题答案',exact:true}).waitFor();
+            await studentPage.reload(); await resolvedReminder.waitFor(); await resolvedReminder.getByRole('button', { name: '稍后查看', exact: true }).click();
+            await studentPage.getByRole('heading',{name:'第1题答案',exact:true}).waitFor();
+            expect((await snapshot(pool(),child,attempt.id)).viewedSlotId).toBe(first.id);
+            await studentPage.getByRole('button',{name:'总览',exact:true}).click(); await studentPage.getByRole('dialog').getByRole('button',{name:'第1题',exact:true}).click();
+            const detail=studentPage.locator('.current-answer'); await detail.getByText('老师已确认',{exact:true}).waitFor(); await detail.locator('summary').filter({hasText:'题目详情'}).click();
             expect(await detail.locator('.option.selected').innerText()).toContain('C');
             expect(await detail.getByText('C. 5',{exact:true}).isVisible()).toBe(true);
             await studentPage.screenshot({path:join(screens,'student-manual-answer.png'),animations:'disabled'});
-            await detail.getByRole('button',{name:'关闭',exact:true}).click();
-            await studentPage.getByRole('button',{name:'选择题号',exact:true}).click(); await studentPage.getByRole('dialog').getByRole('button',{name:'第2题',exact:true}).click();
+            expect(await studentPage.getByRole('dialog').count()).toBe(0);
+            await studentPage.getByRole('button',{name:'总览',exact:true}).click(); await studentPage.getByRole('dialog').getByRole('button',{name:'第2题',exact:true}).click();
             await studentPage.getByRole('button',{name:'拍摄第2题',exact:true}).waitFor();
             await submit(pool(),child,second.id,{requestId:randomUUID(),expectedRevision:0,kind:'initial',assetIds:[await asset(second.id,child)]});
-            await studentPage.getByText('排队中',{exact:true}).waitFor(); await studentPage.getByRole('button',{name:'跳过本题',exact:true}).click();
+            await studentPage.getByText('排队中',{exact:true}).waitFor(); await studentPage.getByRole('navigation',{name:'考试模块'}).getByRole('button',{name:'模块二',exact:true}).click();
             await studentPage.getByRole('navigation',{name:'考试模块'}).getByRole('button',{name:'模块二',exact:true}).waitFor();
             await studentPage.getByRole('button',{name:'拍摄第1题',exact:true}).waitFor();
             const failing=await claimJob(pool()); if(!failing||failing.slotId!==second.id)throw new Error('WRONG_JOB'); await finishJob(pool(),failing,null,'SYNTHETIC_FAILURE');
@@ -1114,13 +1161,13 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
         try{
             const page=await browser.newPage({viewport:{width:390,height:844}});
             await page.goto(local); await page.getByLabel('用户名',{exact:true}).fill(child.username); await page.getByLabel('密码',{exact:true}).fill('synthetic-password-123'); await page.getByRole('button',{name:'登录',exact:true}).click();
-            await page.locator('.assignment-card').getByText('待开始',{exact:true}).waitFor();
+            await page.locator('.assignment-card .assignment-status').getByText('待开始',{exact:true}).waitFor();
             await page.getByRole('button',{name:'拍摄第1题',exact:true}).waitFor({timeout:12000});
             const count=await pool().query('SELECT count(*) FROM exam_app.exam_attempts WHERE assignment_id=$1',[assigned.id]); expect(count.rows[0]?.count).toBe('1');
             await page.screenshot({path:join(process.cwd(),'.runtime/exam-ui-fixes/screens','auto-entered.png'),animations:'disabled'});
-            await page.getByRole('button',{name:'← 考试记录',exact:true}).click(); await page.getByRole('heading',{name:'我的考试',exact:true}).waitFor();
+            await page.getByRole('button',{name:'账户菜单',exact:true}).click();await page.getByRole('menuitem',{name:'考试记录',exact:true}).click();await page.getByRole('heading',{name:'考试记录',exact:true}).waitFor();
             await delay(5200);
-            expect(await page.getByRole('heading',{name:'我的考试',exact:true}).isVisible()).toBe(true);
+            expect(await page.getByRole('heading',{name:'考试记录',exact:true}).isVisible()).toBe(true);
         }finally{await browser.close();closeWs();server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
     },30000);
 
@@ -1230,7 +1277,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
                 page.on('pageerror', e => pageErrors.push(e.message));
                 await page.goto(local); await page.getByLabel('用户名', { exact: true }).fill(username); await page.getByLabel('密码', { exact: true }).fill('synthetic-password-123'); await page.getByRole('button', { name: '登录', exact: true }).click();
             }
-            await pupil.getByRole('region', { name: '题目状态总览' }).waitFor();
+            await pupil.getByRole('button', { name: '总览', exact: true }).waitFor();
             await pupil.getByRole('region', { name: '待处理核验问题' }).getByText('待处理 · 2 题', { exact: true }).waitFor();
             const pendingNotices = pupil.getByRole('region', { name: '待处理核验问题' });
             expect((await pendingNotices.boundingBox())?.height).toBeLessThanOrEqual(72);
@@ -1260,10 +1307,10 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await monitor.getByRole('textbox', { name: '处理意见', exact: true }).fill('检查原图后确认答案为B。');
             await staff.emulateMedia({ colorScheme: 'dark' }); await staff.setViewportSize({ width: 390, height: 844 });
             await staff.screenshot({ path: join(screens, 'teacher-answer-mobile-dark.png'), animations: 'disabled' });
-            await monitor.getByRole('button', { name: '确认并通知学生', exact: true }).scrollIntoViewIfNeeded();
+            await monitor.getByRole('button', { name: '保存并通知学生', exact: true }).scrollIntoViewIfNeeded();
             await staff.screenshot({ path: join(screens, 'teacher-confirm-mobile-dark.png'), animations: 'disabled' });
             expect(await staff.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-            await monitor.getByRole('button', { name: '确认并通知学生', exact: true }).click();
+            await monitor.getByRole('button', { name: '保存并通知学生', exact: true }).click();
             const updateReminder = pupil.getByRole('dialog', { name: '答案已更新', exact: true });
             await updateReminder.getByText('老师已处理', { exact: true }).waitFor({ timeout: 10000 });
             expect((await snapshot(pool(), child, attempt.id)).viewedSlotId).toBe(snap.slots[3]?.id);
@@ -1285,7 +1332,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             expect((await snapshot(pool(), child, attempt.id)).viewedSlotId).toBe(first.id);
             await pupil.screenshot({ path: join(screens, 'student-resolved-answer.png'), animations: 'disabled' });
             expect(await pupil.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-            await pupil.reload(); await pupil.getByRole('region', { name: '题目状态总览' }).waitFor();
+            await pupil.reload(); await pupil.getByRole('button', { name: '总览', exact: true }).waitFor();
             expect(await pupil.getByRole('region', { name: '已解决题目' }).count()).toBe(0);
             expect((await snapshot(pool(), child, attempt.id)).alerts).toHaveLength(1);
             // Resolving a failure while the student stays on that question also clears its transient error.
@@ -1368,7 +1415,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
         try { expect((await progress(pool(),admin)).find(p=>p.assignmentId===before?.assignmentId)?.answered).toBe(0); }
         finally { await cancelJob(pool(),child,redo.runId); }
     });
-    it('console: charts, filters, sync recovery and large-screen controls work in Chrome', async () => {
+    it('console: charts, filters, sync recovery and consolidated homepage actions work in Chrome', async () => {
         let live:ReturnType<typeof createExamService>|undefined;
         const server=serve({fetch:req=>live?live.app.fetch(req):new Response(null,{status:503}),hostname:'127.0.0.1',port:0});
         await new Promise<void>(resolve=>server.listening?resolve():server.once('listening',()=>resolve()));
@@ -1383,6 +1430,8 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             const page=await browser.newPage({viewport:{width:1440,height:1000}});page.on('pageerror',e=>errors.push(e.message));
             await page.goto(local);await page.getByLabel('用户名',{exact:true}).fill(admin.username);await page.getByLabel('密码',{exact:true}).fill('synthetic-password-123');await page.getByRole('button',{name:'登录',exact:true}).click();
             const board=page.getByRole('region',{name:'考试数据看板'});await board.getByRole('img',{name:'题目状态分布图'}).waitFor();
+            expect(await page.getByRole('navigation',{name:'管理导航'}).getByRole('button',{name:'答题统计',exact:true}).count()).toBe(0);
+            expect(await page.getByRole('navigation',{name:'管理导航'}).getByRole('button',{name:'数据大屏',exact:true}).count()).toBe(0);
             expect((await page.locator('.header .brand').boundingBox())?.x).toBeLessThan(40);
             expect(await page.getByRole('heading',{name:'看板首页',exact:true}).count()).toBe(0);
             await page.getByRole('button',{name:'收起导航',exact:true}).click();
@@ -1416,7 +1465,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             releaseRefresh();await board.getByRole('button',{name:'刷新',exact:true}).waitFor();page.off('request',countRefresh);
             expect(await page.getByRole('button',{name:'新建用户',exact:true}).count()).toBe(0);
             await page.screenshot({path:join(screens,'console-desktop-light.png'),fullPage:true,animations:'disabled'});
-            await board.getByRole('combobox',{name:'考试场次',exact:true}).click();await page.getByRole('option',{name:'合成考试',exact:true}).click();
+            await board.getByRole('combobox',{name:'具体考试',exact:true}).click();await page.getByRole('option',{name:'合成考试',exact:true}).click();
             await board.getByRole('img',{name:'近一小时答案发布图'}).waitFor();
             await page.route('**/api/v2/admin/dashboard*',route=>route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({message:'合成看板同步中断'})}),{times:1});
             await board.getByRole('button',{name:'刷新',exact:true}).click();
@@ -1424,8 +1473,11 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             expect(await board.getByRole('img',{name:'题目状态分布图'}).isVisible()).toBe(true);
             await page.getByRole('alert').filter({hasText:'合成看板同步中断'}).waitFor({state:'hidden',timeout:8000});
             await page.emulateMedia({colorScheme:'dark'});await page.screenshot({path:join(screens,'console-desktop-dark.png'),fullPage:true,animations:'disabled'});
-            await adminNavigate(page,'答题统计');await page.getByRole('heading',{name:'发布明细',exact:true}).waitFor();
-            await page.screenshot({path:join(screens,'statistics-desktop.png'),fullPage:true,animations:'disabled'});
+            const publicationDetails=board.getByRole('button',{name:'发布明细',exact:true});
+            await publicationDetails.click();const detail=page.getByRole('dialog',{name:'发布明细',exact:true});await detail.waitFor();
+            expect(await detail.getByRole('table',{name:'答案发布明细',exact:true}).getByRole('row').count()).toBe(14);
+            await page.screenshot({path:join(screens,'homepage-publications-desktop.png'),animations:'disabled'});
+            await detail.getByRole('button',{name:'关闭',exact:true}).click();
             await adminNavigate(page,'实时跟踪');await page.getByRole('table').waitFor();
             await page.screenshot({path:join(screens,'tracking-desktop.png'),fullPage:true,animations:'disabled'});
             await adminNavigate(page,'看板首页');await page.getByRole('img',{name:'题目状态分布图'}).waitFor();
@@ -1435,61 +1487,99 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await page.setViewportSize({width:1920,height:1080});
             await page.evaluate(()=>{const set=Storage.prototype.setItem;Storage.prototype.setItem=function(key,value){if(key==='solveflow-exam-appearance')throw new DOMException('Synthetic preference storage refusal','QuotaExceededError');return Reflect.apply(set,this,[key,value]);};});
             await theme.click();await page.getByRole('menuitemradio',{name:'深色',exact:true}).click();
-            await adminNavigate(page,'数据大屏');
-            const wall=page.getByRole('region',{name:'考试数据大屏'});await wall.getByRole('img',{name:'题目状态分布图'}).waitFor();
             expect(await page.evaluate(()=>document.documentElement.dataset.theme)).toBe('dark');
-            await page.screenshot({path:join(screens,'data-wall-1920.png'),animations:'disabled'});
-            expect(await wall.evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
-            expect(await wall.evaluate(el=>el.scrollHeight<=el.clientHeight)).toBe(true);
-            await wall.getByRole('button',{name:'全屏',exact:true}).click();
-            await expect.poll(()=>page.evaluate(()=>!!document.fullscreenElement)).toBe(true);
-            await wall.locator('.students-panel').getByRole('button',{name:'查看',exact:true}).first().click();
+            await page.screenshot({path:join(screens,'homepage-1920.png'),fullPage:true,animations:'disabled'});
+            expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+            expect(await page.getByRole('button',{name:'全屏',exact:true}).count()).toBe(0);
+            await board.locator('.students-panel').getByRole('button',{name:'查看',exact:true}).first().click();
             await page.getByRole('dialog').waitFor({timeout:5000});
             await page.getByRole('dialog').locator('.monitor-counts').waitFor({timeout:5000});
-            await page.screenshot({path:join(screens,'data-wall-student-dialog.png'),animations:'disabled'});
+            await page.screenshot({path:join(screens,'homepage-student-dialog.png'),animations:'disabled'});
             await page.getByRole('dialog').getByRole('button',{name:'关闭',exact:true}).click();
-            await wall.getByRole('button',{name:'退出全屏',exact:true}).click();
-            await expect.poll(()=>page.evaluate(()=>document.fullscreenElement===null)).toBe(true);
-            await wall.getByRole('button',{name:'返回控制台',exact:true}).click();await page.getByRole('main',{name:'看板首页',exact:true}).waitFor();
+            expect(await page.evaluate(()=>document.fullscreenElement===null)).toBe(true);
+            await page.getByRole('main',{name:'看板首页',exact:true}).waitFor();
             expect(await page.evaluate(()=>document.body.style.overflow)).not.toBe('hidden');
             await page.getByRole('button',{name:'查看待处理题',exact:true}).click();await page.getByRole('region',{name:'待处理题队列'}).waitFor();
             expect(errors).toEqual([]);
         }finally{releaseRefresh();await browser.close();server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
     },40000);
-    for (const engine of ['chrome', 'webkit'] as const) it(`console wall: populated, empty and narrow layouts preserve actions in ${engine}`, async () => {
-        const baseline=ExamDashboardSchema.parse(await(await json('/admin/dashboard',await login(admin.username))).json());
-        const template=baseline.students.find(student=>student.attemptId);
-        if(!template)throw new Error('WALL_STUDENT_FIXTURE_REQUIRED');
-        let payload=ExamDashboardSchema.parse({...baseline,
-            summary:{students:12,online:9,total:1176,answered:624,verified:480,humanConfirmed:96,active:12,attention:36},
-            distribution:[{state:'unphotographed',count:528},{state:'processing',count:12},{state:'attention',count:36},{state:'answered',count:588},{state:'waiting',count:12}],
-            modules:Array.from({length:8},(_,i)=>({exam:'sat',title:'阅读与写作'+(i+1)+'长模块名称'.repeat(8),sectionCode:'module-'+i,total:147,answered:78,attention:4})),
-            students:Array.from({length:8},(_,i)=>({...template,assignmentId:randomUUID(),studentName:'合成考生'+i+'长姓名'.repeat(16),attention:8-i,online:i<7})),
+    for (const engine of ['chrome', 'webkit'] as const) it(`console home: consolidated publication details retain live data and narrow layouts in ${engine}`, async () => {
+        const baseline = ExamDashboardSchema.parse(await (await json('/admin/dashboard', await login(admin.username))).json());
+        const template = baseline.students.find(student => student.attemptId);
+        if (!template) throw new Error('HOME_STUDENT_FIXTURE_REQUIRED');
+        let payload = ExamDashboardSchema.parse({ ...baseline,
+            summary: { students: 12, online: 9, total: 1176, answered: 624, verified: 480, humanConfirmed: 96, active: 12, attention: 36 },
+            distribution: [{ state: 'unphotographed', count: 528 }, { state: 'processing', count: 12 }, { state: 'attention', count: 36 }, { state: 'answered', count: 588 }, { state: 'waiting', count: 12 }],
+            modules: Array.from({ length: 8 }, (_, i) => ({ exam: 'sat', title: '阅读与写作' + (i + 1) + '长模块名称'.repeat(8), sectionCode: 'module-' + i, total: 147, answered: 78, attention: 4 })),
+            students: Array.from({ length: 8 }, (_, i) => ({ ...template, assignmentId: randomUUID(), studentName: '合成考生' + i + '长姓名'.repeat(16), attention: 8 - i, online: i < 7 })),
+            throughput: baseline.throughput.map((point, index) => ({ ...point, ai: index + 1, human: index % 3 })),
         });
-        const bundle=await browserHarness(`import {useState} from 'react';import {createRoot} from 'react-dom/client';import {Dashboard} from './src/browser/dashboard.tsx';function Preview(){const[action,setAction]=useState('');return <><Dashboard wall onWatch={id=>setAction('student:'+id)} onIssues={reason=>setAction('issues:'+(reason??'all'))} onExit={()=>setAction('exit')}/><output aria-label="大屏操作">{action}</output></>};createRoot(document.getElementById('root')).render(<Preview/>);`);
-        const browser=await(engine==='webkit'?webkit.launch():chromium.launch({executablePath:'/usr/bin/google-chrome'}));
-        try{
-            const page=await browser.newPage({viewport:{width:1920,height:1080}}),errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
-            await page.route('http://127.0.0.1:3199/**',route=>{const path=new URL(route.request().url()).pathname;return route.fulfill(path==='/api/v2/admin/dashboard'?{contentType:'application/json',body:JSON.stringify(payload)}:{contentType:path.endsWith('.js')?'text/javascript':path.endsWith('.css')?'text/css':'text/html',body:path==='/harness.js'?bundle.js:path==='/harness.css'?bundle.css:bundle.html});});
-            await page.goto('http://127.0.0.1:3199/');const wall=page.getByRole('region',{name:'考试数据大屏'});await wall.getByRole('img',{name:'答案覆盖率 53%'}).waitFor();
-            expect(await wall.evaluate(n=>n.scrollWidth<=n.clientWidth&&n.scrollHeight<=n.clientHeight)).toBe(true);
-            expect(await wall.locator('.wall-students').evaluate(n=>n.scrollHeight<=n.clientHeight)).toBe(true);
-            expect(await wall.locator('.wall-students li').count()).toBe(8);
-            await wall.locator('.wall-students').getByRole('button',{name:'查看',exact:true}).first().click();
-            expect(await page.getByLabel('大屏操作').innerText()).toBe('student:'+template.attemptId);
-            await wall.locator('.wall-attention-total').click();expect(await page.getByLabel('大屏操作').innerText()).toBe('issues:all');
-            await wall.getByRole('button',{name:'柱图',exact:true}).click();expect(await wall.locator('.chart-bar').count()).toBe(24);
-            await wall.getByRole('button',{name:'趋势',exact:true}).click();const chart=wall.getByRole('group',{name:'答案发布趋势，方向键查看时间段'});await chart.focus();await chart.press('ArrowRight');expect(await wall.locator('.chart-tooltip').isVisible()).toBe(true);await chart.press('Escape');expect(await wall.locator('.chart-tooltip').count()).toBe(0);
-            await page.emulateMedia({reducedMotion:'reduce'});expect(await wall.locator('.orbit-value').evaluate(n=>getComputedStyle(n).animationName)).toBe('none');expect(await wall.locator('.wall-activity i').evaluate(n=>getComputedStyle(n).animationName)).toBe('none');
-            for(const width of [1440,768,390,320]){await page.setViewportSize({width,height:width===1440?1000:844});expect(await wall.evaluate(n=>n.scrollWidth<=n.clientWidth)).toBe(true);}
-            const mobileAction=await wall.locator('.wall-students').getByRole('button',{name:'查看',exact:true}).first().boundingBox();expect(mobileAction?.width).toBeGreaterThanOrEqual(44);expect(mobileAction?.height).toBeGreaterThanOrEqual(44);
-            payload=ExamDashboardSchema.parse({...payload,summary:{students:0,online:0,total:0,answered:0,verified:0,humanConfirmed:0,active:0,attention:0},modules:[],students:[],issues:[],distribution:payload.distribution.map(item=>({...item,count:0})),throughput:payload.throughput.map(item=>({...item,ai:0,human:0}))});
-            await wall.getByRole('button',{name:'刷新',exact:true}).click();await wall.getByRole('img',{name:'答案覆盖率 0%'}).waitFor();
-            expect(await wall.innerText()).not.toMatch(/NaN|Infinity/);expect(await wall.getByText('暂无考试分配',{exact:true}).isVisible()).toBe(true);
-            expect(await wall.locator('.orbit-value').getAttribute('opacity')).toBe('0');expect(await wall.locator('.wall-activity.is-active').count()).toBe(0);
-            await wall.getByRole('button',{name:'返回控制台',exact:true}).click();expect(await page.getByLabel('大屏操作').innerText()).toBe('exit');expect(errors).toEqual([]);
-        }finally{await browser.close();}
-    },40000);
+        let fail = false;
+        const writes: string[] = [];
+        const bundle = await browserHarness(`import {useState} from 'react';import {createRoot} from 'react-dom/client';import {Dashboard} from './src/browser/dashboard.tsx';function Preview(){const[action,setAction]=useState('');return <><Dashboard onWatch={id=>setAction('student:'+id)} onIssues={reason=>setAction('issues:'+(reason??'all'))}/><output aria-label="看板操作">{action}</output></>};createRoot(document.getElementById('root')).render(<Preview/>);`);
+        const browser = await (engine === 'webkit' ? webkit.launch() : chromium.launch({ executablePath: '/usr/bin/google-chrome' }));
+        try {
+            const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } }), errors: string[] = [];
+            page.on('pageerror', error => errors.push(error.message));
+            await page.clock.install();
+            await page.route('http://127.0.0.1:3199/**', route => {
+                const request = route.request(), path = new URL(request.url()).pathname;
+                if (request.method() !== 'GET') { writes.push(path); return route.abort(); }
+                if (path === '/api/v2/admin/dashboard') return route.fulfill(fail ? { status: 503, json: { message: '合成发布同步失败' } } : { json: payload });
+                return route.fulfill({ contentType: path.endsWith('.js') ? 'text/javascript' : path.endsWith('.css') ? 'text/css' : 'text/html', body: path === '/harness.js' ? bundle.js : path === '/harness.css' ? bundle.css : bundle.html });
+            });
+            await page.goto('http://127.0.0.1:3199/');
+            const board = page.getByRole('region', { name: '考试数据看板' });
+            await board.getByRole('img', { name: '答案覆盖率 53%' }).waitFor();
+            expect(await board.locator('.console-metric').count()).toBe(4);
+            expect(await board.locator('.students-panel tbody tr').count()).toBe(8);
+            const open = board.getByRole('button', { name: '发布明细', exact: true });
+            await open.focus(); await open.click();
+            const details = page.getByRole('dialog', { name: '发布明细', exact: true }), table = details.getByRole('table', { name: '答案发布明细', exact: true });
+            await table.waitFor();
+            expect(await table.getByRole('row').count()).toBe(14);
+            expect(await table.locator('tfoot th,tfoot td').allTextContents()).toEqual(['合计', '78', '12', '90']);
+            await table.evaluate(node => node.setAttribute('data-stable-publication', 'yes'));
+            const close = details.getByRole('button', { name: '关闭', exact: true }); await close.focus();
+            payload = ExamDashboardSchema.parse({ ...payload, throughput: payload.throughput.map(point => ({ ...point, ai: point.ai + 2 })) });
+            await page.clock.fastForward(5000);
+            await expect.poll(() => table.locator('tfoot th,tfoot td').allTextContents()).toEqual(['合计', '102', '12', '114']);
+            expect(await table.getAttribute('data-stable-publication')).toBe('yes');
+            expect(await close.evaluate(node => node === document.activeElement)).toBe(true);
+            fail = true; await page.clock.fastForward(5000); await details.getByRole('alert').waitFor();
+            expect(await details.getByRole('alert').textContent()).toContain('合成发布同步失败');
+            expect(await table.locator('tfoot th,tfoot td').allTextContents()).toEqual(['合计', '102', '12', '114']);
+            fail = false; await page.clock.fastForward(5000); await expect.poll(() => details.getByRole('alert').count()).toBe(0);
+            const screens = join(process.cwd(), '.runtime/dashboard-consolidation-20261108/screens'); await mkdir(screens, { recursive: true });
+            for (const width of [1440, 768, 390, 320]) for (const theme of ['light', 'dark']) {
+                await page.setViewportSize({ width, height: 900 });
+                await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+                expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+                expect(await details.locator('.publication-details-table').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+                await page.screenshot({ path: join(screens, `publications-${engine}-${width}-${theme}.png`), animations: 'disabled' });
+            }
+            await page.emulateMedia({ reducedMotion: 'reduce' });
+            expect(await details.evaluate(node => getComputedStyle(node).animationName)).toBe('none');
+            expect(await board.locator('.orbit-value').evaluate(node => getComputedStyle(node).animationName)).toBe('none');
+            await page.keyboard.press('Escape'); await expect.poll(() => details.count()).toBe(0);
+            expect(await open.evaluate(node => node === document.activeElement)).toBe(true);
+            const studentAction = board.locator('.students-panel').getByRole('button', { name: '查看', exact: true }).first();
+            await studentAction.click(); expect(await page.getByLabel('看板操作').innerText()).toBe('student:' + template.attemptId);
+            const mobileAction = await studentAction.boundingBox();
+            expect(mobileAction?.width).toBeGreaterThanOrEqual(44); expect(mobileAction?.height).toBeGreaterThanOrEqual(44);
+            await board.getByRole('button', { name: '查看待处理题', exact: true }).click(); expect(await page.getByLabel('看板操作').innerText()).toBe('issues:all');
+            await board.getByRole('button', { name: '柱图', exact: true }).click(); expect(await board.locator('.chart-bar').count()).toBe(24);
+            await board.getByRole('button', { name: '趋势', exact: true }).click();
+            const chart = board.getByRole('group', { name: '答案发布趋势，方向键查看时间段' }); await chart.focus(); await chart.press('ArrowRight');
+            expect(await board.locator('.chart-tooltip').isVisible()).toBe(true); await chart.press('Escape'); expect(await board.locator('.chart-tooltip').count()).toBe(0);
+            payload = ExamDashboardSchema.parse({ ...payload, summary: { students: 0, online: 0, total: 0, answered: 0, verified: 0, humanConfirmed: 0, active: 0, attention: 0 }, modules: [], students: [], issues: [], distribution: payload.distribution.map(item => ({ ...item, count: 0 })), throughput: payload.throughput.map(item => ({ ...item, ai: 0, human: 0 })) });
+            await page.clock.fastForward(5000); await board.getByRole('img', { name: '答案覆盖率 0%' }).waitFor();
+            expect(await board.innerText()).not.toMatch(/NaN|Infinity/); expect(await board.getByText('暂无考试分配', { exact: true }).isVisible()).toBe(true);
+            expect(await board.locator('.orbit-value').getAttribute('opacity')).toBe('0');
+            await open.click(); await table.waitFor(); expect(await table.locator('tfoot th,tfoot td').allTextContents()).toEqual(['合计', '0', '0', '0']);
+            await close.click(); expect(writes).toEqual([]); expect(errors).toEqual([]);
+        } finally { await browser.close(); }
+    }, 40000);
 
     for (const engine of ['chrome', 'webkit'] as const) it(`console home: progress, issue actions and compact layouts work in ${engine}`, async () => {
         const baseline=ExamDashboardSchema.parse(await(await json('/admin/dashboard',await login(admin.username))).json());
@@ -1501,7 +1591,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             modules:Array.from({length:8},(_,i)=>({exam:'sat',title:'阅读与写作'+i+'长模块名称'.repeat(8),sectionCode:'module-'+i,total:147,answered:78,attention:4})),
             students:Array.from({length:8},(_,i)=>({...template,assignmentId:randomUUID(),studentName:'合成考生'+i+'长姓名'.repeat(16),attention:8-i,online:i<7})),
         });
-        const bundle=await browserHarness(`import {useState} from 'react';import {createRoot} from 'react-dom/client';import {Dashboard} from './src/browser/dashboard.tsx';function Preview(){const[action,setAction]=useState('');return <><Dashboard onWatch={id=>setAction('student:'+id)} onIssues={reason=>setAction('issues:'+(reason??'all'))} onExit={()=>{}}/><output aria-label="首页操作">{action}</output></>};createRoot(document.getElementById('root')).render(<Preview/>);`);
+        const bundle=await browserHarness(`import {useState} from 'react';import {createRoot} from 'react-dom/client';import {Dashboard} from './src/browser/dashboard.tsx';function Preview(){const[action,setAction]=useState('');return <><Dashboard onWatch={id=>setAction('student:'+id)} onIssues={reason=>setAction('issues:'+(reason??'all'))}/><output aria-label="首页操作">{action}</output></>};createRoot(document.getElementById('root')).render(<Preview/>);`);
         const browser=await(engine==='webkit'?webkit.launch():chromium.launch({executablePath:'/usr/bin/google-chrome'}));
         try{
             const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
@@ -1559,19 +1649,17 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await pupil.locator('.answer-card').waitFor();
             await staff.locator('.student-row').filter({ hasText: child.displayName }).click();
             const dialog = staff.getByRole('dialog');
-            await dialog.getByRole('button', { name: '题目导航', exact: true }).click();
-            const nav = staff.getByRole('dialog', { name: '题目导航', exact: true });
+            const nav = dialog.getByRole('region', { name: '题目导航', exact: true }); await nav.waitFor();
             await nav.locator('section').first().getByRole('button', { name: /第1题$/, exact: false }).click();
             await dialog.getByRole('button', { name: 'AI 答题', exact: true }).waitFor();
             expect(await dialog.getByRole('button', { name: 'AI 答题', exact: true }).isEnabled()).toBe(true);
             await dialog.getByRole('button', { name: '手动作答', exact: true }).click();
             expect(await dialog.locator('.review-choice').count()).toBe(4);
             expect(await dialog.getByRole('radio', { name: 'A', exact: true }).evaluate(el => el === document.activeElement)).toBe(true);
-            expect(await dialog.getByRole('button', { name: '确认并通知学生', exact: true }).isDisabled()).toBe(true);
+            expect(await dialog.getByRole('button', { name: '保存并通知学生', exact: true }).isDisabled()).toBe(true);
             expect(await dialog.locator('.review-choice').filter({ has: staff.getByRole('radio', { name: 'C', exact: true }) }).innerText()).toContain('5');
             await dialog.getByRole('radio', { name: 'C', exact: true }).check();
-            expect(await dialog.getByRole('textbox', { name: '确认答案', exact: true }).inputValue()).toBe('C. 5');
-            expect(await dialog.getByRole('textbox', { name: '确认答案', exact: true }).getAttribute('readonly')).not.toBeNull();
+            expect(await dialog.locator('.review-choice.selected').innerText()).toContain('5'); expect(await dialog.getByRole('textbox', { name: '确认答案', exact: true }).count()).toBe(0);
             await dialog.getByLabel('处理意见', { exact: true }).fill('合成界面测试：验证老师选项能同步，不评估数学正确率。');
             await dialog.locator('.review-choices').scrollIntoViewIfNeeded();
             await staff.screenshot({ path: join(screens, 'teacher-choice-desktop.png'), animations: 'disabled' });
@@ -1579,7 +1667,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await dialog.locator('.review-choices').scrollIntoViewIfNeeded();
             await staff.screenshot({ path: join(screens, 'teacher-choice-mobile-dark.png'), animations: 'disabled' });
             expect(await staff.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-            await dialog.getByRole('button', { name: '确认并通知学生', exact: true }).click();
+            await dialog.getByRole('button', { name: '保存并通知学生', exact: true }).click();
             await pupil.locator('.answer-card').getByText('C. 5', { exact: true }).waitFor({ timeout: 8000 });
             await pupil.locator('.answer-card').getByText('老师已确认', { exact: true }).waitFor();
             expect((await snapshot(pool(), child, attempt.id)).resolutions).toHaveLength(0);
@@ -1597,23 +1685,23 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await pupil.locator('.answer-card').getByText('AI 已核验', { exact: true }).waitFor();
             await expect.poll(() => dialog.getByRole('button', { name: 'AI 答题', exact: true }).isEnabled()).toBe(true);
             await staff.setViewportSize({ width: 1440, height: 1000 }); await staff.emulateMedia({ colorScheme: 'light' });
-            await dialog.getByRole('button', { name: '题目导航', exact: true }).click();
             await nav.locator('section').first().getByRole('button', { name: /第2题$/ }).click();
             await dialog.getByRole('heading', { name: '第2题', exact: true }).waitFor();
             await dialog.getByRole('button', { name: '手动作答', exact: true }).click();
             expect(await dialog.getByRole('checkbox', { name: 'B', exact: true }).isChecked()).toBe(true);
             expect(await dialog.getByRole('checkbox', { name: 'D', exact: true }).isChecked()).toBe(true);
             await dialog.getByRole('checkbox', { name: 'D', exact: true }).uncheck();
-            expect(await dialog.getByRole('textbox', { name: '确认答案', exact: true }).inputValue()).toBe('B. 4');
+            expect(await dialog.locator('.review-choice.selected').allTextContents()).toEqual([expect.stringContaining('4')]);
             await dialog.getByRole('checkbox', { name: 'D', exact: true }).check();
-            expect(await dialog.getByRole('textbox', { name: '确认答案', exact: true }).inputValue()).toBe('B. 4\nD. 6');
+            expect(await dialog.locator('.review-choice.selected').allTextContents()).toEqual([expect.stringContaining('4'),expect.stringContaining('6')]);
             await dialog.getByLabel('处理意见', { exact: true }).fill('确认两个偶数选项。');
             await dialog.locator('.review-choices').scrollIntoViewIfNeeded();
             await staff.screenshot({ path: join(screens, 'teacher-multiple-choice.png'), animations: 'disabled' });
-            await dialog.getByRole('button', { name: '确认并通知学生', exact: true }).click();
-            await pupil.getByRole('heading', { name: '最近答案 · 模块一 · 第2题', exact: true }).waitFor({ timeout: 8000 });
+            await dialog.getByRole('button', { name: '保存并通知学生', exact: true }).click();
+            expect(await pupil.locator('.current-answer').innerText()).toContain('B. 4');
+            await pupil.getByRole('button', { name: '下一题', exact: true }).click();
+            await pupil.getByRole('heading', { name: '第2题答案', exact: true }).waitFor({ timeout: 8000 });
             await expect.poll(async () => (await slotDetail(pool(), child, second.id)).slot.presentation?.selectedOptions).toEqual(['B', 'D']);
-            await dialog.getByRole('button', { name: '题目导航', exact: true }).click();
             await nav.locator('section').first().getByRole('button', { name: /第3题$/ }).click();
             await dialog.getByRole('heading', { name: '第3题', exact: true }).waitFor();
             expect(await dialog.getByRole('button', { name: 'AI 答题', exact: true }).count()).toBe(0);
@@ -1628,10 +1716,12 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             const written = dialog.getByRole('textbox', { name: '确认答案', exact: true });
             expect(await written.getAttribute('readonly')).toBeNull();
             await written.fill('B. 4'); await dialog.getByLabel('处理意见', { exact: true }).fill('核对原图，人工补充尚未识别的答案。');
-            await dialog.getByRole('button', { name: '确认并通知学生', exact: true }).click();
+            await dialog.getByRole('button', { name: '保存并通知学生', exact: true }).click();
             const updated = pupil.getByRole('dialog', { name: '答案已更新', exact: true }); await updated.waitFor({ timeout: 8000 });
             await updated.getByRole('button', { name: '稍后查看', exact: true }).click();
-            await pupil.getByRole('heading', { name: '最近答案 · 模块一 · 第3题', exact: true }).waitFor({ timeout: 8000 });
+            expect(await pupil.getByRole('heading', { name: '第2题答案', exact: true }).isVisible()).toBe(true);
+            await pupil.getByRole('button', { name: '下一题', exact: true }).click();
+            await pupil.getByRole('heading', { name: '第3题答案', exact: true }).waitFor({ timeout: 8000 });
             await pupil.locator('.answer-card').getByText('B. 4', { exact: true }).waitFor();
             await pupil.getByRole('region', { name: '已解决题目' }).waitFor();
             expect(errors).toEqual([]);
@@ -1796,7 +1886,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await expect.poll(()=>page.getByRole('combobox',{name:'学生',exact:true}).evaluate(el=>document.activeElement===el)).toBe(true);
         } finally {await browser.close();}
     });
-    it('deep review: late student details cannot replace another question or reopen a closed dialog', async () => {
+    it('deep review: late inline details cannot replace another question or restore an exited view', async () => {
         const {child,slot,run}=await queuedReviewSlot('deep_detail_race');
         const firstJob=await claimJob(pool());if(!firstJob||firstJob.id!==run.runId)throw new Error('WRONG_JOB');await finishJob(pool(),firstJob,outcome(),null);
         const second=(await snapshot(pool(),child,firstJob.attemptId)).slots[1];if(!second)throw new Error('NO_SLOT');
@@ -1804,7 +1894,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
         const secondJob=await claimJob(pool());if(!secondJob||secondJob.slotId!==second.id)throw new Error('WRONG_JOB');await finishJob(pool(),secondJob,outcome(),null);
         await navigateAttempt(pool(),child,firstJob.attemptId,{requestId:randomUUID(),action:'select_slot',slotId:slot.id,expectedVersion:(await snapshot(pool(),child,firstJob.attemptId)).navigationVersion});
         const base=await snapshot(pool(),child,firstJob.attemptId),details=new Map([[slot.id,await slotDetail(pool(),child,slot.id)],[second.id,await slotDetail(pool(),child,second.id)]]);
-        const bundle=await browserHarness(`import {createRoot} from 'react-dom/client';import {StudentAttempt} from './src/browser/student.tsx';createRoot(document.getElementById('root')).render(<main className="student-content"><StudentAttempt id="${base.id}" onExit={()=>{}}/></main>);`);
+        const bundle=await browserHarness(`import {useState} from 'react';import {createRoot} from 'react-dom/client';import {StudentAttempt} from './src/browser/student.tsx';function App(){const[shown,setShown]=useState(true);return <main className="student-content">{shown?<><button onClick={()=>setShown(false)}>返回考试记录</button><StudentAttempt id="${base.id}" onExit={()=>setShown(false)}/></>:<p>已返回考试记录</p>}</main>}createRoot(document.getElementById('root')).render(<App/>);`);
         const browser=await chromium.launch({executablePath:'/usr/bin/google-chrome',headless:true});
         let release=()=>{};
         try {
@@ -1819,17 +1909,19 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
                     if(path==='/harness.js')return route.fulfill({contentType:'text/javascript',body:bundle.js});
                     if(path==='/harness.css')return route.fulfill({contentType:'text/css',body:bundle.css});
                     if(path.endsWith('/snapshot'))return route.fulfill({contentType:'application/json',body:JSON.stringify(base)});
+                    if(path.endsWith('/navigation')){const action=ExamNavigationSchema.parse(route.request().postDataJSON());if(!('slotId' in action))throw new Error('EXPECTED_SLOT');base.viewedSlotId=action.slotId;base.nextSlotId=action.slotId;base.navigationVersion++;base.lastSeq++;return route.fulfill({json:{id:base.id,slotId:action.slotId,navigationVersion:base.navigationVersion}});}
                     const detail=details.get(path.split('/').at(-1)??'');
                     if(detail){if(detail.slot.id===slot.id){started();await gate;try{await route.fulfill({contentType:'application/json',body:JSON.stringify(detail)});}finally{delivered();}return;}return route.fulfill({contentType:'application/json',body:JSON.stringify(detail)});}
                     return route.fulfill({status:404,body:'{}'});
                 });
-                await page.goto('http://127.0.0.1:3199/');await page.getByRole('button',{name:'查看本题答案',exact:true}).click();await requested;
-                await page.getByRole('button',{name:'查看题目与详情',exact:true}).click();await page.getByRole('dialog',{name:'第2题',exact:true}).waitFor();
-                if(closeBeforeLate)await page.getByRole('dialog').getByRole('button',{name:'关闭',exact:true}).click();
+                base.viewedSlotId=slot.id;base.nextSlotId=slot.id;
+                await page.goto('http://127.0.0.1:3199/');await page.locator('.current-answer').waitFor();await page.locator('.current-answer summary').filter({hasText:'题目详情'}).click();await requested;
+                await page.getByRole('button',{name:'下一题',exact:true}).click();await page.getByRole('heading',{name:'第2题答案',exact:true}).waitFor();
+                if(closeBeforeLate)await page.getByRole('button',{name:'返回考试记录',exact:true}).click();
                 release();await settled;await delay(150);
                 const screens=join(process.cwd(),'.runtime/deep-review/screens');await mkdir(screens,{recursive:true});await page.screenshot({path:join(screens,closeBeforeLate?'detail-closed.png':'detail-latest.png'),animations:'disabled'});
-                expect(await page.getByRole('dialog').count()).toBe(closeBeforeLate?0:1);
-                if(!closeBeforeLate)expect(await page.getByRole('dialog').getAttribute('aria-labelledby').then(id=>id?page.locator('[id="'+id+'"]').innerText():null)).toBe('第2题');
+                expect(await page.locator('.current-answer').count()).toBe(closeBeforeLate?0:1);expect(await page.getByRole('dialog').count()).toBe(0);
+                if(!closeBeforeLate)expect(await page.locator('.current-answer h3').first().innerText()).toBe('第2题答案');
                 await page.close();
             }
         } finally {release();await browser.close();}
@@ -1949,12 +2041,13 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await search.fill('分页学生 620');await search.press('Enter');await users.getByText('paging_user_620',{exact:true}).waitFor();expect(await pager.getByRole('spinbutton',{name:'页码'}).inputValue()).toBe('1');
             await page.setViewportSize({width:390,height:844});const screens=join(process.cwd(),'.runtime/pagination/screens');await mkdir(screens,{recursive:true});await page.screenshot({path:join(screens,'users-search-'+engine+'.png'),fullPage:true,animations:'disabled'});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
             await page.setViewportSize({width:1440,height:1000});await adminNavigate(page,'考试安排');await page.getByRole('button',{name:'新建场次',exact:true}).click();const dialog=page.getByRole('dialog');
+            const eventTitle='选择器场次 '+engine;await dialog.getByLabel('场次名称',{exact:true}).fill(eventTitle);await dialog.getByRole('button',{name:'保存场次',exact:true}).click();await page.getByRole('article',{name:eventTitle,exact:true}).getByRole('button',{name:'查看考试',exact:true}).click();await page.getByRole('button',{name:'新建具体考试',exact:true}).click();
             await dialog.getByRole('combobox',{name:'学生',exact:true}).click();const studentSearch=dialog.getByRole('searchbox',{name:'搜索学生',exact:true});await studentSearch.fill('分页学生 620');await studentSearch.press('Enter');await dialog.getByRole('option',{name:/分页学生 620/}).click();expect(await dialog.locator('select[name=studentIds] option:checked').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('value')))).toEqual([fixture.lastId]);await page.keyboard.press('Escape');
             await dialog.getByRole('combobox',{name:'负责老师',exact:true}).click();const teachers=dialog.locator('.select-options');await expect.poll(()=>teachers.getByRole('option').count()).toBe(20);await teachers.getByRole('option').first().click();await teachers.getByRole('button',{name:'下一页',exact:true}).click();await expect.poll(()=>teachers.locator('.page-position').innerText()).toContain('第 2');await teachers.getByRole('option').first().click();expect(await dialog.locator('select[name=supportIds] option:checked').count()).toBe(2);await page.keyboard.press('Escape');
             await page.screenshot({path:join(screens,'assignment-selector-'+engine+'.png'),animations:'disabled'});await dialog.getByRole('button',{name:'取消',exact:true}).click();
             await page.getByRole('tab',{name:'考试模板',exact:true}).click();const templatesPanel=page.getByRole('region',{name:'考试模板列表',exact:true}),templateSearch=templatesPanel.getByRole('searchbox',{name:'搜索模板名称或标识'});await templateSearch.fill('分页模板 125');await templateSearch.press('Enter');await templatesPanel.getByRole('button',{name:'新建场次',exact:true}).click();await page.getByRole('dialog').getByRole('combobox',{name:'考试模板',exact:true}).getByText('分页模板 125 · 第1版',{exact:true}).waitFor();await page.getByRole('dialog').getByRole('button',{name:'取消',exact:true}).click();
             await page.getByRole('button',{name:'退出登录',exact:true}).click();await page.getByLabel('用户名',{exact:true}).fill('paging_user_1');await page.getByLabel('密码',{exact:true}).fill('synthetic-password-123');await page.getByRole('button',{name:'登录',exact:true}).click();
-            await page.getByRole('heading',{name:'分页当前考试',exact:true}).waitFor();const notices=page.getByRole('region',{name:'其他考试待处理问题'});await notices.locator('summary').click();await notices.getByRole('button',{name:/查看待处理考试/}).click();await page.getByRole('heading',{name:'分页历史待处理',exact:true}).waitFor();expect(await page.getByRole('combobox',{name:'考试状态'}).innerText()).toBe('待处理');expect(await page.locator('.assignment-card').count()).toBe(1);
+            await page.getByRole('button',{name:'考试状态',exact:true}).waitFor();const notices=page.getByRole('region',{name:'其他考试待处理问题'});await notices.locator('summary').click();await notices.getByRole('button',{name:/查看待处理考试/}).click();await page.getByRole('heading',{name:'分页历史待处理',exact:true}).waitFor();expect(await page.getByRole('combobox',{name:'考试状态'}).innerText()).toBe('待处理');expect(await page.locator('.assignment-card').count()).toBe(1);
             await page.setViewportSize({width:390,height:844});await page.screenshot({path:join(screens,'student-attention-'+engine+'.png'),fullPage:true,animations:'disabled'});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);expect(errors).toEqual([]);
         }catch(error){const failed=browser.contexts()[0]?.pages()[0];if(failed){const folder=join(process.cwd(),'.runtime/pagination/screens');await mkdir(folder,{recursive:true});await failed.screenshot({path:join(folder,'selector-failure-'+engine+'.png'),fullPage:true});await writeFile(join(folder,'selector-failure-'+engine+'.json'),JSON.stringify(await failed.evaluate(()=>[...document.querySelectorAll('.select-control.is-open,.select-options,.select-option-list,.select-option-list>div:first-child,.multi-selection-tools,.dialog-body')].map(node=>({classes:node.className,rect:node.getBoundingClientRect().toJSON(),scrollTop:node.scrollTop,scrollHeight:node.scrollHeight}))),null,2));}throw error;}finally{await browser.close();server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
     },45000);
@@ -2011,9 +2104,9 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             const draft=studentPage.getByRole('dialog',{name:'第1题 · 题图',exact:true});await draft.getByRole('button',{name:'保存并解答',exact:true}).click();await draft.waitFor({state:'hidden'});
             const attempt=await one(pool(),z.uuid(),'SELECT id AS value FROM exam_app.exam_attempts WHERE assignment_id=$1',[assignment.id]),saved=ExamAttemptSchema.parse(await snapshot(pool(),child,attempt)),slot=saved.slots[0];if(!slot)throw new Error('HTTP_TRIAL_SLOT_MISSING');expect(slot.revision).toBe(1);expect(slot.images).toHaveLength(1);
             const job=await claimJob(pool());if(!job||job.slotId!==slot.id)throw new Error('HTTP_TRIAL_JOB_MISSING');await finishJob(pool(),job,null,'SYNTHETIC_FAILURE');
-            await studentPage.getByRole('button',{name:'选择题号',exact:true}).click();await studentPage.getByRole('dialog',{name:'题目导航',exact:true}).getByRole('button',{name:'第2题',exact:true}).click();await studentPage.getByRole('button',{name:'拍摄第2题',exact:true}).waitFor();
+            await studentPage.getByRole('button',{name:'总览',exact:true}).click();await studentPage.getByRole('dialog',{name:'题目总览',exact:true}).getByRole('button',{name:'第2题',exact:true}).click();await studentPage.getByRole('button',{name:'拍摄第2题',exact:true}).waitFor();
             const teacherPage=await client(teacher.username);await teacherPage.getByRole('navigation',{name:'管理导航'}).getByRole('button',{name:'实时跟踪',exact:true}).click();await teacherPage.getByRole('button',{name:'查看',exact:true}).click();const monitor=teacherPage.getByRole('dialog').filter({has:teacherPage.locator('.monitor-tools')});
-            await expect.poll(()=>monitor.innerText()).toContain('第2题');await monitor.getByRole('button',{name:'题目导航',exact:true}).click();await teacherPage.getByRole('dialog',{name:'题目导航',exact:true}).getByRole('button',{name:'模块一 · 第1题',exact:true}).click();await monitor.getByRole('button',{name:'手动作答',exact:true}).click();await monitor.getByLabel('确认答案',{exact:true}).fill('4');await monitor.getByLabel('处理意见',{exact:true}).fill('合成题图人工核对，答案为4。');await monitor.getByRole('button',{name:'确认并通知学生',exact:true}).click();
+            await expect.poll(()=>monitor.innerText()).toContain('第2题');await monitor.getByRole('region',{name:'题目导航',exact:true}).getByRole('button',{name:'模块一 · 第1题',exact:true}).click();await monitor.getByRole('button',{name:'手动作答',exact:true}).click();await monitor.getByLabel('确认答案',{exact:true}).fill('4');await monitor.getByLabel('处理意见',{exact:true}).fill('合成题图人工核对，答案为4。');await monitor.getByRole('button',{name:'保存并通知学生',exact:true}).click();
             await studentPage.getByRole('dialog',{name:'答案已更新',exact:true}).waitFor({timeout:10000});expect((await slotDetail(pool(),child,slot.id)).slot.presentation?.humanConfirmed).toBe(true);
             const aliasPage=await client(child.username,true,domainOrigin);await aliasPage.getByRole('dialog',{name:'答案已更新',exact:true}).waitFor();expect((await aliasPage.context().cookies(domainOrigin)).some(c=>c.name==='solveflow_exam_http_trial'&&!c.secure)).toBe(true);
             const teacherCookie=(await teacherPage.context().cookies(publicOrigin)).find(c=>c.name==='solveflow_exam_http_trial');if(!teacherCookie)throw new Error('HTTP_TRIAL_COOKIE_MISSING');
@@ -2022,7 +2115,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             const changed=new Promise<unknown>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('HTTP_WS_CHANGE_TIMEOUT')),4000);socket?.once('message',raw=>{clearTimeout(timer);try{resolve(JSON.parse(raw.toString()));}catch(error){reject(error);}});});socket.send(JSON.stringify({type:'subscribe',attemptId:attempt,afterSeq:0}));expect(await changed).toMatchObject({type:'changed',attemptId:attempt});
             const forbidden=await fetch(backend+'/api/v2/attempts/'+attempt+'/finish',{method:'POST',headers:{origin:'http://192.0.2.18:18443',cookie:cookie?.name+'='+cookie?.value}});expect(forbidden.status).toBe(403);
             const screens=join(process.cwd(),'.runtime/http-trial');await mkdir(screens,{recursive:true});await studentPage.screenshot({path:join(screens,engine+'-student.png'),fullPage:true,animations:'disabled'});expect(errors).toEqual([]);
-            await studentPage.getByRole('dialog',{name:'答案已更新',exact:true}).getByRole('button',{name:'稍后查看',exact:true}).click();await studentPage.getByRole('button',{name:'退出登录',exact:true}).click();await studentPage.getByLabel('用户名',{exact:true}).waitFor();expect((await studentPage.context().cookies(publicOrigin)).some(c=>c.name==='solveflow_exam_http_trial')).toBe(false);
+            await studentPage.getByRole('dialog',{name:'答案已更新',exact:true}).getByRole('button',{name:'稍后查看',exact:true}).click();await studentPage.getByRole('button',{name:'账户菜单',exact:true}).click();await studentPage.getByRole('menuitem',{name:'退出登录',exact:true}).click();await studentPage.getByLabel('用户名',{exact:true}).waitFor();expect((await studentPage.context().cookies(publicOrigin)).some(c=>c.name==='solveflow_exam_http_trial')).toBe(false);
         }catch(error){const folder=join(process.cwd(),'.runtime/http-trial');await mkdir(folder,{recursive:true});for(const [index,page] of browser.contexts().flatMap(context=>context.pages()).entries()){await page.screenshot({path:join(folder,engine+'-failure-'+index+'.png'),fullPage:true});console.error(JSON.stringify({engine,index,visibility:await page.evaluate(()=>document.visibilityState),text:await page.locator('body').innerText()}));}throw error;}finally{socket?.terminate();await browser.close();closeWs();proxy.closeAllConnections();await new Promise<void>(resolve=>proxy.close(()=>resolve()));server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
     },35000);
 
@@ -2049,7 +2142,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
         let writes = 0;
         try {
             for (const role of ['student','teacher'] as const) {
-                const bundle = await browserHarness(`import './src/browser/exam-clock.css';import{createRoot}from'react-dom/client';import{${role === 'student' ? 'StudentAttempt' : 'Monitor'}}from'./src/browser/${role === 'student' ? 'student' : 'monitor'}.tsx';createRoot(document.getElementById('root')).render(${role === 'student' ? `<main className="student-content"><StudentAttempt id="${base.id}" onExit={()=>{}}/></main>` : `<Monitor id="${base.id}" initialSlotId="${slot.id}" onClose={()=>{}}/>`});`);
+                const bundle = await browserHarness(`import './src/browser/exam-clock.css';import{createRoot}from'react-dom/client';import{${role === 'student' ? 'StudentAttempt' : 'Monitor'}}from'./src/browser/${role === 'student' ? 'student' : 'monitor'}.tsx';createRoot(document.getElementById('root')).render(${role === 'student' ? `<main className="student-content"><StudentAttempt id="${base.id}"/></main>` : `<Monitor id="${base.id}" initialSlotId="${slot.id}" onClose={()=>{}}/>`});`);
                 const page = await browser.newPage({ viewport: { width: role === 'student' ? 390 : 1280, height: 960 } }), errors: string[] = [];
                 page.setDefaultTimeout(3000);page.on('pageerror', error => errors.push(error.message));
                 await page.addInitScript(`window.WebSocket=class{static OPEN=1;readyState=0;send(){}close(){}};`);
@@ -2066,8 +2159,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
                     expect(await latest.locator('.answer-options').innerText()).toBe('A');
                     expect(await page.getByText(/错题模拟/).count()).toBe(0);
                     expect(await latest.locator('.badge').count()).toBe(0);
-                    await page.getByRole('button', { name: '查看题目与详情', exact: true }).click();
-                    const detail = page.getByRole('dialog', { name: '第1题', exact: true });await detail.getByRole('region', { name: '识别题目' }).waitFor();
+                    const detail = page.locator('.current-answer');await detail.locator('summary').filter({hasText:'题目详情'}).click();await detail.getByRole('region', { name: '识别题目' }).waitFor();
                     expect(await detail.getByText('A', { exact: true }).count()).toBeGreaterThan(0);
                     expect(await detail.getByText(/错题模拟|AI 已核验|待核验/).count()).toBe(0);
                 } else {
@@ -2090,7 +2182,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
         const media = randomUUID(), supplement = randomUUID(), slot = { ...initial, revision: 1, status: 'completed' as const, completedOnce: true, images: [{id:media,role:'primary' as const},{id:supplement,role:'material' as const}], presentation: { answer: 'B. 4', selectedOptions: ['B'], verified: false, simulated: false, humanConfirmed: false, notAppliedReason: null } };
         const current = ExamAttemptSchema.parse({ ...base, slots: base.slots.map(value=>value.id===slot.id?slot:value), alerts: [], resolutions: [], nextSlotId: slot.id, viewedSlotId: slot.id, latestAnswerSlotId: slot.id, activity: [{id:randomUUID(),action:'select_slot',moduleTitle:'阅读与写作一',position:1,targetSlotId:slot.id,affectedCount:1,createdAt:new Date().toISOString()}] });
         const picture = await sharp({create:{width:1600,height:1200,channels:3,background:'#f8fafc'}}).composite([{input:Buffer.from('<svg width="1600" height="1200"><path d="M50 50h1500v1100H50Z M800 50v1100 M50 600h1500" stroke="#375481" stroke-width="10" fill="none"/><text x="130" y="200" font-size="70">Original question 1</text></svg>')}]).png().toBuffer();
-        const bundle = await browserHarness(`import './src/browser/exam-clock.css';import{createRoot}from'react-dom/client';import{${role==='student'?'StudentAttempt':'Monitor'}}from'./src/browser/${role==='student'?'student':'monitor'}.tsx';createRoot(document.getElementById('root')).render(${role==='student'?`<main className="student-content"><StudentAttempt id="${base.id}" onExit={()=>{}}/></main>`:`<Monitor id="${base.id}" initialSlotId="${slot.id}" onClose={()=>{}}/>`});`);
+        const bundle = await browserHarness(`import './src/browser/exam-clock.css';import{createRoot}from'react-dom/client';import{${role==='student'?'StudentAttempt':'Monitor'}}from'./src/browser/${role==='student'?'student':'monitor'}.tsx';createRoot(document.getElementById('root')).render(${role==='student'?`<main className="student-content"><StudentAttempt id="${base.id}"/></main>`:`<Monitor id="${base.id}" initialSlotId="${slot.id}" onClose={()=>{}}/>`});`);
         bundle.html='<!doctype html>'+bundle.html;
         const browser = await(engine==='chrome'?chromium.launch({executablePath:'/usr/bin/google-chrome'}):webkit.launch());
         let writes=0, sources=0, failSource=false, releaseSource=()=>{}, sourceStarted=()=>{};
@@ -2107,40 +2199,40 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             });
             await page.goto('http://127.0.0.1:3199/');
             if(role==='teacher'){
-                await page.getByRole('button',{name:'题目导航',exact:true}).click();const nav=page.getByRole('dialog',{name:'题目导航',exact:true});await nav.waitFor();await nav.locator('section').first().getByRole('button',{name:/第1题$/}).click();expect(await nav.count()).toBe(0);
+                const nav=page.getByRole('region',{name:'题目导航',exact:true});await nav.waitFor();await nav.locator('section').first().getByRole('button',{name:/第1题$/}).click();expect(await nav.isVisible()).toBe(true);expect(await page.getByRole('dialog').count()).toBe(1);
                 await page.getByRole('button',{name:'操作记录',exact:true}).click();const history=page.getByRole('dialog',{name:'操作记录',exact:true});await history.getByText('切换到 阅读与写作一 · 第1题',{exact:true}).waitFor();await history.getByRole('button',{name:'关闭',exact:true}).click();expect(await page.getByRole('button',{name:'操作记录',exact:true}).evaluate(el=>el===document.activeElement)).toBe(true);
-            } else await page.getByRole('button',{name:'查看本题答案',exact:true}).click();
-            const detail=role==='teacher'?page.getByRole('dialog').first():page.getByRole('dialog',{name:'第1题',exact:true});
+            } else { await page.getByRole('heading',{name:'第1题答案',exact:true}).waitFor(); await page.locator('.current-answer summary').filter({hasText:'题目详情'}).click(); }
+            const detail=role==='teacher'?page.getByRole('dialog').first():page.locator('.student-question');
             await detail.getByRole('region',{name:'识别题目'}).waitFor();expect(await detail.getByRole('region',{name:'识别题目'}).locator('.option').count()).toBe(4);await detail.getByRole('button',{name:'查看原图',exact:true}).click();
             const viewer=page.getByRole('dialog',{name:'题图',exact:true}), viewport=viewer.getByLabel('题目原图查看区域'), zoom=viewer.getByLabel('图片缩放比例');
             const displayed=viewer.locator('[data-display-image=true]');
-            await expect.poll(()=>viewer.getByRole('button',{name:'放大图片',exact:true}).isEnabled()).toBe(true);expect(sources).toBe(0);expect(await displayed.evaluate(image=>image instanceof HTMLImageElement ? image.naturalWidth : 0)).toBe(1600);
+            await expect.poll(()=>viewer.getByRole('button',{name:'重置图片',exact:true}).isEnabled()).toBe(true);expect(sources).toBe(0);expect(await displayed.evaluate(image=>image instanceof HTMLImageElement ? image.naturalWidth : 0)).toBe(1600);
             const imageBefore=await displayed.boundingBox(), viewportBefore=await viewport.boundingBox();if(!imageBefore||!viewportBefore)throw new Error('MISSING_IMAGE_GEOMETRY');
-            await viewer.getByRole('button',{name:'放大图片',exact:true}).click();await expect.poll(()=>zoom.textContent()).toBe('125%');
-            await firstSource;await viewer.getByText('正在加载高清原图…',{exact:true}).waitFor();expect(await displayed.getAttribute('alt')).toBe('题目清晰预览');expect(await viewer.getByRole('button',{name:'放大图片',exact:true}).isEnabled()).toBe(true);
+            await enlargePicture(viewer);await expect.poll(()=>zoom.textContent()).toBe('125%');
+            await firstSource;await viewer.getByRole('status',{name:'正在加载高清原图',exact:true}).waitFor();expect(await displayed.getAttribute('alt')).toBe('题目清晰预览');expect(await viewer.getByRole('button',{name:'重置图片',exact:true}).isEnabled()).toBe(true);
             const imageAfter=await displayed.boundingBox(), viewportAfter=await viewport.boundingBox();if(!imageAfter||!viewportAfter)throw new Error('MISSING_ZOOMED_GEOMETRY');
             expect(imageAfter.width/imageBefore.width).toBeCloseTo(1.25,2);expect(imageAfter.height/imageBefore.height).toBeCloseTo(1.25,2);expect(viewportAfter.width).toBe(viewportBefore.width);expect(viewportAfter.height).toBe(viewportBefore.height);
             const scrollBefore=await viewport.evaluate(element=>({x:element.scrollLeft,y:element.scrollTop}));releaseSource();await expect.poll(()=>displayed.getAttribute('alt')).toBe('题目原图');expect(await displayed.boundingBox()).toEqual(imageAfter);expect(await viewport.evaluate(element=>({x:element.scrollLeft,y:element.scrollTop}))).toEqual(scrollBefore);
             await page.waitForTimeout(150);expect(await zoom.textContent()).toBe('125%');
             await viewer.getByRole('button',{name:'全屏查看',exact:true}).click();await expect.poll(()=>zoom.textContent()).toBe('100%');
             const full=await viewer.boundingBox(), fullViewport=await viewport.boundingBox();if(!full||!fullViewport)throw new Error('MISSING_FULLSCREEN_GEOMETRY');expect(full.x).toBeLessThanOrEqual(1);expect(full.y).toBeLessThanOrEqual(1);expect(full.width).toBeGreaterThanOrEqual(1260);expect(full.height).toBeGreaterThanOrEqual(959);expect(fullViewport.height).toBeGreaterThan(720);
-            const fullImageBefore=await displayed.boundingBox();if(!fullImageBefore)throw new Error('MISSING_FULLSCREEN_IMAGE');await viewer.getByRole('button',{name:'放大图片',exact:true}).click();await expect.poll(()=>zoom.textContent()).toBe('125%');const fullImageAfter=await displayed.boundingBox();if(!fullImageAfter)throw new Error('MISSING_FULLSCREEN_ZOOM');expect(fullImageAfter.width/fullImageBefore.width).toBeCloseTo(1.25,2);expect(fullImageAfter.height/fullImageBefore.height).toBeCloseTo(1.25,2);
+            const fullImageBefore=await displayed.boundingBox();if(!fullImageBefore)throw new Error('MISSING_FULLSCREEN_IMAGE');await enlargePicture(viewer);await expect.poll(()=>zoom.textContent()).toBe('125%');const fullImageAfter=await displayed.boundingBox();if(!fullImageAfter)throw new Error('MISSING_FULLSCREEN_ZOOM');expect(fullImageAfter.width/fullImageBefore.width).toBeCloseTo(1.25,2);expect(fullImageAfter.height/fullImageBefore.height).toBeCloseTo(1.25,2);
             await page.keyboard.press('Escape');await viewer.getByRole('button',{name:'全屏查看',exact:true}).waitFor();expect(await viewer.isVisible()).toBe(true);await expect.poll(()=>zoom.textContent()).toBe('100%');
             await viewport.hover();await page.mouse.wheel(0,-500);await expect.poll(async()=>Number((await zoom.textContent())?.replace('%',''))).toBeGreaterThan(200);
             const box=await viewport.boundingBox();if(!box)throw new Error('MISSING_IMAGE_VIEWPORT');
             const left=await viewport.evaluate(element=>element.scrollLeft);await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();await page.mouse.move(box.x+box.width/2-70,box.y+box.height/2-40,{steps:4});await page.mouse.up();expect(await viewport.evaluate(element=>element.scrollLeft)).toBeGreaterThan(left);
-            await viewer.getByRole('button',{name:'适应窗口',exact:true}).click();await expect.poll(()=>zoom.textContent()).toBe('100%');await viewport.dblclick();await expect.poll(()=>zoom.textContent()).toBe('200%');
+            await viewer.getByRole('button',{name:'重置图片',exact:true}).click();await expect.poll(()=>zoom.textContent()).toBe('100%');expect(await viewport.evaluate(el=>({x:el.scrollLeft,y:el.scrollTop}))).toEqual({x:0,y:0});await viewport.dblclick();await expect.poll(()=>zoom.textContent()).toBe('200%');
             await page.setViewportSize({width:390,height:844});await expect.poll(()=>zoom.textContent()).toBe('100%');expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
             if(engine==='chrome'){
                 const touch=await page.context().newCDPSession(page), area=await viewport.boundingBox();if(!area)throw new Error('MISSING_PINCH_VIEWPORT');
                 const x=area.x+area.width/2,y=area.y+area.height/2;
-                try{await touch.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{id:1,x:x-30,y},{id:2,x:x+30,y}]});await touch.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{id:1,x:x-65,y},{id:2,x:x+65,y}]});await touch.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await expect.poll(async()=>Number((await zoom.textContent())?.replace('%',''))).toBeGreaterThan(180);await viewer.getByRole('button',{name:'适应窗口',exact:true}).click();}finally{await touch.detach();}
+                try{await touch.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{id:1,x:x-30,y},{id:2,x:x+30,y}]});await touch.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{id:1,x:x-65,y},{id:2,x:x+65,y}]});await touch.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await expect.poll(async()=>Number((await zoom.textContent())?.replace('%',''))).toBeGreaterThan(180);await viewer.getByRole('button',{name:'重置图片',exact:true}).click();}finally{await touch.detach();}
             }
             await viewer.getByRole('button',{name:'全屏查看',exact:true}).click();await viewer.getByRole('button',{name:'退出全屏查看',exact:true}).waitFor();
-            const mobileFull=await viewer.boundingBox();if(!mobileFull)throw new Error('MISSING_MOBILE_FULLSCREEN');expect(mobileFull.width).toBeGreaterThanOrEqual(370);expect(mobileFull.height).toBeGreaterThanOrEqual(843);expect(await viewer.locator('.image-viewer-tools').evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
+            const mobileFull=await viewer.boundingBox();if(!mobileFull)throw new Error('MISSING_MOBILE_FULLSCREEN');expect(mobileFull.width).toBeGreaterThanOrEqual(370);expect(mobileFull.height).toBeGreaterThanOrEqual(843);const mobilePicture=await displayed.boundingBox(),mobileArea=await viewport.boundingBox();expect(mobilePicture&&mobileArea&&mobilePicture.y-mobileArea.y<=20).toBe(true);expect(await viewer.locator('.image-viewer-tools').evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
             await page.evaluate(()=>document.documentElement.dataset.theme='dark');const screens=join(process.cwd(),'.runtime/silent-refresh');await mkdir(screens,{recursive:true});await page.screenshot({path:join(screens,`original-${role}-${engine}-mobile.png`),animations:'disabled'});await viewer.getByRole('button',{name:'退出全屏查看',exact:true}).click();
             await viewer.getByRole('button',{name:'关闭',exact:true}).click();expect(await detail.getByRole('button',{name:'查看原图',exact:true}).evaluate(el=>el===document.activeElement)).toBe(true);
-            failSource=true;await detail.getByRole('button',{name:'查看补图',exact:true}).click();await expect.poll(()=>viewer.getByRole('button',{name:'放大图片',exact:true}).isEnabled()).toBe(true);await viewer.getByRole('button',{name:'高清原图',exact:true}).click();await viewer.getByText('高清原图加载失败',{exact:true}).waitFor();expect(await displayed.getAttribute('alt')).toBe('题目清晰预览');failSource=false;await viewer.getByRole('button',{name:'重试原图',exact:true}).click();await expect.poll(()=>displayed.getAttribute('alt')).toBe('题目原图');
+            failSource=true;await detail.getByRole('button',{name:'查看补图',exact:true}).click();await expect.poll(()=>viewer.getByRole('button',{name:'重置图片',exact:true}).isEnabled()).toBe(true);await enlargePicture(viewer);await viewer.getByText('高清原图加载失败',{exact:true}).waitFor();expect(await displayed.getAttribute('alt')).toBe('题目清晰预览');failSource=false;await viewer.getByRole('button',{name:'重试原图',exact:true}).click();await expect.poll(()=>displayed.getAttribute('alt')).toBe('题目原图');
             await viewer.getByRole('button',{name:'关闭',exact:true}).click();await detail.getByRole('button',{name:'查看补图',exact:true}).click();await viewer.waitFor();await viewer.getByRole('button',{name:'关闭',exact:true}).click();expect(sources).toBeGreaterThanOrEqual(3);expect(writes).toBe(0);expect(errors).toEqual([]);
             await page.setViewportSize({width:1280,height:960});await page.screenshot({path:join(screens,`question-${role}-${engine}-desktop.png`),animations:'disabled'});
         }finally{releaseSource();await browser.close();}
@@ -2168,11 +2260,11 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             const count=(id:string,view:string,method='GET')=>requests.filter(value=>value.id===id&&value.view===view&&value.method===method).length;
             await page.goto('http://127.0.0.1:3199/');await page.getByRole('button',{name:'图片A',exact:true}).click();
             const viewer=page.getByRole('dialog',{name:'题图',exact:true}),displayed=viewer.locator('[data-display-image=true]');
-            await expect.poll(()=>displayed.count()).toBe(1);expect(count(a,'source')).toBe(0);await viewer.getByRole('button',{name:'高清原图',exact:true}).click();await sourceStarted;
+            await expect.poll(()=>displayed.count()).toBe(1);expect(count(a,'source')).toBe(0);await enlargePicture(viewer);await sourceStarted;
             expect(await displayed.getAttribute('alt')).toBe('题目清晰预览');await viewer.getByRole('button',{name:'关闭',exact:true}).click();
             await page.getByRole('button',{name:'图片B',exact:true}).click();await expect.poll(()=>displayed.count()).toBe(1);release();await page.waitForTimeout(100);
             expect(await displayed.evaluate(element=>element instanceof HTMLImageElement?element.naturalHeight:0)).toBe(1000);
-            await viewer.getByRole('button',{name:'高清原图',exact:true}).click();await expect.poll(()=>displayed.getAttribute('alt')).toBe('题目原图');
+            await enlargePicture(viewer);await expect.poll(()=>displayed.getAttribute('alt')).toBe('题目原图');
             await viewer.getByRole('button',{name:'关闭',exact:true}).click();await page.getByRole('button',{name:'图片B',exact:true}).click();await expect.poll(()=>displayed.getAttribute('alt')).toBe('题目原图');
             expect(count(b,'source')).toBe(1);expect(count(b,'source','HEAD')).toBe(1);expect(count(b,'model')).toBe(1);
             const screens=join(process.cwd(),'.runtime/progressive-images');await mkdir(screens,{recursive:true});
@@ -2207,24 +2299,24 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
                 return route.fulfill({ contentType: path.endsWith('.js') ? 'text/javascript' : path.endsWith('.css') ? 'text/css' : 'text/html', body: path === '/harness.js' ? bundle.js : path === '/harness.css' ? bundle.css : bundle.html });
             });
             await page.goto('http://127.0.0.1:3199/'); await page.getByRole('button', { name: '拍摄第1题', exact: true }).waitFor();
-            const screens = join(process.cwd(), '.runtime/silent-refresh'); await mkdir(screens, { recursive: true });
-            for (const width of [390,320]) for (const theme of ['light','dark']) {
-                await page.setViewportSize({ width, height: 844 }); await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
-                expect(await page.locator('.header-bar').getByRole('heading', { level: 1 }).textContent()).toBe(current.title);
-                expect(await page.getByRole('heading', { level: 1 }).count()).toBe(1);
-                expect(await page.locator('.header-bar').getByLabel('考试用时').innerText()).toContain('不限时');
-                const back = await page.getByRole('button', { name: '← 考试记录', exact: true }).boundingBox(), end = await page.getByRole('button', { name: '结束考试', exact: true }).boundingBox(), overview = await page.getByRole('region', { name: '题目状态总览' }).boundingBox(), capture = await page.locator('.capture-box').boundingBox();
-                if (!back || !end || !overview || !capture) throw new Error('MISSING_LAYOUT_BOX');
-                expect(Math.abs(back.y-end.y)).toBeLessThanOrEqual(2); expect(back.x).toBeLessThan(end.x);
-                expect(overview.height).toBeLessThanOrEqual(80); expect(capture.y).toBeLessThan(480);
-                expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-                await page.screenshot({ path: join(screens, `compact-student-${engine}-${width}-${theme}.png`), animations: 'disabled' });
+            const screens = join(process.cwd(), '.runtime/student-toolbar-20261106/screens'); await mkdir(screens, { recursive: true });
+            for (const width of [320,390,768,1440]) for (const theme of ['light','dark']) {
+                await page.setViewportSize({ width, height: 900 }); await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+                const header=page.locator('.header-bar'),status=header.getByRole('button',{name:'考试状态',exact:true});await status.waitFor();
+                expect(await header.getByText(current.title,{exact:true}).count()).toBe(0);expect(await header.getByLabel('考试用时').count()).toBe(0);expect(current.timing.elapsedSeconds).toBe(125);
+                expect(await page.getByRole('button',{name:'← 考试记录',exact:true}).count()).toBe(0);expect(await page.getByRole('button',{name:'结束考试',exact:true}).count()).toBe(0);expect(await page.getByRole('button',{name:'模块操作',exact:true}).count()).toBe(0);
+                const headBox=await header.boundingBox(),statusBox=await status.boundingBox(),tools=await header.locator('.header-tools').boundingBox(),logo=await header.getByRole('button',{name:'返回首页',exact:true}).boundingBox(),capture=await page.locator('.capture-box').boundingBox();
+                if(!headBox||!statusBox||!tools||!logo||!capture)throw new Error('MISSING_HEADER_CONTROLS');
+                expect(Math.abs(statusBox.x+statusBox.width/2-headBox.x-headBox.width/2)).toBeLessThanOrEqual(2);expect(logo.x+logo.width).toBeLessThanOrEqual(statusBox.x);expect(statusBox.x+statusBox.width).toBeLessThanOrEqual(tools.x);
+                expect(await page.getByRole('region',{name:'题目状态总览'}).count()).toBe(0);expect(capture.y).toBeLessThan(400);expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+                await page.screenshot({path:join(screens,`header-${engine}-${width}-${theme}.png`),animations:'disabled'});
+                await header.getByRole('button',{name:'账户菜单',exact:true}).click();const menu=page.getByRole('menu',{name:'账户',exact:true});await menu.waitFor();expect(await menu.getByRole('menuitem',{name:'考试记录',exact:true}).isVisible()).toBe(true);expect(await menu.evaluate(el=>el.getBoundingClientRect().right<=innerWidth)).toBe(true);
+                await page.screenshot({path:join(screens,`account-${engine}-${width}-${theme}.png`),animations:'disabled'});await page.keyboard.press('Escape');expect(await header.getByRole('button',{name:'账户菜单',exact:true}).evaluate(el=>el===document.activeElement)).toBe(true);
             }
-            await page.getByRole('button', { name: '结束考试', exact: true }).click();
-            const confirmation = page.getByRole('dialog', { name: '结束本场考试？', exact: true }); await confirmation.waitFor();
-            await confirmation.getByRole('button', { name: '继续考试', exact: true }).click(); expect(writes).toBe(0);
-            await page.getByRole('button', { name: '← 考试记录', exact: true }).click();
-            await page.getByRole('heading', { name: '我的考试', exact: true }).waitFor(); expect(await page.locator('.student-exam-meta').count()).toBe(0);
+            await page.setViewportSize({width:390,height:844});await page.getByRole('button',{name:'考试状态',exact:true}).click();const state=page.getByRole('dialog',{name:'考试状态',exact:true});await state.getByText(current.title,{exact:true}).waitFor();expect(await state.getByLabel('考试用时').count()).toBe(0);await page.screenshot({path:join(screens,`status-${engine}.png`),animations:'disabled'});
+            await state.getByRole('button',{name:'结束考试',exact:true}).click();const confirmation=page.getByRole('dialog',{name:'结束本场考试？',exact:true});await confirmation.waitFor();await confirmation.getByRole('button',{name:'继续考试',exact:true}).click();await state.getByRole('button',{name:'返回答题',exact:true}).click();expect(writes).toBe(0);
+            await page.getByRole('button',{name:'账户菜单',exact:true}).click();await page.getByRole('menuitem',{name:'考试记录',exact:true}).click();await page.getByRole('heading',{name:'考试记录',exact:true}).waitFor();expect(await page.getByRole('button',{name:'考试状态',exact:true}).count()).toBe(0);await page.screenshot({path:join(screens,`history-${engine}.png`),animations:'disabled'});
+            await page.getByRole('button',{name:'继续考试',exact:true}).click();await page.getByRole('button',{name:'考试状态',exact:true}).waitFor();await page.getByRole('button',{name:'返回首页',exact:true}).click();await page.getByRole('heading',{name:'我的考试',exact:true}).waitFor();await page.evaluate(()=>window.dispatchEvent(new Event('online')));expect(await page.getByRole('button',{name:'考试状态',exact:true}).count()).toBe(0);expect(writes).toBe(0);
         } finally { await browser.close(); }
     }, 30000);
 
@@ -2265,7 +2357,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
     }, 30000);
 
     for(const engine of ['chrome','webkit'] as const)for(const kind of ['dashboard','list'] as const)it(`paging: silent refresh preserves content and manual animation in ${kind} ${engine}`,async()=>{
-        const bundle=await browserHarness(`import {createRoot} from 'react-dom/client';import {Dashboard} from './src/browser/dashboard.tsx';import {UserList} from './src/browser/management-lists.tsx';createRoot(document.getElementById('root')).render(${kind==='dashboard'?'<Dashboard onWatch={()=>{}} onIssues={()=>{}} onExit={()=>{}}/>':'<UserList admin version={0} onEdit={()=>{}}/>'});`);
+        const bundle=await browserHarness(`import {createRoot} from 'react-dom/client';import {Dashboard} from './src/browser/dashboard.tsx';import {UserList} from './src/browser/management-lists.tsx';createRoot(document.getElementById('root')).render(${kind==='dashboard'?'<Dashboard onWatch={()=>{}} onIssues={()=>{}}/>':'<UserList admin version={0} onEdit={()=>{}}/>'});`);
         const baseline=ExamDashboardSchema.parse({generatedAt:new Date().toISOString(),sittings:[],summary:{students:1,online:1,total:100,answered:10,verified:8,humanConfirmed:0,active:0,attention:0},distribution:[{state:'unphotographed',count:90},{state:'processing',count:0},{state:'attention',count:0},{state:'answered',count:10},{state:'waiting',count:0}],throughput:Array.from({length:12},(_,i)=>({at:new Date(Date.now()-(11-i)*300000).toISOString(),ai:i,human:0})),issues:[],modules:[],students:[]});
         const person={id:randomUUID(),username:'silent_student',displayName:'静默测试学生',roles:['student'],state:'active'};
         const endpoint=kind==='dashboard'?'/api/v2/admin/dashboard':'/api/v2/admin/users/page';
@@ -2388,7 +2480,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
         const cookie=await login('test_admin'),bundle=await browserHarness(`import{createRoot}from'react-dom/client';import{Admin}from'./src/browser/admin.tsx';createRoot(document.getElementById('root')).render(<Admin user={${JSON.stringify(admin)}}/>);`);
         const browser=await chromium.launch({executablePath:'/usr/bin/google-chrome'});let queueUrl='';
         try{const page=await browser.newPage({viewport:{width:1440,height:1000}});await page.route('http://127.0.0.1:3199/**',async route=>{const u=new URL(route.request().url());if(u.pathname.startsWith('/api/v2/')){if(u.pathname==='/api/v2/admin/issues')queueUrl=u.href;const response=await json(u.pathname.slice('/api/v2'.length)+u.search,cookie);return route.fulfill({status:response.status,contentType:'application/json',body:await response.text()});}return route.fulfill({contentType:u.pathname.endsWith('.js')?'text/javascript':u.pathname.endsWith('.css')?'text/css':'text/html',body:u.pathname==='/harness.js'?bundle.js:u.pathname==='/harness.css'?bundle.css:bundle.html});});
-        await page.goto('http://127.0.0.1:3199/');await page.getByRole('combobox',{name:'考试场次',exact:true}).click();await page.getByRole('searchbox',{name:'搜索考试场次',exact:true}).fill('合成考试');await page.getByRole('searchbox',{name:'搜索考试场次',exact:true}).press('Enter');await page.getByRole('option',{name:'合成考试',exact:true}).click();
+        await page.goto('http://127.0.0.1:3199/');await page.getByRole('combobox',{name:'具体考试',exact:true}).click();await page.getByRole('searchbox',{name:'搜索具体考试',exact:true}).fill('合成考试');await page.getByRole('searchbox',{name:'搜索具体考试',exact:true}).press('Enter');await page.getByRole('option',{name:'合成考试',exact:true}).click();
         await page.getByRole('button',{name:'查看待处理题',exact:true}).click();await page.getByRole('region',{name:'待处理题队列'}).locator('.issue-row').first().waitFor();expect(await page.getByRole('region',{name:'待处理题队列'}).getByText('另一场学生',{exact:true}).count()).toBe(0);await page.screenshot({path:join(process.cwd(),'.runtime/audit-fixes/screens','issue-drilldown-lost-sitting.png'),fullPage:true,animations:'disabled'});
         console.log('AUDIT_DRILLDOWN',JSON.stringify({selectedSitting:sittingId,queueQuery:new URL(queueUrl).search,unrelatedStudentVisible:await page.getByText('另一场学生',{exact:true}).count()>0}));expect(new URL(queueUrl).searchParams.get('sittingId')).toBe(sittingId);
         const {ExamIssueQueueSchema}=await import('@solveflow/contracts/managed-exam');
@@ -2463,7 +2555,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
         await page.goto('http://127.0.0.1:3199/');await signIn();await loginStarted;await changed();releaseLogin();holdLogin=false;
         await page.getByRole('button',{name:'登录',exact:true}).waitFor();expect(await page.locator('.user-name').count()).toBe(0);
         await signIn();await expect.poll(()=>page.locator('.user-name').textContent()).toBe(student.displayName);
-        await page.getByRole('button',{name:'退出登录',exact:true}).click();await logoutStarted;await changed();who=admin;await signIn();await page.getByRole('navigation',{name:'管理导航'}).waitFor();releaseLogout();holdLogout=false;
+        await page.getByRole('button',{name:'账户菜单',exact:true}).click();await page.getByRole('menuitem',{name:'退出登录',exact:true}).click();await logoutStarted;await changed();who=admin;await signIn();await page.getByRole('navigation',{name:'管理导航'}).waitFor();releaseLogout();holdLogout=false;
         await page.waitForTimeout(150);expect(await page.locator('.user-name').innerText()).toBe(admin.displayName);expect(await page.getByRole('navigation',{name:'管理导航'}).isVisible()).toBe(true);
         }finally{releaseLogin();releaseLogout();await browser.close();}
     },20000);
@@ -2477,7 +2569,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
         current.alerts = [first, second].map(slot => ({ id: randomUUID(), slotId: slot.id, moduleId: slot.moduleId, moduleTitle: '阅读与写作一', position: slot.position, revision: 1, reason: 'answer_failed', openedAt: new Date().toISOString() }));
         const notices = current.alerts.map(alert => ({ id: alert.id, slotId: alert.slotId, moduleId: alert.moduleId, moduleTitle: alert.moduleTitle, position: alert.position, revision: 1, resolution: 'human_confirmed' as const, resolvedAt: new Date().toISOString() }));
         const presentation = { answer: 'B. 4', selectedOptions: ['B'], simulated: false, verified: false, humanConfirmed: true, notAppliedReason: null };
-        const bundle = await browserHarness(`import {createRoot} from 'react-dom/client';import {StudentAttempt} from './src/browser/student.tsx';createRoot(document.getElementById('root')).render(<><header className="header-bar"><div className="header">SolveFlow</div></header><main className="student-content" style={{minHeight:1800}}><StudentAttempt id="${base.id}" onExit={()=>{}}/></main></>);`);
+        const bundle = await browserHarness(`import {createRoot} from 'react-dom/client';import {StudentAttempt} from './src/browser/student.tsx';createRoot(document.getElementById('root')).render(<><header className="header-bar"><div className="header">SolveFlow</div></header><main className="student-content" style={{minHeight:1800}}><StudentAttempt id="${base.id}"/></main></>);`);
         const browser = engine === 'chrome' ? await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true }) : await webkit.launch();
         const page = await browser.newPage({ viewport: { width: 390, height: 844 } }), errors: string[] = [];
         page.setDefaultTimeout(3000);
@@ -2602,7 +2694,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await page.route('http://127.0.0.1:3199/**',route=>{const path=new URL(route.request().url()).pathname;if(path==='/api/v2/practice')return route.fulfill({json:{schemaVersion:1,requestId:route.request().headers()['x-request-id'],status:'finished',phase:'verifying',outcome:outcome()}});return route.fulfill({contentType:path.endsWith('.js')?'text/javascript':path.endsWith('.css')?'text/css':'text/html',body:path==='/harness.js'?bundle.js:path==='/harness.css'?bundle.css:bundle.html});});
             await page.goto('http://127.0.0.1:3199/');await page.locator('input[type=file]').setInputFiles({name:'synthetic.png',mimeType:'image/png',buffer:image});await page.getByRole('heading',{name:'答案',exact:true}).waitFor();await page.getByRole('button',{name:'查看题图',exact:true}).click();
             const modal=page.getByRole('dialog',{name:'题图',exact:true});await modal.waitFor();await page.screenshot({path:join(process.cwd(),'.runtime/workflow-repairs/practice-image-'+engine+'.png'),fullPage:true});
-            const zoom=modal.getByRole('button',{name:'放大图片',exact:true});await expect.poll(()=>zoom.isEnabled()).toBe(true);await zoom.click();expect(await modal.getByLabel('图片缩放比例').textContent()).toBe('125%');await modal.getByRole('button',{name:'全屏查看',exact:true}).click();expect(await modal.getByRole('button',{name:'退出全屏查看',exact:true}).count()).toBe(1);await modal.getByRole('button',{name:'关闭',exact:true}).click();await page.getByRole('button',{name:'查看题图',exact:true}).click();await expect.poll(()=>page.getByRole('dialog',{name:'题图',exact:true}).getByRole('button',{name:'放大图片',exact:true}).isEnabled()).toBe(true);
+            const reset=modal.getByRole('button',{name:'重置图片',exact:true});await expect.poll(()=>reset.isEnabled()).toBe(true);await enlargePicture(modal);expect(await modal.getByLabel('图片缩放比例').textContent()).toBe('125%');await modal.getByRole('button',{name:'全屏查看',exact:true}).click();expect(await modal.getByRole('button',{name:'退出全屏查看',exact:true}).count()).toBe(1);await modal.getByRole('button',{name:'关闭',exact:true}).click();await page.getByRole('button',{name:'查看题图',exact:true}).click();await expect.poll(()=>page.getByRole('dialog',{name:'题图',exact:true}).getByRole('button',{name:'重置图片',exact:true}).isEnabled()).toBe(true);
         }finally{await browser.close();}
     });
     for (const engine of ['chrome','webkit'] as const) for (const fault of ['receipt','offline','not-received','native-reset','read-rejected'] as const) it(`console: workflow: submission recovery ${fault} in ${engine}`,async()=>{
@@ -2610,7 +2702,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
         let current=await snapshot(pool(),child,attempt.id);const slot=current.slots[0];if(!slot)throw new Error('MISSING_RECOVERY_SLOT');
         await submit(pool(),child,slot.id,{requestId:randomUUID(),expectedRevision:0,kind:'initial',assetIds:[await asset(slot.id,child)]});const job=await claimJob(pool());if(!job||job.slotId!==slot.id)throw new Error('MISSING_RECOVERY_JOB');await finishJob(pool(),job,outcome(),null);
         current=await snapshot(pool(),child,attempt.id);current.nextSlotId=slot.id;current.viewedSlotId=slot.id;const cookie=await login(child.username),requests:{requestId:string;assetIds:string[]}[]=[];let receipts=0;
-        const bundle=await browserHarness(`import{createRoot}from'react-dom/client';import{StudentAttempt}from'./src/browser/student.tsx';createRoot(document.getElementById('root')).render(<main className="student-content"><StudentAttempt id="${attempt.id}" onExit={()=>{}}/></main>);`),browser=await(engine==='chrome'?chromium.launch({executablePath:'/usr/bin/google-chrome'}):webkit.launch());
+        const bundle=await browserHarness(`import{createRoot}from'react-dom/client';import{StudentAttempt}from'./src/browser/student.tsx';createRoot(document.getElementById('root')).render(<main className="student-content"><StudentAttempt id="${attempt.id}"/></main>);`),browser=await(engine==='chrome'?chromium.launch({executablePath:'/usr/bin/google-chrome'}):webkit.launch());
         let server:Server|undefined;const serverErrors:string[]=[];
         try{const page=await browser.newPage({viewport:{width:390,height:844}});page.setDefaultTimeout(4000);await page.addInitScript(`window.recoveryPosts=0;const nativeFetch=window.fetch;window.fetch=(...args)=>{if(args[1]?.method==='POST'&&String(args[0]).endsWith('/submissions'))window.recoveryPosts++;return nativeFetch(...args)};window.WebSocket=class{static OPEN=1;readyState=0;send(){}close(){}};`);
             server=createServer((req,res)=>{void(async()=>{
@@ -2667,5 +2759,417 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             }
         }finally{await browser.close();}
     });
+
+    async function studentFlowFixture(engine: 'chrome' | 'webkit') {
+        const current = ExamAttemptSchema.parse(await snapshot(pool(), student, attemptId));
+        current.timing = { ...current.timing, startedAt: new Date(Date.now() - 120000).toISOString(), endedAt: null, endedBy: null, elapsedSeconds: 120, remainingSeconds: null };
+        current.state = 'in_progress'; current.alerts = []; current.resolutions = []; current.navigationVersion = 0;
+        current.slots = current.slots.map(slot => ({ ...slot, revision: 0, runId: null, reviewId: null, images: [], status: 'empty', presentation: null, completedOnce: false, skipped: false }));
+        const first = current.slots[0]; if (!first) throw new Error('MISSING_FLOW_SLOT');
+        current.viewedSlotId = first.id; current.nextSlotId = first.id; current.latestAnswerSlotId = null;
+        const generated = outcome(); if (generated.status !== 'completed') throw new Error('MISSING_FLOW_PROBLEM'); const problem = generated.candidate.problem;
+        const control = { detail: async (slot: typeof first): Promise<{ status: number; body: unknown }> => ({ status: 200, body: { slot, problem: { ...problem, text: '题干 ' + slot.id }, outcome: null, humanReviews: [], revisions: [] } }), rerun: async (_raw: unknown): Promise<{ status: number; body: unknown }> => ({status:500,body:{message:'未配置合成重答'}}) };
+        const bundle = await browserHarness(`import{createRoot}from'react-dom/client';import{StudentAttempt}from'./src/browser/student.tsx';createRoot(document.getElementById('root')).render(<main className="student-content"><StudentAttempt id="${current.id}"/></main>);`);
+        const browser = await (engine === 'chrome' ? chromium.launch({ executablePath: '/usr/bin/google-chrome' }) : webkit.launch());
+        const page = await browser.newPage({ viewport: { width: 390, height: 844 } }), errors: string[] = [], writes: string[] = [];
+        page.setDefaultTimeout(3000); page.on('pageerror', error => errors.push(error.message));
+        await page.addInitScript(`window.WebSocket=class{static OPEN=1;readyState=0;send(){}close(){}};`);
+        await page.route('http://127.0.0.1:3199/**', async route => {
+            const request = route.request(), path = new URL(request.url()).pathname;
+            if (path.endsWith('/snapshot')) return route.fulfill({ json: current });
+            if (path.endsWith('/run')) { writes.push(path);const response=await control.rerun(request.postDataJSON());return route.fulfill({status:response.status,json:response.body}); }
+            if (path.endsWith('/navigation')) {
+                writes.push(path); const input = ExamNavigationSchema.parse(request.postDataJSON());
+                const target = 'slotId' in input ? current.slots.find(slot => slot.id === input.slotId) : current.slots.find(slot => slot.moduleId === input.moduleId);
+                if (!target) throw new Error('MISSING_FLOW_TARGET');
+                current.viewedSlotId = target.id; current.nextSlotId = target.id; current.navigationVersion++; current.lastSeq++;
+                return route.fulfill({ json: { id: current.id, slotId: target.id, navigationVersion: current.navigationVersion } });
+            }
+            if (path.startsWith('/api/v2/runs/') && path.endsWith('/cancel')) { const slot = current.slots.find(slot=>path.includes(slot.runId??'missing')); if(!slot)throw new Error('MISSING_CANCEL_SLOT');writes.push(path);slot.status='cancelled';current.lastSeq++;return route.fulfill({json:{ok:true}}); }
+            if (path.startsWith('/api/v2/slots/')) {
+                const slot = current.slots.find(slot => path.endsWith('/' + slot.id)); if (!slot) throw new Error('MISSING_FLOW_DETAIL');
+                const result = await control.detail(structuredClone(slot)); return route.fulfill({ status: result.status, json: result.body });
+            }
+            if (path.startsWith('/api/v2/media/')) return route.fulfill({ contentType: 'image/jpeg', body: image });
+            if (path.startsWith('/api/')) throw new Error('UNEXPECTED_FLOW_REQUEST ' + path);
+            return route.fulfill({ contentType: path.endsWith('.js') ? 'text/javascript' : path.endsWith('.css') ? 'text/css' : 'text/html', body: path === '/harness.js' ? bundle.js : path === '/harness.css' ? bundle.css : bundle.html });
+        });
+        return { current, control, page, browser, errors, writes, sync: async () => { current.lastSeq++; await page.evaluate(() => window.dispatchEvent(new Event('online'))); } };
+    }
+    function flowAnswer(slot: z.infer<typeof ExamAttemptSchema>['slots'][number], label: string, text = label) {
+        slot.revision = 1; slot.runId = randomUUID(); slot.status = 'completed'; slot.completedOnce = true;
+        slot.presentation = { answer: text, selectedOptions: label ? [label] : [], simulated: false, verified: true, humanConfirmed: false, notAppliedReason: null };
+    }
+    for (const engine of ['chrome','webkit'] as const) it(`console: teacher inline: navigation is expanded and time stays centered in ${engine}`, async () => {
+        const current = ExamAttemptSchema.parse(await snapshot(pool(),student,attemptId));
+        current.studentName = '测试学生与较长姓名'; current.resolutions=[]; current.alerts=[];
+        current.timing = {...current.timing,startedAt:new Date(Date.now()-120000).toISOString(),endedAt:null,endedBy:null,elapsedSeconds:120,remainingSeconds:null};
+        const moduleSeed=current.modules[0],slotSeed=current.slots[0];if(!moduleSeed||!slotSeed)throw new Error('MISSING_TEACHER_LAYOUT_SEED');
+        current.modules=[27,27,22,22].map((questionCount,i)=>({...moduleSeed,id:randomUUID(),position:i+1,code:'m'+i,title:['阅读与写作一','阅读与写作二','数学一','数学二'][i]??'模块',questionCount}));
+        let ordinal=0;current.slots=current.modules.flatMap(module=>Array.from({length:module.questionCount},(_,i)=>({...slotSeed,id:randomUUID(),moduleId:module.id,position:i+1,ordinal:++ordinal,revision:0,runId:null,reviewId:null,status:'empty' as const,presentation:null,images:[],completedOnce:false,skipped:false})));
+        const slot=current.slots[0];if(!slot)throw new Error('MISSING_TEACHER_LAYOUT_SLOT');flowAnswer(slot,'B','B. $4.25');current.viewedSlotId=slot.id;current.nextSlotId=slot.id;
+        const [solving,verifying,failed,manual]=current.slots.slice(1,5);if(!solving||!verifying||!failed||!manual)throw new Error('MISSING_TEACHER_PALETTE_SLOTS');
+        flowAnswer(solving,'A');solving.status='solving';flowAnswer(verifying,'C');verifying.status='verifying';flowAnswer(failed,'D');failed.status='failed';flowAnswer(manual,'C');if(manual.presentation){manual.presentation.verified=false;manual.presentation.humanConfirmed=true;}
+        const result=outcome(); if(result.status!=='completed')throw new Error('NO_TEACHER_LAYOUT_OUTCOME');
+        const problem={...result.candidate.problem,text:'Josie purchased a pass that cost $19.50 to tour a nature preserve. She also purchased 10 identical stickers to give to her nieces and nephews. The pass and the stickers cost $62.00 total. What was the cost of one sticker?'};
+        const bundle=await browserHarness(`import{createRoot}from'react-dom/client';import{Monitor}from'./src/browser/monitor.tsx';createRoot(document.getElementById('root')).render(<Monitor id="${current.id}" onClose={()=>{}}/>);`);
+        const browser=await(engine==='chrome'?chromium.launch({executablePath:'/usr/bin/google-chrome'}):webkit.launch());const page=await browser.newPage({viewport:{width:1440,height:1000}});page.setDefaultTimeout(3000);
+        const writes:string[]=[],errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));await page.addInitScript(`window.WebSocket=class{static OPEN=1;readyState=0;send(){}close(){}};`);
+        await page.route('http://127.0.0.1:3199/**',async route=>{const request=route.request(),path=new URL(request.url()).pathname;
+            if(request.method()!=='GET'){writes.push(path);return route.fulfill({status:500});}
+            if(path.endsWith('/snapshot'))return route.fulfill({json:current});
+            if(path.includes('/slots/')){const selected=current.slots.find(item=>path.endsWith(item.id));return route.fulfill({json:{slot:selected,problem,outcome:result,humanReviews:[],revisions:[]}});}
+            if(path.includes('/media/'))return route.fulfill({contentType:'image/jpeg',body:image});
+            return route.fulfill({contentType:path.endsWith('.js')?'text/javascript':path.endsWith('.css')?'text/css':'text/html',body:path==='/harness.js'?bundle.js:path==='/harness.css'?bundle.css:bundle.html});
+        });
+        try{
+            await page.goto('http://127.0.0.1:3199/');const navigation=page.getByRole('region',{name:'题目导航',exact:true});await navigation.waitFor();
+            expect(await page.getByRole('dialog').count()).toBe(1);expect(await page.getByRole('button',{name:'题目导航',exact:true}).getAttribute('aria-expanded')).toBe('true');
+            await navigation.getByRole('button',{name:/第1题$/}).first().click();await page.getByRole('button',{name:'手动作答',exact:true}).waitFor();
+            expect(await navigation.isVisible()).toBe(true);expect(await page.getByRole('dialog').count()).toBe(1);
+            expect(await page.getByRole('list',{name:'题目状态图例'}).innerText()).toBe('未答\n正在回答\n校验\n通过\n出错');
+            for(const [position,label] of [[1,'通过'],[2,'正在回答'],[3,'校验'],[4,'出错'],[5,'通过'],[6,'未答']] as const)expect(await navigation.getByRole('button',{name:current.modules[0]?.title+' · 第'+position+'题',exact:true}).innerText()).toContain(label);
+            expect(await navigation.getByRole('button').first().getAttribute('aria-current')).toBe('step');
+            const screens=join(process.cwd(),'.runtime/teacher-layout-20261105/screens');await mkdir(screens,{recursive:true});
+            for(const width of [320,390,768,1440])for(const theme of ['light','dark']){
+                await page.setViewportSize({width,height:1000});await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+                const dialog=page.getByRole('dialog').first(),header=dialog.locator(':scope > .dialog-head'),clock=header.getByLabel('考试用时');await clock.waitFor();
+                const headBox=await header.boundingBox(),clockBox=await clock.boundingBox();if(!headBox||!clockBox)throw new Error('MISSING_HEADER_CLOCK');
+                expect(Math.abs(clockBox.x+clockBox.width/2-headBox.x-headBox.width/2)).toBeLessThanOrEqual(2);
+                expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+                const phase=navigation.locator('.navigation-phase').first(),phaseBox=await phase.boundingBox();
+                expect(phaseBox?.height).toBeLessThanOrEqual(18);
+                expect(await navigation.getByRole('button').first().evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+                expect(await navigation.locator('.overview-phase').evaluateAll(elements=>elements.every(el=>el.scrollWidth<=el.clientWidth+1))).toBe(true);
+                const question=page.getByRole('region',{name:'题目与原图'});expect(await question.locator('.katex').count()).toBe(0);expect(await question.innerText()).toContain('$19.50');expect(await question.innerText()).toContain('$62.00');
+                expect(await question.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+                await page.screenshot({path:join(screens,`${engine}-${width}-${theme}.png`),fullPage:true,animations:'disabled'});
+            }
+            await page.getByRole('button',{name:'题目导航',exact:true}).click();expect(await navigation.count()).toBe(0);
+            await page.evaluate(()=>window.dispatchEvent(new Event('online')));expect(await navigation.count()).toBe(0);
+            await page.getByRole('button',{name:'题目导航',exact:true}).click();await navigation.waitFor();
+            await page.getByRole('button',{name:'手动作答',exact:true}).click();
+            expect(await navigation.getByRole('button').first().isDisabled()).toBe(true);expect(await page.getByRole('button',{name:'定位当前题',exact:true}).count()).toBeLessThanOrEqual(1);
+            expect(await page.getByRole('textbox',{name:'确认答案',exact:true}).count()).toBe(0);
+            await page.getByRole('radio',{name:'C',exact:true}).check();await page.getByLabel('处理意见',{exact:true}).fill('合成草稿，不应自动保存。');expect(await page.getByRole('button',{name:'保存并通知学生',exact:true}).isEnabled()).toBe(true);expect(await page.locator('.review-current-answer').innerText()).toContain('B. $4.25');await page.getByRole('button',{name:'取消',exact:true}).click();
+            expect(writes).toEqual([]);expect(errors).toEqual([]);
+        }finally{await browser.close();}
+    });
+
+    it('student rerun: retains materials and answer, deduplicates explicit retries and publishes to the same slot', async () => {
+        const f=await queuedReviewSlot('rerun_owner');
+        await pool().query("UPDATE exam_app.answer_runs SET created_at=now()-interval '1 day' WHERE id=$1",[f.run.runId]);
+        const original=await claimJob(pool());if(!original||original.id!==f.run.runId)throw new Error('WRONG_RERUN_FIXTURE');
+        await finishJob(pool(),original,outcome(),null);
+        const before=ExamAttemptSchema.parse(await snapshot(pool(),f.child,original.attemptId)),detail=await slotDetail(pool(),f.child,f.slot.id),cookie=await login(f.child.username);
+        const input={requestId:randomUUID(),expectedRevision:detail.slot.revision,expectedRunId:detail.slot.runId,expectedReviewId:detail.slot.reviewId};
+        const responses=await Promise.all([json('/slots/'+f.slot.id+'/run',cookie,'POST',input),json('/slots/'+f.slot.id+'/run',cookie,'POST',input)]);
+        expect(responses.map(r=>r.status)).toEqual([202,202]);
+        const ids=await Promise.all(responses.map(async r=>z.object({id:z.uuid()}).parse(await r.json()).id));expect(ids[0]).toBe(ids[1]);
+        const queued=await slotDetail(pool(),f.child,f.slot.id);expect(queued.slot).toMatchObject({id:f.slot.id,revision:detail.slot.revision,runId:ids[0],status:'queued',presentation:detail.slot.presentation});expect(queued.slot.images).toEqual(detail.slot.images);
+        expect((await snapshot(pool(),f.child,original.attemptId)).viewedSlotId).toBe(before.viewedSlotId);
+        expect(await one(pool(),z.coerce.number(),'SELECT count(*) AS value FROM exam_app.answer_runs WHERE slot_id=$1',[f.slot.id])).toBe(2);
+        expect((await json('/slots/'+f.slot.id+'/run',cookie,'POST',{...input,requestId:randomUUID(),expectedRunId:ids[0]})).status).toBe(409);
+        await pool().query("UPDATE exam_app.answer_runs SET created_at=now()-interval '1 day' WHERE id=$1",[ids[0]]);
+        const next=await claimJob(pool());if(!next||next.id!==ids[0])throw new Error('RERUN_NOT_CLAIMABLE');
+        const result=outcome();if(result.status!=='completed')throw new Error('MISSING_RERUN_OUTCOME');result.candidate.answer='C. 5';result.candidate.selectedOptions=['C'];await finishJob(pool(),next,result,null);
+        expect((await slotDetail(pool(),f.child,f.slot.id)).slot.presentation?.answer).toBe('C. 5');expect((await snapshot(pool(),f.child,next.attemptId)).viewedSlotId).toBe(before.viewedSlotId);
+        expect((await json('/slots/'+f.slot.id+'/run',cookie,'POST',input)).status).toBe(202);
+        expect(await one(pool(),z.coerce.number(),'SELECT count(*) AS value FROM exam_app.run_results WHERE slot_id=$1',[f.slot.id])).toBe(2);
+        const raceInput={...input,expectedRunId:next.id};const race=await Promise.all([json('/slots/'+f.slot.id+'/run',cookie,'POST',{...raceInput,requestId:randomUUID()}),json('/slots/'+f.slot.id+'/run',cookie,'POST',{...raceInput,requestId:randomUUID()})]);expect(race.map(r=>r.status).sort()).toEqual([202,409]);
+        const latest=await slotDetail(pool(),f.child,f.slot.id);if(!latest.slot.runId)throw new Error('MISSING_RACE_RUN');expect(await one(pool(),z.boolean(),'SELECT initiated_by IS NULL AND review_deadline IS NULL AS value FROM exam_app.answer_runs WHERE id=$1',[latest.slot.runId])).toBe(true);await cancelJob(pool(),f.child,latest.slot.runId);
+    });
+
+    it('student rerun: rejects wrong owners, active tasks, stale versions and ended exams without dispatch', async () => {
+        const f=await queuedReviewSlot('rerun_guards'),cookie=await login(f.child.username);
+        const stranger=await createUser(pool(),admin,{username:'rerun_stranger',displayName:'其他学生',password:'synthetic-password-123',roles:['student']},password),teacher=await createUser(pool(),admin,{username:'rerun_staff',displayName:'无关老师',password:'synthetic-password-123',roles:['support']},password);
+        const outsider=await login(stranger.username),staff=await login(teacher.username);
+        const d=await slotDetail(pool(),f.child,f.slot.id),input={requestId:randomUUID(),expectedRevision:d.slot.revision,expectedRunId:d.slot.runId,expectedReviewId:d.slot.reviewId},path='/slots/'+f.slot.id+'/run';
+        expect((await json(path,outsider,'POST',input)).status).toBe(404);expect((await json(path,staff,'POST',input)).status).toBe(404);expect((await json(path,cookie,'POST',input)).status).toBe(409);
+        await cancelJob(pool(),f.child,f.run.runId);
+        expect((await json(path,cookie,'POST',{...input,action:'verify'})).status).toBe(400);
+        expect((await json(path,cookie,'POST',{...input,expectedRevision:2})).status).toBe(409);
+        expect((await json(path,cookie,'POST',{...input,expectedReviewId:randomUUID()})).status).toBe(409);
+        const id=await one(pool(),z.uuid(),'SELECT attempt_id AS value FROM exam_app.question_slots WHERE id=$1',[f.slot.id]);
+        const empty=(await snapshot(pool(),f.child,id)).slots.find(s=>!s.revision);if(!empty)throw new Error('MISSING_EMPTY_SLOT');
+        expect((await json('/slots/'+empty.id+'/run',cookie,'POST',{...input,expectedRunId:null})).status).toBe(409);
+        const usedRequest=await one(pool(),z.uuid(),'SELECT client_request_id AS value FROM exam_app.answer_runs WHERE id=$1',[f.run.runId]);expect((await json(path,cookie,'POST',{...input,requestId:usedRequest})).status).toBe(409);
+        await pool().query("UPDATE exam_app.exam_assignments SET closes_at=now()-interval '1 second' WHERE id=(SELECT assignment_id FROM exam_app.exam_attempts WHERE id=$1)",[id]);expect((await json(path,cookie,'POST',input)).status).toBe(409);
+        await pool().query("UPDATE exam_app.exam_assignments SET closes_at=now()+interval '1 hour',state='revoked' WHERE id=(SELECT assignment_id FROM exam_app.exam_attempts WHERE id=$1)",[id]);expect((await json(path,cookie,'POST',input)).status).toBe(409);
+        await pool().query("UPDATE exam_app.exam_assignments SET state='assigned' WHERE id=(SELECT assignment_id FROM exam_app.exam_attempts WHERE id=$1)",[id]);
+        const unavailable=createExamService({pool:pool(),storage,origin,publicDir:root,canSolve:()=>false});expect((await unavailable.app.request('/api/v2'+path,{method:'POST',headers:{origin,cookie,'content-type':'application/json'},body:JSON.stringify(input)})).status).toBe(503);
+        expect((await json('/attempts/'+id+'/finish',cookie,'POST')).status).toBe(200);expect((await json(path,cookie,'POST',input)).status).toBe(409);
+        expect(await one(pool(),z.coerce.number(),'SELECT count(*) AS value FROM exam_app.answer_runs WHERE slot_id=$1',[f.slot.id])).toBe(1);
+    });
+
+    for (const engine of ['chrome', 'webkit'] as const) {
+        it(`console: student status palette: overview separates verification from answers and highlights only the selected question in ${engine}`, async () => {
+            const f = await studentFlowFixture(engine), [first, second, third] = f.current.slots, module = f.current.modules[0];
+            if (!first || !second || !third || !module) throw new Error('MISSING_STATUS_PALETTE_SLOTS');
+            module.questionCount = 12;
+            const extra = Array.from({length:9}, (_, i) => ({...structuredClone(first), id:randomUUID(), position:i+4, ordinal:i+20}));
+            f.current.slots.push(...extra);
+            const [empty, failed, unchecked, manual, simulated, stopped, skipped, incomplete, interrupted] = extra;
+            if (!empty || !failed || !unchecked || !manual || !simulated || !stopped || !skipped || !incomplete || !interrupted) throw new Error('MISSING_STATUS_PALETTE_CASES');
+            flowAnswer(first, 'B', '已核验答案'); flowAnswer(second, 'A'); second.status = 'solving'; flowAnswer(third, 'C'); third.status = 'verifying';
+            flowAnswer(failed, 'D'); failed.status = 'failed'; flowAnswer(unchecked, 'A'); if (unchecked.presentation) unchecked.presentation.verified = false;
+            flowAnswer(manual, 'C'); if (manual.presentation) { manual.presentation.verified = false; manual.presentation.humanConfirmed = true; }
+            flowAnswer(simulated, 'D'); if (simulated.presentation) { simulated.presentation.verified = false; simulated.presentation.simulated = true; }
+            stopped.status = 'cancelled'; stopped.revision = 1; skipped.skipped = true; incomplete.status = 'needs_clarification'; interrupted.status = 'interrupted';
+            f.current.alerts = [{id:randomUUID(),slotId:failed.id,moduleId:module.id,moduleTitle:module.title,position:failed.position,revision:1,reason:'verification_failed',openedAt:new Date().toISOString()}];
+            try {
+                await f.page.goto('http://127.0.0.1:3199/'); await f.page.locator('.current-answer .answer-options').waitFor();
+                const screens = join(process.cwd(), '.runtime/status-palette-20261106/screens'); await mkdir(screens,{recursive:true});
+                for (const theme of ['light','dark']) {
+                    await f.page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+                    const color = await f.page.locator('.current-answer .answer-options').evaluate(el=>getComputedStyle(el).backgroundColor);
+                    expect(color).toBe(theme==='light'?'rgb(239, 249, 244)':'rgb(21, 44, 37)');
+                    await f.page.screenshot({path:join(screens,`answer-${engine}-${theme}.png`),fullPage:true,animations:'disabled'});
+                }
+                await f.page.getByRole('button',{name:'总览',exact:true}).click(); const overview=f.page.getByRole('region',{name:'本节答案总览',exact:true});
+                const question=(position:number)=>overview.getByRole('button',{name:'第'+position+'题',exact:true});
+                expect(await overview.getByRole('list',{name:'题目状态图例'}).innerText()).toBe('未答\n正在回答\n校验\n通过\n出错');
+                for (const [position,label] of [[1,'通过'],[2,'正在回答'],[3,'校验'],[4,'未答'],[5,'出错'],[6,'校验'],[7,'通过'],[8,'校验'],[9,'未答'],[10,'未答'],[11,'出错'],[12,'出错']] as const) expect(await question(position).innerText()).toContain(label);
+                expect(await question(1).innerText()).toContain('B'); expect(await question(7).getAttribute('title')).toContain('老师已确认'); expect(await question(6).getAttribute('title')).toContain('待核验');
+                for (const width of [320,390,768,1440]) for (const theme of ['light','dark']) {
+                    await f.page.setViewportSize({width,height:900}); await f.page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+                    expect(await f.page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+                    expect(await overview.locator('.overview-phase').evaluateAll(elements=>elements.every(el=>el.scrollWidth<=el.clientWidth+1))).toBe(true);
+                    expect(await question(1).getAttribute('aria-current')).toBe('step'); expect(await question(5).getAttribute('aria-current')).toBeNull();
+                    expect(await question(1).evaluate(el=>getComputedStyle(el).borderColor)).toBe('rgb(40, 103, 221)');
+                    await f.page.screenshot({path:join(screens,`overview-${engine}-${width}-${theme}.png`),fullPage:true,animations:'disabled'});
+                }
+                await question(6).click(); await f.page.locator('.current-answer .answer-options').waitFor();
+                for (const theme of ['light','dark']) { await f.page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);expect(await f.page.locator('.current-answer .answer-options').evaluate(el=>getComputedStyle(el).backgroundColor)).toBe(theme==='light'?'rgb(255, 248, 233)':'rgb(50, 42, 29)'); }
+                expect(await f.page.locator('.current-answer').innerText()).toContain('待核验');
+                await f.page.getByRole('button',{name:'总览',exact:true}).click(); await question(5).click(); await f.page.locator('.capture-box h2').getByText('第5题',{exact:true}).waitFor(); await f.page.getByRole('button',{name:'总览',exact:true}).click();
+                expect(await question(5).getAttribute('aria-current')).toBe('step'); expect(await question(5).innerText()).toContain('出错'); expect(await question(5).getByLabel('待处理').count()).toBe(1); expect(await question(1).getAttribute('aria-current')).toBeNull();
+                flowAnswer(failed,'B','重新核验通过'); await f.sync(); await expect.poll(()=>question(5).innerText()).toContain('出错');
+                f.current.alerts=[]; second.status='queued'; third.status='revising'; await f.sync();
+                await expect.poll(()=>question(5).innerText()).toContain('通过'); expect(await question(5).getByLabel('待处理').count()).toBe(0);
+                expect(await question(5).getAttribute('aria-current')).toBe('step'); expect(await question(2).innerText()).toContain('正在回答'); expect(await question(3).getAttribute('title')).toContain('修正中');
+                expect(f.errors).toEqual([]);
+            } finally { await f.browser.close(); }
+        });
+        it(`console: student rerun: explicit retries keep the current question and previous answer in ${engine}`, async () => {
+            const f=await studentFlowFixture(engine),[first,second]=f.current.slots;if(!first||!second)throw new Error('MISSING_RERUN_UI_SLOTS');
+            flowAnswer(first,'B','ORIGINAL CURRENT ANSWER');flowAnswer(second,'D','ANSWER ELSEWHERE');first.images=[{id:randomUUID(),role:'primary'}];
+            const requests:z.infer<typeof ExamStudentRunSchema>[]=[];let release:()=>void=()=>{};const gate=new Promise<void>(resolve=>release=resolve);
+            f.control.rerun=async raw=>{const input=ExamStudentRunSchema.parse(raw);requests.push(input);if(requests.length===1)return{status:503,body:{message:'合成重答失败'}};await gate;first.runId=randomUUID();first.status='queued';f.current.lastSeq++;return{status:202,body:{id:first.runId}};};
+            try{
+                await f.page.goto('http://127.0.0.1:3199/');const answer=f.page.locator('.current-answer'),rerun=f.page.getByRole('button',{name:'重新解答',exact:true});await rerun.waitFor();await rerun.click();await f.page.getByRole('alert').getByText('合成重答失败',{exact:true}).waitFor();expect(await answer.innerText()).toContain('ORIGINAL CURRENT ANSWER');expect(requests).toHaveLength(1);
+                await f.sync();expect(requests).toHaveLength(1);await rerun.click();await expect.poll(()=>requests.length).toBe(2);expect(await rerun.isDisabled()).toBe(true);expect(await f.page.getByRole('button',{name:'下一题',exact:true}).isDisabled()).toBe(true);release();
+                await answer.getByText('排队中',{exact:true}).waitFor();expect(await answer.innerText()).toContain('ORIGINAL CURRENT ANSWER');expect(await rerun.isDisabled()).toBe(true);expect(requests[0]?.requestId).toBe(requests[1]?.requestId);expect(requests[1]).toMatchObject({expectedRevision:1,expectedReviewId:null});
+                const completedRun=first.runId;flowAnswer(first,'C','UPDATED CURRENT ANSWER');first.runId=completedRun;await f.sync();await answer.getByText('UPDATED CURRENT ANSWER',{exact:true}).waitFor();expect(await answer.innerText()).not.toContain('ANSWER ELSEWHERE');expect(await f.page.locator('.capture-box h2').innerText()).toBe('第1题');
+                const screens=join(process.cwd(),'.runtime/student-toolbar-20261106/screens');await mkdir(screens,{recursive:true});for(const width of [320,390])for(const theme of ['light','dark']){await f.page.setViewportSize({width,height:844});await f.page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);expect(await f.page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await f.page.screenshot({path:join(screens,`rerun-${engine}-${width}-${theme}.png`),fullPage:true,animations:'disabled'});}
+                await rerun.click();await expect.poll(()=>requests.length).toBe(3);expect(requests[2]?.requestId).not.toBe(requests[1]?.requestId);expect(requests[2]?.expectedRunId).toBe(completedRun);expect(f.errors).toEqual([]);
+            }finally{release();await f.browser.close();}
+        });
+        it(`console: mobile refinement: compact controls and overview reflect current tasks in ${engine}`, async () => {
+            const f = await studentFlowFixture(engine), [first, second, third] = f.current.slots;
+            if (!first || !second || !third) throw new Error('MISSING_REFINEMENT_SLOTS');
+            first.revision = 1; first.runId = randomUUID(); first.status = 'queued'; first.skipped = true;
+            flowAnswer(second, 'B', '旧答案'); second.revision = 2; second.runId = randomUUID(); second.presentation = null; second.status = 'verifying';
+            third.revision = 1; third.status = 'failed'; third.runId = randomUUID();
+            try {
+                await f.page.goto('http://127.0.0.1:3199/'); await f.page.getByRole('heading', { name: '第1题答案', exact: true }).waitFor();
+                expect(await f.page.getByRole('region', { name: '题目状态总览', exact: true }).count()).toBe(0);
+                expect(await f.page.getByRole('region', { name: '本节答案总览', exact: true }).count()).toBe(0);
+                expect(await f.page.getByRole('button', { name: '跳过本题', exact: true }).count()).toBe(0);expect(await f.page.locator('.skipped-link').count()).toBe(0);
+                const controls = f.page.getByRole('navigation', { name: '逐题导航' });
+                await controls.getByRole('button', { name: '停止作答', exact: true }).waitFor();
+                const [previous, stop, next] = await Promise.all(['上一题', '停止作答', '下一题'].map(name => controls.getByRole('button', {name, exact:true}).boundingBox()));
+                expect(previous && stop && next && previous.x < stop.x && stop.x < next.x && Math.abs(previous.y - next.y) < 2).toBe(true);
+                const screens = join(process.cwd(), '.runtime/student-refinement-20261105/screens'); await mkdir(screens,{recursive:true});
+                for(const theme of ['light','dark']){await f.page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);await f.page.screenshot({path:join(screens,`controls-${engine}-${theme}.png`),fullPage:true,animations:'disabled'});}
+                await f.page.getByRole('button', { name: '总览', exact: true }).click();
+                const overview = f.page.getByRole('dialog', { name: '题目总览', exact: true });
+                const queued = overview.getByRole('button', { name: '第1题', exact: false });
+                await queued.waitFor(); expect(await queued.innerText()).toContain('正在回答'); expect(await queued.getAttribute('title')).toContain('排队中');
+                expect(await overview.getByRole('button', { name: '第2题', exact: false }).innerText()).toContain('校验');
+                expect(await overview.getByRole('button', { name: '第3题', exact: false }).innerText()).toContain('出错');
+                await f.page.screenshot({path:join(screens,`pending-overview-${engine}.png`),fullPage:true,animations:'disabled'});
+                flowAnswer(first, 'C', '当前答案'); await f.sync();
+                await expect.poll(() => queued.innerText()).toContain('C');
+                await overview.getByRole('button', { name: '第2题', exact: false }).click();
+                await f.page.getByRole('heading', { name: '第2题答案', exact: true }).waitFor();
+                expect(await f.page.locator('.current-answer').innerText()).not.toContain('当前答案');
+                await f.page.getByRole('button',{name:'停止作答',exact:true}).click(); await f.page.locator('.capture-box .badge').getByText('已停止',{exact:true}).waitFor(); expect(second.status).toBe('cancelled');expect(first.status).toBe('completed');
+                expect(f.errors).toEqual([]);
+            } finally { await f.browser.close(); }
+        });
+        it(`console: mobile refinement: question and answer math render without swallowing currency in ${engine}`, async () => {
+            const f = await studentFlowFixture(engine), first = f.current.slots[0]; if (!first) throw new Error('MISSING_REFINEMENT_SLOT');
+            flowAnswer(first, '', String.raw`由公式 \(x=\frac{-7+\sqrt{29}}{2}\) 得到 \(k=29\)。贴纸价格为 $12 each or $20 per pair. 计算 42.50\div 10=4.25。`);
+            const normal = f.control.detail;
+            f.control.detail = async slot => { const result = await normal(slot); return { ...result, body: {slot, problem: {subject: 'math', text: String.raw`求解 \(x^2+7x+5=0\)，且 \[y=\sqrt{x}\]。代码保留：` + '`\\frac{literal}{2}`', uncertainties: []}, outcome: null, humanReviews: [], revisions: []} }; };
+            try {
+                await f.page.goto('http://127.0.0.1:3199/'); const answer = f.page.locator('.current-answer');
+                await answer.locator('summary').filter({ hasText: '题目详情' }).click(); await answer.getByRole('region', { name: '识别题目' }).waitFor();
+                expect(await answer.locator('.katex').count()).toBeGreaterThanOrEqual(5);
+                expect(await answer.innerText()).toContain('$12 each or $20 per pair.');
+                expect(await answer.locator('code').innerText()).toBe(String.raw`\frac{literal}{2}`);
+                expect(await answer.locator('.katex-error').count()).toBe(0);
+                const screens = join(process.cwd(), '.runtime/student-refinement-20261105/screens'); await mkdir(screens,{recursive:true});
+                for(const width of [320,390,1280])for(const theme of ['light','dark']){await f.page.setViewportSize({width,height:900});await f.page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);expect(await f.page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await f.page.screenshot({path:join(screens,`math-${engine}-${width}-${theme}.png`),fullPage:true,animations:'disabled'});}
+                expect(await f.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true); expect(f.errors).toEqual([]);
+            } finally { await f.browser.close(); }
+        });
+    }
+
+    for (const engine of ['chrome', 'webkit'] as const) {
+        it(`console: answer choice preview: shows matching content, truncates and reuses the current detail in ${engine}`, async () => {
+            const f = await studentFlowFixture(engine), [first, second] = f.current.slots;
+            if (!first || !second) throw new Error('MISSING_CHOICE_PREVIEW_SLOTS');
+            const content = 'Exposure to the treatment changed the plants’ absorption of iron and zinc, supporting the researchers’ hypothesis. '.repeat(8).trim();
+            flowAnswer(first, 'B', '合成解释：选择支持研究假设的观察。'); first.images = [{ id: randomUUID(), role: 'primary' }];
+            flowAnswer(second, 'C', '合成多选解释。'); if (second.presentation) second.presentation.selectedOptions = ['C', 'D'];
+            const normal = f.control.detail; let reads = 0;
+            f.control.detail = async slot => {
+                reads++;
+                const response = await normal(slot);
+                return { ...response, body: { slot, problem: { text: '合成题干', subject: 'math', uncertainties: [], options: [{ label: 'A', text: '干扰选项内容' }, { label: 'B', text: content }, { label: 'C', text: String.raw`\(x=\frac{1}{2}\)` }, { label: 'D', text: '另一个已选选项' }] }, outcome: null, humanReviews: [], revisions: [] } };
+            };
+            try {
+                await f.page.goto('http://127.0.0.1:3199/');
+                const answer = f.page.locator('.current-answer'), preview = answer.locator('.answer-choice-text');
+                await preview.waitFor(); expect(await preview.innerText()).toContain('Exposure to the treatment');
+                expect(await answer.locator('.answer-options').innerText()).toBe('B');
+                expect(await preview.getAttribute('title')).toBe(content);
+                expect(await answer.locator('.answer-question-details').getAttribute('open')).toBeNull();
+                const screens = join(process.cwd(), '.runtime/answer-choice-preview-20261106/screens'); await mkdir(screens, { recursive: true });
+                for (const width of [320, 390, 1280]) for (const theme of ['light', 'dark']) {
+                    await f.page.setViewportSize({ width, height: 900 }); await f.page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+                    const geometry = await preview.evaluate(el => ({ clipped: el.scrollHeight > el.clientHeight, clamp: getComputedStyle(el).webkitLineClamp, width: el.getBoundingClientRect().right <= innerWidth }));
+                    expect(geometry).toEqual({ clipped: true, clamp: '2', width: true });
+                    expect(await f.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+                    await f.page.screenshot({ path: join(screens, `${engine}-${width}-${theme}.png`), fullPage: true, animations: 'disabled' });
+                }
+                await f.sync(); await answer.locator('.answer-question-details > summary').click();
+                await answer.getByRole('region', { name: '识别题目', exact: true }).waitFor(); expect(reads).toBe(1);
+                await f.page.getByRole('button', { name: '下一题', exact: true }).click();
+                await expect.poll(() => answer.locator('.answer-choice-row').count()).toBe(2);
+                await answer.locator('.answer-choice-text .katex').waitFor();
+                expect(await answer.locator('.answer-options').allTextContents()).toEqual(['C', 'D']);
+                expect(await answer.innerText()).not.toContain('Exposure to the treatment');
+                expect(await answer.locator('.answer-choice-text').last().innerText()).toBe('另一个已选选项');
+                expect(f.errors).toEqual([]); expect(f.writes.filter(path => !path.endsWith('/navigation'))).toEqual([]);
+            } finally { await f.browser.close(); }
+        });
+        it(`console: answer choice preview: ignores late detail and material changes and keeps the answer on read failure in ${engine}`, async () => {
+            const f = await studentFlowFixture(engine), [first, second] = f.current.slots;
+            if (!first || !second) throw new Error('MISSING_CHOICE_PREVIEW_SLOTS');
+            flowAnswer(first, 'A', '第一题答案'); flowAnswer(second, 'C', '第二题答案');
+            let release: () => void = () => {}, started = false, fail = true;
+            const held = new Promise<void>(resolve => release = resolve);
+            f.control.detail = async slot => {
+                if (slot.id === first.id) { started = true; await held; }
+                if (slot.id === second.id && fail) return { status: 503, body: { message: '合成读取失败' } };
+                return { status: 200, body: { slot, problem: { text: '合成题干', subject: 'math', uncertainties: [], options: [{ label: 'A', text: '迟到的第一题选项' }, { label: 'C', text: '当前第二题选项' }] }, outcome: null, humanReviews: [], revisions: [] } };
+            };
+            try {
+                await f.page.goto('http://127.0.0.1:3199/'); await expect.poll(() => started).toBe(true);
+                await f.page.getByRole('button', { name: '下一题', exact: true }).click(); release();
+                const answer = f.page.locator('.current-answer'); await answer.getByText('第二题答案', { exact: true }).waitFor();
+                await answer.locator('.answer-question-details > summary').click(); await answer.getByRole('alert').waitFor();
+                expect(await answer.locator('.answer-choice-text').count()).toBe(0);
+                expect(await answer.innerText()).not.toContain('迟到的第一题选项');
+                fail = false; await answer.getByRole('button', { name: '重新读取题目', exact: true }).click();
+                await answer.locator('.answer-choice-text').getByText('当前第二题选项', { exact: true }).waitFor();
+                second.revision++; second.runId = randomUUID(); second.presentation = null; second.status = 'verifying'; await f.sync();
+                await answer.getByText('校验中', { exact: true }).waitFor(); expect(await answer.locator('.answer-choice-text').count()).toBe(0);
+                expect(await answer.innerText()).not.toContain('当前第二题选项'); expect(f.errors).toEqual([]);
+            } finally { release(); await f.browser.close(); }
+        });
+        it(`console: student flow: answer waits for manual Next and reload keeps the viewed question in ${engine}`, async () => {
+            const f = await studentFlowFixture(engine); const [first, second] = f.current.slots; if (!first || !second) throw new Error('MISSING_FLOW_SLOTS');
+            first.revision = 1; first.runId = randomUUID(); first.status = 'verifying';
+            try {
+                await f.page.goto('http://127.0.0.1:3199/'); await f.page.getByText('校验中', { exact: true }).waitFor();
+                flowAnswer(first, 'B', 'B. 4'); f.current.nextSlotId = second.id; f.current.latestAnswerSlotId = first.id; await f.sync();
+                await f.page.getByRole('heading', { name: '第1题答案', exact: true }).waitFor();
+                expect(await f.page.locator('.capture-box > .section-head h2').innerText()).toBe('第1题');
+                expect(await f.page.locator('.current-answer').innerText()).toContain('B. 4');
+                expect(await f.page.getByLabel('考试用时', { exact: true }).count()).toBe(0);
+                await f.page.reload(); await f.page.getByRole('heading', { name: '第1题答案', exact: true }).waitFor();
+                expect(await f.page.getByRole('button', { name: '上一题', exact: true }).isDisabled()).toBe(true);
+                await f.page.getByRole('button', { name: '下一题', exact: true }).click();
+                await f.page.getByRole('button', { name: '拍摄第2题', exact: true }).waitFor();
+                expect(await f.page.locator('.current-answer').innerText()).not.toContain('B. 4');
+                await f.page.getByRole('button', { name: '上一题', exact: true }).click();
+                await f.page.getByRole('heading', { name: '第1题答案', exact: true }).waitFor();
+                expect(f.writes.every(path => path.endsWith('/navigation'))).toBe(true); expect(f.errors).toEqual([]);
+            } finally { await f.browser.close(); }
+        });
+        it(`console: student flow: section overview and boundary buttons never display another question answer in ${engine}`, async () => {
+            const f = await studentFlowFixture(engine), [module1, module2] = f.current.modules;
+            if (!module1 || !module2) throw new Error('MISSING_FLOW_MODULES');
+            const first = f.current.slots.filter(slot => slot.moduleId === module1.id), second = f.current.slots.filter(slot => slot.moduleId === module2.id);
+            const [a, b, c] = first, [d, e] = second; if (!a || !b || !c || !d || !e) throw new Error('MISSING_FLOW_SLOTS');
+            flowAnswer(a, 'B', 'FIRST ANSWER'); flowAnswer(b, '', '12.5'); flowAnswer(c, 'C', 'LAST SECTION ONE'); flowAnswer(d, 'A', 'FIRST SECTION TWO'); flowAnswer(e, 'D', 'LATEST ELSEWHERE');
+            f.current.latestAnswerSlotId = e.id;
+            try {
+                await f.page.goto('http://127.0.0.1:3199/'); await f.page.getByRole('heading', { name: '第1题答案', exact: true }).waitFor();
+                await f.page.getByRole('button',{name:'总览',exact:true}).click();
+                const overview = () => f.page.getByRole('region', { name: '本节答案总览', exact: true });
+                expect(await overview().getByRole('button').count()).toBe(3); expect(await overview().innerText()).toContain('12.5');
+                expect(await f.page.locator('.current-answer').innerText()).toContain('FIRST ANSWER');
+                expect(await f.page.getByRole('button', { name: '进入' + module2.title, exact: true }).count()).toBe(0);
+                await overview().getByRole('button', { name: '第3题', exact: false }).click();
+                await f.page.locator('.current-answer').getByText('LAST SECTION ONE', { exact: true }).waitFor();
+                await f.page.getByRole('button', { name: '进入' + module2.title, exact: true }).click();
+                await f.page.locator('.current-answer').getByText('FIRST SECTION TWO', { exact: true }).waitFor();
+                expect(await f.page.locator('.current-answer').innerText()).not.toContain('LAST SECTION ONE');
+                await f.page.getByRole('button',{name:'总览',exact:true}).click();
+                expect(await overview().getByRole('button').count()).toBe(2);
+                await overview().getByRole('button', { name: '第2题', exact: false }).click();
+                await f.page.locator('.current-answer').getByText('LATEST ELSEWHERE', { exact: true }).waitFor();
+                expect(await f.page.getByRole('button', { name: /^进入/ }).count()).toBe(0);
+                expect(await f.page.getByRole('button', { name: '下一题', exact: true }).isDisabled()).toBe(true);
+                // Use a full 27-question section for the visual and compact overview checks.
+                module2.questionCount = 27; module2.title = '阅读与写作二';
+                for (let position = 3; position <= 27; position++) {
+                    const extra = { ...structuredClone(e), id: randomUUID(), ordinal: 3 + position, position };
+                    flowAnswer(extra, ['A', 'B', 'C', 'D'][position % 4] ?? 'A'); f.current.slots.push(extra);
+                }
+                e.images = [{ id: randomUUID(), role: 'primary' }]; await f.sync();
+                await f.page.getByRole('heading',{name:'阅读与写作二',exact:true}).waitFor();
+                await f.page.getByRole('button',{name:'总览',exact:true}).click(); expect(await overview().getByRole('button').count()).toBe(27);
+                await f.page.getByRole('dialog',{name:'题目总览',exact:true}).getByRole('button',{name:'关闭',exact:true}).click();
+                await f.sync(); expect(await overview().count()).toBe(0);
+                const screenshots = join(process.cwd(), '.runtime/student-refinement-20261105/screens'); await mkdir(screenshots, { recursive: true });
+                for (const width of [320, 390, 768, 1440]) for (const theme of ['light', 'dark']) {
+                    await f.page.setViewportSize({ width, height: 900 }); await f.page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+                    expect(await f.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+                    await f.page.screenshot({ path: join(screenshots, `${engine}-${width}-${theme}.png`), fullPage: true, animations: 'disabled' });
+                    await f.page.getByRole('button',{name:'总览',exact:true}).click(); expect(await f.page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+                    await f.page.screenshot({path:join(screenshots, `${engine}-${width}-${theme}-overview.png`),fullPage:true,animations:'disabled'});
+                    await f.page.getByRole('dialog',{name:'题目总览',exact:true}).getByRole('button',{name:'关闭',exact:true}).click();
+                }
+                expect(f.errors).toEqual([]);
+            } finally { await f.browser.close(); }
+        });
+        it(`console: student flow: late detail and material changes cannot replace the selected answer in ${engine}`, async () => {
+            const f = await studentFlowFixture(engine), [a, b] = f.current.slots; if (!a || !b) throw new Error('MISSING_FLOW_SLOTS');
+            flowAnswer(a, 'B', 'ANSWER ONE'); flowAnswer(b, 'C', 'ANSWER TWO'); f.current.latestAnswerSlotId = a.id;
+            let release: () => void = () => {}, readingStarted = false, fail = false;
+            const held = new Promise<void>(resolve => release = resolve), normal = f.control.detail;
+            f.control.detail = async slot => { if (slot.id === a.id) { readingStarted = true; await held; } if (fail && slot.id === b.id) return { status: 503, body: { message: '合成题目读取失败' } }; return normal(slot); };
+            try {
+                await f.page.goto('http://127.0.0.1:3199/'); await f.page.locator('.current-answer summary').filter({ hasText: '题目详情' }).click(); await expect.poll(() => readingStarted, { timeout: 3000 }).toBe(true);
+                await f.page.getByRole('button', { name: '下一题', exact: true }).click();
+                await f.page.locator('.current-answer').getByText('ANSWER TWO', { exact: true }).waitFor(); await f.page.locator('.current-answer summary').filter({ hasText: '题目详情' }).click(); release();
+                await f.page.locator('.current-answer').getByText('题干 ' + b.id, { exact: true }).waitFor();
+                expect(await f.page.locator('.current-answer').innerText()).not.toContain('ANSWER ONE');
+                b.revision = 2; b.runId = randomUUID(); b.status = 'verifying'; b.presentation = null; await f.sync();
+                await f.page.getByText('校验中', { exact: true }).waitFor(); expect(await f.page.locator('.current-answer').innerText()).not.toContain('ANSWER TWO');
+                b.status = 'completed'; b.presentation = { answer: 'UPDATED ANSWER', selectedOptions: ['D'], simulated: false, verified: true, humanConfirmed: false, notAppliedReason: null }; fail = true; await f.sync();
+                await f.page.locator('.current-answer').getByText('UPDATED ANSWER', { exact: true }).waitFor();
+                await f.page.locator('.current-answer').getByRole('alert').waitFor(); fail = false;
+                await f.page.getByRole('button', { name: '重新读取题目', exact: true }).click(); await f.page.locator('.current-answer').getByText('题干 ' + b.id, { exact: true }).waitFor();
+                expect(f.errors).toEqual([]);
+            } finally { release(); await f.browser.close(); }
+        });
+    }
 
 });

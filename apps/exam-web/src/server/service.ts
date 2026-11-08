@@ -8,19 +8,28 @@ import { resolve } from 'node:path';
 import { z } from 'zod';
 import type { Pool } from 'pg';
 import { EXAM_SOURCE_IMAGE_BYTES, ExamAssignmentSchema, ExamAssignmentPageQuerySchema, ExamLoginSchema, ExamUserCreateSchema, ExamUserUpdateSchema, ExamMediaViewSchema } from '@solveflow/contracts/managed-exam';
+import { EXAM_ANSWER_VALUES_HEADER } from '@solveflow/contracts/managed-exam';
 import { allocationPage, publishSitting, addSittingStudents, updateAllocationStaff, updateAllocationState } from '@solveflow/db';
 import { userPage, templatePage, sittingPage, assignmentPage, progressPage, studentChoicePage, dashboardSittingPage, assignments, authenticate, createAssignment, createSession, createSitting, createTemplate, createUser, enterModule, events, ExamError, forbidden, hash, isManager, listUsers, progress, loginThrottle, one, rows, sittings, slotDetail, snapshot, startAttempt, submissionReceipt, submit, templates, updateUser, userById, cancelJob } from '@solveflow/db';
 import { buildCatalogTemplate, EXAM_CATALOG } from '@solveflow/contracts/exam-catalog';
-import { hasAvailableExam, endExamAttempt, teacherRun, teacherConfirm, deferSlot, navigateAttempt, issueQueue, readResolution, dashboard } from '@solveflow/db';
+// Decision: .agents/notes/implemented/architecture/2026-11-06-student-rerun.md
+import { hasAvailableExam, endExamAttempt, studentRun, teacherRun, teacherConfirm, deferSlot, navigateAttempt, issueQueue, readResolution, readAnswerRevision, dashboard } from '@solveflow/db';
 import { upload, readImage, imageAccess } from './images.js';
 import type { ExamStorage } from './storage.js';
 import { clientAddressResolver } from './client-address.js';
 import { ExamPracticeRequestSchema } from '@solveflow/contracts/exam-practice';
 import type { PracticeJobs } from './practice.js';
 import { examTransport, examOrigins } from './transport.js';
+import type { ModelServices } from './model-services.js';
+import { ExamModelServiceCodeSchema, ExamModelServiceSelectSchema, ExamModelServiceUpdateSchema, ExamModelServiceCheckSchema } from '@solveflow/contracts/exam-model-services';
+import { ExamTeacherMessageCreateSchema } from '@solveflow/contracts/managed-exam';
+import { sendTeacherMessage, teacherMessages, readTeacherMessage } from '@solveflow/db';
+import { createExamEvent, examEventPage, examEventDetail, examEventMembers, updateExamEvent, deleteExamEvent, concreteExamPage, createConcreteExam, updateConcreteExam, deleteConcreteExam, updateAllocation } from '@solveflow/db';
 function legacyAssignment({ entryState: _entryState, ...value }: z.infer<typeof ExamAssignmentSchema>) { return value; }
-function assignmentResponse(value: Awaited<ReturnType<typeof assignmentPage>>, includeEntry: boolean) {
-    return includeEntry ? value : { ...value, items: value.items.map(legacyAssignment), available: value.available.map(legacyAssignment), selected: value.selected ? legacyAssignment(value.selected) : null };
+function assignmentResponse(value: Awaited<ReturnType<typeof assignmentPage>>, includeEntry: boolean, includeMessages=false) {
+    const {messages,...legacy}=value;
+    const result=includeMessages?value:legacy;
+    return includeEntry ? result : { ...result, items: value.items.map(legacyAssignment), available: value.available.map(legacyAssignment), selected: value.selected ? legacyAssignment(value.selected) : null };
 }
 let hashJobs = 0;
 const hashQueue: (() => void)[] = [];
@@ -94,6 +103,7 @@ export interface ExamServiceOptions {
     trustedProxyCidrs?: readonly string[];
     canSolve?: () => boolean;
     practice?: PracticeJobs;
+    modelServices?: ModelServices;
 }
 export function createExamService(options: ExamServiceOptions) {
     const { pool, storage, origin } = options;
@@ -123,6 +133,15 @@ export function createExamService(options: ExamServiceOptions) {
     // Cookie parsing lives in Hono for HTTP; the returned resolver also authenticates upgrades.
     const session = async (cookie: string | undefined) => { const token = cookie?.split(';').map(p => p.trim()).find(p => p.startsWith(cookieName + '='))?.slice(cookieName.length + 1); return authenticate(pool, token); };
     app.get('/api/v2/session', async (c) => c.json(await session(c.req.header('cookie'))));
+    const modelServices = () => { if (!options.modelServices) throw new ExamError(503,'MODEL_SETTINGS_UNAVAILABLE','服务方案尚未启用，请联系管理员。'); return options.modelServices; };
+    app.get('/api/v2/me/model-service', async c => c.json(await modelServices().selection((await session(c.req.header('cookie'))).user)));
+    app.get('/api/v2/me/messages', async c => c.json(await teacherMessages(pool, (await session(c.req.header('cookie'))).user)));
+    app.post('/api/v2/messages/:id/read', async c => c.json(await readTeacherMessage(pool, (await session(c.req.header('cookie'))).user, z.uuid().parse(c.req.param('id')))));
+    app.post('/api/v2/admin/slots/:id/messages', async c => { const actor=(await session(c.req.header('cookie'))).user; return c.json(await sendTeacherMessage(pool, actor, z.uuid().parse(c.req.param('id')), ExamTeacherMessageCreateSchema.parse(await jsonBody(c.req.raw)))); });
+    app.post('/api/v2/me/model-service', async c => { const user=(await session(c.req.header('cookie'))).user,input=ExamModelServiceSelectSchema.parse(await jsonBody(c.req.raw));return c.json(await modelServices().select(user,input.code,input.expectedVersion)); });
+    app.get('/api/v2/admin/model-services', async c => c.json(await modelServices().list((await session(c.req.header('cookie'))).user)));
+    app.post('/api/v2/admin/model-services/:code', async c => { const user=(await session(c.req.header('cookie'))).user,code=ExamModelServiceCodeSchema.parse(c.req.param('code')),input=ExamModelServiceUpdateSchema.parse(await jsonBody(c.req.raw));return c.json(await modelServices().update(user,code,input)); });
+    app.post('/api/v2/admin/model-services/:code/check', async c => { const user=(await session(c.req.header('cookie'))).user,code=ExamModelServiceCodeSchema.parse(c.req.param('code')),input=ExamModelServiceCheckSchema.parse(await jsonBody(c.req.raw));return c.json(await modelServices().check(user,code,input)); });
     app.post('/api/v2/auth/logout', async (c) => { const current = await session(c.req.header('cookie')); options.practice?.cancelOwner(current.user.id); const token = getCookie(c, cookieName); if (token)
         await pool.query(`UPDATE exam_app.auth_sessions SET revoked_at=now() WHERE token_hash=decode($1,'hex')`, [hash(token)]); setCookie(c, cookieName, '', { httpOnly: true, secure: secure, sameSite: 'Strict', path: '/', maxAge: 0 }); return c.json({ ok: true }); });
     app.get('/api/v2/me/assignments', async (c) => c.json((await assignments(pool, (await session(c.req.header('cookie'))).user)).map(legacyAssignment)));
@@ -157,7 +176,7 @@ export function createExamService(options: ExamServiceOptions) {
     });
     app.post('/api/v2/assignments/:id/start', async (c) => c.json(await startAttempt(pool, (await session(c.req.header('cookie'))).user, z.uuid().parse(c.req.param('id')))));
     app.post('/api/v2/attempts/:id/finish', async c => c.json(await endExamAttempt(pool, (await session(c.req.header('cookie'))).user, z.uuid().parse(c.req.param('id')))));
-    app.get('/api/v2/attempts/:id/snapshot', async (c) => c.json(await snapshot(pool, (await session(c.req.header('cookie'))).user, z.uuid().parse(c.req.param('id')))));
+    app.get('/api/v2/attempts/:id/snapshot', async (c) => c.json(await snapshot(pool, (await session(c.req.header('cookie'))).user, z.uuid().parse(c.req.param('id')), {answerValues:c.req.header(EXAM_ANSWER_VALUES_HEADER)==='1'})));
     app.post('/api/v2/attempts/:id/navigation', async c => c.json(await navigateAttempt(pool, (await session(c.req.header('cookie'))).user, z.uuid().parse(c.req.param('id')), await jsonBody(c.req.raw))));
     app.get('/api/v2/attempts/:id/events', async (c) => c.json(await events(pool, (await session(c.req.header('cookie'))).user, z.uuid().parse(c.req.param('id')), z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).parse(c.req.query('after') ?? 0))));
     app.post('/api/v2/modules/:id/enter', async (c) => c.json(await enterModule(pool, (await session(c.req.header('cookie'))).user, z.uuid().parse(c.req.param('id')))));
@@ -181,6 +200,10 @@ export function createExamService(options: ExamServiceOptions) {
         const bytes=await readImage(pool,storage,actor,id,view);return new Response(Uint8Array.from(bytes),{headers});
     });
     app.post('/api/v2/runs/:id/cancel', async (c) => c.json(await cancelJob(pool, (await session(c.req.header('cookie'))).user, z.uuid().parse(c.req.param('id')))));
+    app.post('/api/v2/slots/:id/run', async c => {
+        if (options.canSolve && !options.canSolve()) throw new ExamError(503, 'SOLVING_UNAVAILABLE', '答题服务尚未配置，请联系管理员。');
+        return c.json(await studentRun(pool, (await session(c.req.header('cookie'))).user, z.uuid().parse(c.req.param('id')), await jsonBody(c.req.raw)), 202);
+    });
     app.post('/api/v2/slots/:id/continue', async c => c.json(await deferSlot(pool, (await session(c.req.header('cookie'))).user, z.uuid().parse(c.req.param('id')), await jsonBody(c.req.raw))));
     app.post('/api/v2/admin/slots/:id/run', async c => {
         if (options.canSolve && !options.canSolve()) throw new ExamError(503, 'SOLVING_UNAVAILABLE', '答题服务尚未配置，请联系管理员。');
@@ -190,9 +213,10 @@ export function createExamService(options: ExamServiceOptions) {
     app.get('/api/v2/admin/issues', async c => c.json(await issueQueue(pool, (await session(c.req.header('cookie'))).user, c.req.query())));
     app.get('/api/v2/admin/dashboard', async c => c.json(await dashboard(pool, (await session(c.req.header('cookie'))).user, c.req.query())));
     app.post('/api/v2/resolutions/:id/read', async c => c.json(await readResolution(pool, (await session(c.req.header('cookie'))).user, z.uuid().parse(c.req.param('id')))));
+    app.post('/api/v2/answer-revisions/:id/read', async c => c.json(await readAnswerRevision(pool, (await session(c.req.header('cookie'))).user, z.uuid().parse(c.req.param('id')))));
     app.get('/api/v2/admin/exam-catalog', async c => { const { user } = await session(c.req.header('cookie')); if (!isManager(user)) throw forbidden(); return c.json(EXAM_CATALOG); });
     app.post('/api/v2/admin/exam-catalog', async c => { const { user } = await session(c.req.header('cookie')); if (!isManager(user)) throw forbidden(); let template; try { template = buildCatalogTemplate(await jsonBody(c.req.raw)); } catch { throw new ExamError(400, 'EXAM_OPTIONS', '请选择有效的考试版本和科目组合。'); } return c.json(await createTemplate(pool, user, template), 201); });
-    app.get('/api/v2/me/assignments/page', async c => { const query=ExamAssignmentPageQuerySchema.parse(c.req.query());return c.json(assignmentResponse(await assignmentPage(pool,(await session(c.req.header('cookie'))).user,query,true),query.entryState==='1')); });
+    app.get('/api/v2/me/assignments/page', async c => { const query=ExamAssignmentPageQuerySchema.parse(c.req.query());return c.json(assignmentResponse(await assignmentPage(pool,(await session(c.req.header('cookie'))).user,query,true),query.entryState==='1',query.messages==='1')); });
     app.get('/api/v2/admin/assignments/page', async c => { const query=ExamAssignmentPageQuerySchema.parse(c.req.query());return c.json(assignmentResponse(await assignmentPage(pool,(await session(c.req.header('cookie'))).user,query),query.entryState==='1')); });
     app.get('/api/v2/admin/users/page', async c => c.json(await userPage(pool,(await session(c.req.header('cookie'))).user,c.req.query())));
     app.get('/api/v2/admin/templates/page', async c => c.json(await templatePage(pool,(await session(c.req.header('cookie'))).user,c.req.query())));
@@ -213,6 +237,17 @@ export function createExamService(options: ExamServiceOptions) {
     app.post('/api/v2/admin/sittings', async (c) => c.json(await createSitting(pool, (await session(c.req.header('cookie'))).user, await jsonBody(c.req.raw)), 201));
     app.post('/api/v2/admin/sittings/publish',async c=>c.json(await publishSitting(pool,(await session(c.req.header('cookie'))).user,await jsonBody(c.req.raw)),201));
     app.get('/api/v2/admin/sittings/:id/allocations',async c=>c.json(await allocationPage(pool,(await session(c.req.header('cookie'))).user,z.uuid().parse(c.req.param('id')),c.req.query())));
+    app.post('/api/v2/admin/sittings/:id/allocations/:assignmentId/update',async c=>c.json(await updateAllocation(pool,(await session(c.req.header('cookie'))).user,z.uuid().parse(c.req.param('id')),z.uuid().parse(c.req.param('assignmentId')),await jsonBody(c.req.raw))));
+    app.get('/api/v2/admin/exam-events/page',async c=>c.json(await examEventPage(pool,(await session(c.req.header('cookie'))).user,c.req.query())));
+    app.post('/api/v2/admin/exam-events',async c=>c.json(await createExamEvent(pool,(await session(c.req.header('cookie'))).user,await jsonBody(c.req.raw))));
+    app.get('/api/v2/admin/exam-events/:id',async c=>c.json(await examEventDetail(pool,(await session(c.req.header('cookie'))).user,z.uuid().parse(c.req.param('id')))));
+    app.get('/api/v2/admin/exam-events/:id/members/page',async c=>c.json(await examEventMembers(pool,(await session(c.req.header('cookie'))).user,z.uuid().parse(c.req.param('id')),c.req.query())));
+    app.post('/api/v2/admin/exam-events/:id/edit',async c=>c.json(await updateExamEvent(pool,(await session(c.req.header('cookie'))).user,z.uuid().parse(c.req.param('id')),await jsonBody(c.req.raw))));
+    app.post('/api/v2/admin/exam-events/:id/delete',async c=>c.json(await deleteExamEvent(pool,(await session(c.req.header('cookie'))).user,z.uuid().parse(c.req.param('id')),await jsonBody(c.req.raw))));
+    app.get('/api/v2/admin/exam-events/:id/exams/page',async c=>c.json(await concreteExamPage(pool,(await session(c.req.header('cookie'))).user,z.uuid().parse(c.req.param('id')),c.req.query())));
+    app.post('/api/v2/admin/exam-events/:id/exams',async c=>c.json(await createConcreteExam(pool,(await session(c.req.header('cookie'))).user,z.uuid().parse(c.req.param('id')),await jsonBody(c.req.raw))));
+    app.post('/api/v2/admin/exam-events/:id/exams/:examId/edit',async c=>c.json(await updateConcreteExam(pool,(await session(c.req.header('cookie'))).user,z.uuid().parse(c.req.param('id')),z.uuid().parse(c.req.param('examId')),await jsonBody(c.req.raw))));
+    app.post('/api/v2/admin/exam-events/:id/exams/:examId/delete',async c=>c.json(await deleteConcreteExam(pool,(await session(c.req.header('cookie'))).user,z.uuid().parse(c.req.param('id')),z.uuid().parse(c.req.param('examId')),await jsonBody(c.req.raw))));
     app.post('/api/v2/admin/sittings/:id/allocations',async c=>c.json(await addSittingStudents(pool,(await session(c.req.header('cookie'))).user,z.uuid().parse(c.req.param('id')),await jsonBody(c.req.raw)),201));
     app.post('/api/v2/admin/sittings/:id/allocations/:assignmentId/staff',async c=>c.json(await updateAllocationStaff(pool,(await session(c.req.header('cookie'))).user,z.uuid().parse(c.req.param('id')),z.uuid().parse(c.req.param('assignmentId')),await jsonBody(c.req.raw))));
     app.post('/api/v2/admin/sittings/:id/allocations/:assignmentId/state',async c=>c.json(await updateAllocationState(pool,(await session(c.req.header('cookie'))).user,z.uuid().parse(c.req.param('id')),z.uuid().parse(c.req.param('assignmentId')),await jsonBody(c.req.raw))));

@@ -28,7 +28,7 @@ export function ExamEndNotice({ id, studentId, timing }: { id: string; studentId
     catch { /* The notice remains acknowledged in this mounted page. */ }
   }
   if (!open) return null;
-  return <Dialog title="考试已结束" onClose={acknowledge}><p>{timing.endedBy === 'teacher' ? '老师已结束本场考试。' : '考试时间已到，本场考试已自动结束。'}</p><p>本次用时 <strong>{formatExamDuration(timing.elapsedSeconds)}</strong>，已保存的题目和答案可继续查看。</p><div className="dialog-footer"><button className="primary" onClick={acknowledge}>我已知晓</button></div></Dialog>;
+  return <Dialog title="考试已结束" onClose={acknowledge}><p>{timing.endedBy === 'teacher' ? '老师已结束本场考试。' : '考试时间已到，本场考试已自动结束。'}</p><p>已保存的题目和答案可继续查看。</p><div className="dialog-footer"><button className="primary" onClick={acknowledge}>我已知晓</button></div></Dialog>;
 }
 export function ExamClock({ timing, compact = false, onDeadline }: { timing: ExamTiming; compact?: boolean; onDeadline?: () => void }) {
   const anchor = useRef({ timing, at: performance.now() });

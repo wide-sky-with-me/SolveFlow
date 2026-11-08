@@ -1,3 +1,4 @@
+// Decision: .agents/notes/implemented/rendering/2026-11-05-managed-student-presentation.md
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from 'react';
 import { Dialog, ErrorText } from './components.js';
 import { Icon } from '@solveflow/web-ui/icons';
@@ -47,11 +48,16 @@ export function ImageViewer({ src, onClose, local = false }: { src: string; onCl
         const next = Math.max(1, Math.min(4, value)); if (next === before.scale) return;
         const point = anchor ?? { x: before.size.x/2, y: before.size.y/2 };
         const axis = (dimension: 'x' | 'y', scroll: number) => {
-            const oldMargin = Math.max(0, (before.size[dimension]-before.fit[dimension]*before.scale)/2), newMargin = Math.max(0, (before.size[dimension]-before.fit[dimension]*next)/2);
+            const oldMargin = dimension === 'y' ? 12 : Math.max(0, (before.size.x-before.fit.x*before.scale)/2), newMargin = dimension === 'y' ? 12 : Math.max(0, (before.size.x-before.fit.x*next)/2);
             return (scroll+point[dimension]-oldMargin)/before.scale*next+newMargin-point[dimension];
         };
         desiredScroll.current = { x: axis('x',element.scrollLeft), y: axis('y',element.scrollTop) };
         current.current = { ...before, scale: next }; setScale(next);
+    }
+    function reset() {
+        pointers.current.clear(); pinch.current = null; desiredScroll.current = { x: 0, y: 0 };
+        current.current = { ...current.current, scale: 1 }; setScale(1);
+        viewport.current?.scrollTo({ left: 0, top: 0, behavior: 'instant' });
     }
     function down(event: PointerEvent<HTMLDivElement>) {
         if (event.button !== 0 || pointers.current.size >= 2) return;
@@ -66,14 +72,18 @@ export function ImageViewer({ src, onClose, local = false }: { src: string; onCl
         else { event.currentTarget.scrollLeft += previous.x-event.clientX; event.currentTarget.scrollTop += previous.y-event.clientY; }
     }
     function up(event: PointerEvent<HTMLDivElement>) { pointers.current.delete(event.pointerId); pinch.current=null; }
-    return <div className="image-viewer-layer" onKeyDownCapture={event=>{if(expanded&&event.key==='Escape'){event.preventDefault();event.stopPropagation();setExpanded(false);}}}><Dialog title="题图" size="wide" className={'image-viewer'+(expanded?' image-viewer-expanded':'')} onClose={onClose}>
-      <div className="image-viewer-tools"><button className="secondary" aria-label="缩小图片" disabled={!ready || scale<=1} onClick={()=>zoom(scale/1.25)}>−</button><output aria-label="图片缩放比例">{Math.round(scale*100)}%</output><button className="secondary" aria-label="放大图片" disabled={!ready || scale>=4} onClick={()=>zoom(scale*1.25)}>＋</button><button className="quiet image-fit-button" disabled={!ready} onClick={()=>zoom(1)}>适应窗口</button><button className="quiet image-source-button" aria-label="高清原图" aria-pressed={originalReady} disabled={source.loading||originalReady} onClick={source.error?retrySource:requestSource}>高清原图</button><button className="quiet image-fullscreen-button" aria-label={expanded?'退出全屏查看':'全屏查看'} aria-pressed={expanded} title={expanded?'退出全屏查看':'全屏查看'} onClick={()=>setExpanded(value=>!value)}><Icon name="expand"/><span>{expanded?'退出全屏':'全屏查看'}</span></button></div>
+    return <div className="image-viewer-layer" onKeyDownCapture={event=>{if(expanded&&event.key==='Escape'){event.preventDefault();event.stopPropagation();setExpanded(false);}}}><Dialog title="题图" size="wide" className={'image-viewer'+(expanded?' image-viewer-expanded':'')} onClose={onClose} actions={<div className="image-viewer-tools" role="group" aria-label="图片操作">
+        <output className="viewer-sr-only" aria-label="图片缩放比例">{Math.round(scale*100)}%</output>
+        {ready && source.loading && <span className="image-transfer" role="status" aria-label="正在加载高清原图"/>}
+        <button className="icon-button" aria-label="重置图片" title="重置图片" disabled={!ready} onClick={reset}><Icon name="reset"/></button>
+        <button className="icon-button image-fullscreen-button" aria-label={expanded?'退出全屏查看':'全屏查看'} aria-pressed={expanded} title={expanded?'退出全屏查看':'全屏查看'} onClick={()=>setExpanded(value=>!value)}><Icon name="expand"/></button>
+      </div>}>
+
       {!ready && source.error && <div className="image-load-error"><ErrorText error={source.error}/><button onClick={retry}>重试加载</button></div>}
       {!ready && !source.error && <div className="image-load-pending" role="status">正在加载图片…</div>}
-      {ready && source.loading && <div className="image-upgrade-status" role="status">正在加载高清原图…</div>}
       {ready && source.error && <div className="image-upgrade-status image-upgrade-error" role="alert"><span>高清原图加载失败</span><button className="quiet" onClick={retrySource}>重试原图</button></div>}
-      <div ref={viewport} className="image-viewer-viewport" tabIndex={0} aria-label="题目原图查看区域" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up} onLostPointerCapture={up} onDoubleClick={event=>{const box=event.currentTarget.getBoundingClientRect();zoom(scale>1?1:2,{x:event.clientX-box.left,y:event.clientY-box.top});}}>
-        <div className="image-viewer-stage" style={{width:Math.max(size.x,fit.x*scale),height:Math.max(size.y,fit.y*scale)}}><div className="image-viewer-frame" style={{width:fit.x*scale||1,height:fit.y*scale||1}}>
+      <div ref={viewport} className="image-viewer-viewport" tabIndex={0} aria-label="题目原图查看区域" onKeyDown={event=>{if(event.key==='+'||event.key==='='){event.preventDefault();zoom(scale*1.25);}else if(event.key==='-'){event.preventDefault();zoom(scale/1.25);}else if(event.key==='0'||event.key==='Home'){event.preventDefault();reset();}}} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up} onLostPointerCapture={up} onDoubleClick={event=>{const box=event.currentTarget.getBoundingClientRect();zoom(scale>1?1:2,{x:event.clientX-box.left,y:event.clientY-box.top});}}>
+        <div className="image-viewer-stage" style={{width:Math.max(size.x,fit.x*scale),height:Math.max(size.y,fit.y*scale+24)}}><div className="image-viewer-frame" style={{width:fit.x*scale||1,height:fit.y*scale||1}}>
           {preview.image && <img ref={previewImage} src={preview.image.url} alt="题目清晰预览" aria-hidden={!previewReady||originalReady} data-display-image={previewReady&&!originalReady} draggable={false} style={{visibility:previewReady&&!originalReady?'visible':'hidden'}} onLoad={event=>loaded(event.currentTarget,false)} onError={()=>decodeFailed(false)}/>}
           {source.image && <img ref={sourceImage} src={source.image.url} alt="题目原图" aria-hidden={!originalReady} data-display-image={originalReady} draggable={false} style={{visibility:originalReady?'visible':'hidden'}} onLoad={event=>loaded(event.currentTarget,true)} onError={()=>decodeFailed(true)}/>}
         </div></div>

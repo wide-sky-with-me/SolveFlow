@@ -1,0 +1,24 @@
+import { z } from 'zod';
+import { ExamTypeSchema } from './exam.js';
+import { EXAM_ALLOCATION_BATCH, ExamPageQuerySchema, ExamSittingSchema, ExamTemplateSchema, examPageSchema } from './managed-exam.js';
+const id = z.uuid(), title = z.string().trim().min(1).max(120), version = z.number().int().positive();
+const users = (max: number) => z.array(id).max(max).refine(ids => new Set(ids).size === ids.length, '不能重复选择');
+export const ExamEventCreateSchema = z.strictObject({ requestId: id, title, templateId: id });
+export const ExamEventUpdateSchema = ExamEventCreateSchema.extend({ expectedVersion: version });
+export const ExamEventMutationSchema = z.strictObject({ requestId: id, expectedVersion: version });
+export const ExamEventSchema = z.strictObject({ id, title, templateId: id, templateTitle: title, exam: ExamTypeSchema, version, examCount: z.number().int().nonnegative(), studentCount: z.number().int().nonnegative(), teacherCount: z.number().int().nonnegative(), hasStarted: z.boolean() });
+export type ExamEvent = z.infer<typeof ExamEventSchema>;
+export const ExamEventPageQuerySchema = ExamPageQuerySchema.extend({ exam: ExamTypeSchema.optional() });
+export const ExamEventMembersQuerySchema = ExamPageQuerySchema.extend({ role: z.enum(['student', 'support']).default('student') });
+export const ExamEventPageSchema = examPageSchema(ExamEventSchema);
+export const ExamEventDetailSchema = z.strictObject({ event: ExamEventSchema, template: ExamTemplateSchema });
+const windowFields = { title, opensAt: z.iso.datetime({ offset: true }), closesAt: z.iso.datetime({ offset: true }).nullable() };
+const validWindow = (value: {
+    opensAt: string;
+    closesAt: string | null;
+}) => value.closesAt === null || Date.parse(value.closesAt) > Date.parse(value.opensAt);
+export const ExamConcreteCreateSchema = z.strictObject({ requestId: id, ...windowFields, studentIds: users(EXAM_ALLOCATION_BATCH).min(1), supportIds: users(32).default([]), mode: z.enum(['original', 'practice_simulation']).default('original'), wrongCounts: z.array(z.number().int().min(0).max(300)).max(16).default([]) }).refine(validWindow, '结束时间须晚于开始时间');
+export const ExamConcreteUpdateSchema = z.strictObject({ requestId: id, expectedVersion: version, ...windowFields }).refine(validWindow, '结束时间须晚于开始时间');
+export const ExamConcreteSchema = ExamSittingSchema.extend({ eventId: id, version, assignmentCount: z.number().int().nonnegative(), started: z.boolean() });
+export type ExamConcrete = z.infer<typeof ExamConcreteSchema>;
+export const ExamConcretePageSchema = examPageSchema(ExamConcreteSchema).extend({ event: ExamEventSchema });

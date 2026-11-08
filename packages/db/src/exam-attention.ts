@@ -1,3 +1,4 @@
+// Decision: .agents/notes/implemented/architecture/2026-11-07-archived-exam-visibility.md
 // Decision: .agents/notes/implemented/architecture/2026-11-03-exam-resolution-notifications.md
 import type pg from 'pg';
 import { z } from 'zod';
@@ -20,7 +21,7 @@ export async function issueQueue(pool: pg.Pool, actor: ExamUser, raw: unknown) {
     return tx(pool, async c => {
         // Staff ownership is insufficient: scope must come from the assigned staff/manager role.
         const from = `${incidentFrom} JOIN exam_app.exam_attempts x ON x.id=i.attempt_id JOIN exam_app.exam_assignments a ON a.id=x.assignment_id JOIN exam_app.exam_sittings s ON s.id=a.sitting_id JOIN exam_app.users u ON u.id=i.student_id`;
-        const where = `i.resolved_at IS NULL AND ($1::boolean OR ($2::boolean AND s.manager_id=$4) OR ($3::boolean AND EXISTS(SELECT 1 FROM exam_app.staff_assignments f WHERE f.assignment_id=a.id AND f.staff_id=$4 AND f.revoked_at IS NULL))) AND ($5::uuid IS NULL OR i.student_id=$5) AND ($6::text IS NULL OR i.reason=$6) AND ($7::text='' OR u.display_name ILIKE $7 ESCAPE E'\\\\' OR u.username ILIKE $7 ESCAPE E'\\\\' OR s.title ILIKE $7 ESCAPE E'\\\\' OR m.title ILIKE $7 ESCAPE E'\\\\') AND ($8::uuid IS NULL OR a.sitting_id=$8)`;
+        const where = `s.archived_at IS NULL AND a.state<>'revoked' AND i.resolved_at IS NULL AND ($1::boolean OR ($2::boolean AND s.manager_id=$4) OR ($3::boolean AND EXISTS(SELECT 1 FROM exam_app.staff_assignments f WHERE f.assignment_id=a.id AND f.staff_id=$4 AND f.revoked_at IS NULL))) AND ($5::uuid IS NULL OR i.student_id=$5) AND ($6::text IS NULL OR i.reason=$6) AND ($7::text='' OR u.display_name ILIKE $7 ESCAPE E'\\\\' OR u.username ILIKE $7 ESCAPE E'\\\\' OR s.title ILIKE $7 ESCAPE E'\\\\' OR m.title ILIKE $7 ESCAPE E'\\\\') AND ($8::uuid IS NULL OR a.sitting_id=$8)`;
         const params = [isAdmin(actor), actor.roles.includes('manager'), actor.roles.includes('support'), actor.id, input.studentId ?? null, input.reason ?? null, input.q?'%'+input.q.replace(/[\\%_]/g,'\\$&')+'%':'', input.sittingId ?? null];
         const total = await one(c, z.number().int().nonnegative(), `SELECT count(*)::integer AS value FROM ${from} WHERE ${where}`, params);
         const page = await rows(c, ExamIssueQueueItemSchema, `SELECT (${incidentJson} || jsonb_build_object('attemptId',i.attempt_id,'studentId',i.student_id,'studentName',u.display_name,'title',s.title)) AS value FROM ${from} WHERE ${where} AND ($9::timestamptz IS NULL OR (i.opened_at,i.id)>($9::timestamptz,$10::uuid)) ORDER BY i.opened_at,i.id LIMIT $11`, [...params, cursor?.openedAt ?? null, cursor?.id ?? null, input.limit + 1]);
@@ -28,6 +29,20 @@ export async function issueQueue(pool: pg.Pool, actor: ExamUser, raw: unknown) {
         const nextCursor = page.length > input.limit && last ? Buffer.from(JSON.stringify({ openedAt: last.openedAt, id: last.id })).toString('base64url') : null;
         return ExamIssueQueueSchema.parse({ items, total, nextCursor });
     }, true);
+}
+
+export const unreadAnswerRevisions = `(SELECT coalesce(jsonb_agg(n.value ORDER BY n.created_at DESC,n.id),'[]'::jsonb) FROM (SELECT r.id,r.created_at,jsonb_build_object('id',r.id,'slotId',q.id,'moduleId',q.module_id,'moduleTitle',m.title,'position',q.position,'revision',v.revision,'createdAt',r.created_at) AS value FROM exam_app.answer_revisions r JOIN exam_app.question_slots q ON q.id=r.slot_id JOIN exam_app.question_revisions v ON v.id=r.revision_id JOIN exam_app.attempt_modules m ON m.id=q.module_id WHERE r.attempt_id=x.id AND r.read_at IS NULL AND r.revision_id=q.current_revision_id AND q.published_presentation_id IS NOT NULL) n)`;
+
+export async function readAnswerRevision(pool: pg.Pool, actor: ExamUser, noticeId: string) {
+    return tx(pool, async c => {
+        const notice = await one(c, z.object({ attemptId: z.uuid(), studentId: z.uuid(), assignmentId: z.uuid() }), `SELECT jsonb_build_object('attemptId',r.attempt_id,'studentId',r.student_id,'assignmentId',x.assignment_id) AS value FROM exam_app.answer_revisions r JOIN exam_app.exam_attempts x ON x.id=r.attempt_id WHERE r.id=$1`, [noticeId]);
+        if (actor.state !== 'active' || actor.id !== notice.studentId) throw forbidden();
+        await scope(c, actor, notice.assignmentId, true);
+        await c.query('SELECT id FROM exam_app.exam_attempts WHERE id=$1 FOR UPDATE', [notice.attemptId]);
+        const read = await c.query(`UPDATE exam_app.answer_revisions r SET read_at=clock_timestamp() FROM exam_app.question_slots q WHERE r.id=$1 AND q.id=r.slot_id AND r.revision_id=q.current_revision_id AND q.published_presentation_id IS NOT NULL AND r.read_at IS NULL RETURNING r.id`, [noticeId]);
+        if (read.rowCount) await event(c, notice.attemptId, 'answer_revision.read');
+        return { ok: true };
+    });
 }
 
 export async function readResolution(pool: pg.Pool, actor: ExamUser, incidentId: string) {

@@ -23,10 +23,32 @@ it('cancels a request before upload admission and while image bytes are still ar
   jobs.cancel('student', input.requestId);
   expect((await jobs.start('student', input, read, async () => {})).status).toBe('cancelled');
   expect(read).not.toHaveBeenCalled();
-  const next = request(); let release: (bytes: Uint8Array) => void = () => {};
-  const pending = jobs.start('student', next, () => new Promise(resolve => { release = resolve; }), async () => {});
+  const next = request(); let release: (bytes: Uint8Array) => void = () => {}, reading: () => void = () => {};
+  const entered = new Promise<void>(resolve => { reading = resolve; });
+  const pending = jobs.start('student', next, () => new Promise(resolve => { release = resolve; reading(); }), async () => {});
+  await entered;
   jobs.cancel('student', next.requestId); release(await image());
   expect((await pending).status).toBe('cancelled'); expect(solve).not.toHaveBeenCalled(); jobs.close();
+});
+it('does not begin reading a photo after cancellation while the service plan is loading', async () => {
+  let release: (value: null) => void = () => {};
+  const capture = () => new Promise<null>(resolve => { release = resolve; }), solve = vi.fn(async () => outcome()), read = vi.fn(image);
+  const jobs = new PracticeJobs(solve, Date.now, 4, capture), input = request();
+  try {
+    const pending = jobs.start('student', input, read, async () => {});
+    jobs.cancel('student', input.requestId); release(null);
+    expect((await pending).status).toBe('cancelled');
+    expect((await jobs.start('student', input, read, async () => {})).status).toBe('cancelled');
+    expect(read).not.toHaveBeenCalled();expect(solve).not.toHaveBeenCalled();
+  } finally { jobs.close(); }
+});
+it('closing during service selection returns cancellation without recreating retained jobs', async () => {
+  let release: (value: null) => void = () => {};
+  const read = vi.fn(image), solve = vi.fn(async () => outcome()), jobs = new PracticeJobs(solve, Date.now, 4, () => new Promise<null>(resolve => { release = resolve; })), input = request();
+  const pending = jobs.start('student', input, read, async () => {});
+  jobs.close();release(null);
+  expect((await pending).status).toBe('cancelled');expect(read).not.toHaveBeenCalled();expect(solve).not.toHaveBeenCalled();
+  expect(() => jobs.status('student', input.requestId)).toThrow('已过期');
 });
 it('does not let a late solver result overwrite cancellation', async () => {
   let finish: (value: SolveOutcome) => void = () => {};

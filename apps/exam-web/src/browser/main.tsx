@@ -11,19 +11,21 @@ import { Admin } from './admin.js';
 import { AppearanceMenu } from './appearance.js';
 import { readSidebarCollapsed, saveSidebarCollapsed } from './layout-preference.js';
 import { StudentWorkspace } from './student-workspace.js';
-import { StudentHeaderSlot } from './student-header.js';
+import { StudentHeaderSlot, type StudentNavigation } from './student-header.js';
+import { AccountMenu } from './account-menu.js';
 import { ImageSession } from './image-session.js';
 import './styles.css';
 import './review.css';
 import './notifications.css';
 import './console.css';
 import './home.css';
-import './wall.css';
 import './paging.css';
 import './practice.css';
 import './exam-clock.css';
+import './design.css';
 function App() {
     const [studentHeader, setStudentHeader] = useState<HTMLDivElement | null>(null);
+    const [studentNavigation, setStudentNavigation] = useState<StudentNavigation>({version:0,view:'home'}), [homeVersion, setHomeVersion] = useState(0);
     const [collapsed, setCollapsed] = useState(readSidebarCollapsed), [mobileNav, setMobileNav] = useState(false), [narrow, setNarrow] = useState(() => matchMedia('(max-width: 900px)').matches);
     useEffect(() => { const query=matchMedia('(max-width: 900px)'); const change=()=>{setNarrow(query.matches);if(!query.matches)setMobileNav(false);};query.addEventListener('change',change);return()=>query.removeEventListener('change',change); }, []);
     const authGeneration = useRef(0), authRequest = useRef<AbortController | null>(null);
@@ -61,7 +63,7 @@ function App() {
         try {
             const session = await api('/auth/login', ExamSessionSchema, { ...post({ username: String(data.get('username')), password: String(data.get('password')) }), signal: controller.signal });
             if (!current()) return;
-            setAttempt(null); setUser(session.user); setStaffMode(session.user.roles.some(r => r !== 'student')); identityChanged();
+            setAttempt(null); setStudentNavigation({version:0,view:'home'}); setUser(session.user); setStaffMode(session.user.roles.some(r => r !== 'student')); identityChanged();
         } catch (error) { if (current()) setError(error instanceof Error ? error.message : '登录失败。'); }
         finally { if (current()) setBusy(false); if (authRequest.current === controller) authRequest.current = null; }
     }
@@ -93,8 +95,9 @@ function App() {
     if (!user)
         return <main className="login-shell"><div className="login-appearance"><AppearanceMenu/></div><section className="card login-card"><Brand /><h1>登录考试</h1><form onSubmit={event => void login(event)}><label>用户名<input name="username" autoComplete="username" required maxLength={64}/></label><label>密码<input name="password" type="password" autoComplete="current-password" required maxLength={256}/></label><ErrorText error={error}/><button className="primary full" type="submit" disabled={busy}>{busy ? '正在登录…' : '登录'}</button></form></section></main>;
     const staff = user.roles.some(r => r !== 'student'), activeExam = !(staff && staffMode) && !!attempt;
-    return <ImageSession key={user.id}><StudentHeaderSlot.Provider value={activeExam ? studentHeader : null}><header className={'header-bar '+(staff && staffMode?'console-header':'student-header')+(activeExam?' has-exam':'')}><div className="header"><div className="header-brand"><Brand />{staff && staffMode && <button className="icon-button sidebar-trigger" aria-label={narrow ? mobileNav ? '关闭导航' : '展开导航' : collapsed ? '展开导航' : '收起导航'} aria-expanded={narrow ? mobileNav : !collapsed} onClick={() => {if(narrow)setMobileNav(v=>!v);else setCollapsed(value=>{saveSidebarCollapsed(!value);return !value;});}}><Icon name="panel-left"/></button>}{activeExam&&<div className="student-exam-header-slot" ref={setStudentHeader}/>}</div><div className="toolbar header-tools"><AppearanceMenu/>{staff && user.roles.includes('student') && <button className="quiet" onClick={() => setStaffMode(v => !v)}>{staffMode ? '学生端' : '管理端'}</button>}<span className="user-avatar" aria-hidden="true">{user.displayName.slice(0,1)}</span><span className="user-name">{user.displayName}</span><button className="icon-button" aria-label="退出登录" onClick={() => void logout()} disabled={busy}><Icon name="logout"/></button></div></div></header>
-    {staff && staffMode ? <Admin user={user} collapsed={collapsed} mobileNav={mobileNav} onNavClose={()=>setMobileNav(false)}/> : <StudentWorkspace key={user.id} attempt={attempt} busy={busy} error={error} onAttempt={setAttempt} onStart={start}/>}
+    function navigateStudent(view: StudentNavigation['view']) { setAttempt(null); setError(''); setStudentNavigation(current=>({version:current.version+1,view})); }
+    return <ImageSession key={user.id}><StudentHeaderSlot.Provider value={activeExam ? studentHeader : null}><header className={'header-bar '+(staff && staffMode?'console-header':'student-header')+(activeExam?' has-exam':'')}><div className="header"><div className="header-brand"><button className="brand-home" aria-label="返回首页" disabled={busy} onClick={()=>{setMobileNav(false);if(staff&&staffMode)setHomeVersion(value=>value+1);else navigateStudent('home');}}><Brand /></button>{staff && staffMode && <button className="icon-button sidebar-trigger" aria-label={narrow ? mobileNav ? '关闭导航' : '展开导航' : collapsed ? '展开导航' : '收起导航'} aria-expanded={narrow ? mobileNav : !collapsed} onClick={() => {if(narrow)setMobileNav(v=>!v);else setCollapsed(value=>{saveSidebarCollapsed(!value);return !value;});}}><Icon name="panel-left"/></button>}</div>{activeExam&&<div className="student-exam-header-slot" ref={setStudentHeader}/>}<div className="toolbar header-tools"><AppearanceMenu/>{staff && staffMode && user.roles.includes('student') && <button className="quiet" onClick={() => setStaffMode(v => !v)}>{staffMode ? '学生端' : '管理端'}</button>}{staff&&staffMode?<><span className="user-avatar" aria-hidden="true">{user.displayName.slice(0,1)}</span><span className="user-name">{user.displayName}</span><button className="icon-button" aria-label="退出登录" onClick={() => void logout()} disabled={busy}><Icon name="logout"/></button></>:<AccountMenu name={user.displayName} busy={busy} onHistory={()=>navigateStudent('history')} onLogout={()=>void logout()} {...(staff?{onManagement:()=>setStaffMode(true)}:{})}/>}</div></div></header>
+    {staff && staffMode ? <Admin key={homeVersion} user={user} collapsed={collapsed} mobileNav={mobileNav} onNavClose={()=>setMobileNav(false)}/> : <StudentWorkspace key={user.id} navigation={studentNavigation} attempt={attempt} busy={busy} error={error} onAttempt={setAttempt} onStart={start}/>}
   </StudentHeaderSlot.Provider></ImageSession>;
 }
 const root = document.getElementById('root');

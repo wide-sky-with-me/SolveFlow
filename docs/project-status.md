@@ -1,17 +1,17 @@
 # 发布状态与待办
 
-核对：2026-11-05。试用中，未达生产条件；原生沿用原验收日期，成绩不跨版本、设备或重复样本累计。
+核对：2026-11-07。试用中，未达生产条件；成绩不跨版本、设备或重复样本累计。
 
 ## 本机与远程版本
 
-| 环境 | 最近确认的版本与范围 | 证据 |
+| 环境 | 版本与范围 | 证据 |
 | --- | --- | --- |
-| 本机 Web 3100 | 保留10/29图片工作台构建，入口正常；本轮Mac发布未替换本机资源 | [工作台与草稿](postmortem/2026-10-29-ui-workbench-repair.md) |
+| 本机 Web 3100 | 保留10/29工作台构建；本轮只改API易私有预设，服务未启动 | [工作台与草稿](postmortem/2026-10-29-ui-workbench-repair.md) |
 | 远程 Mac Web 3131 | main工作树`20261104-camera-175615`，含相机/HEIC大图修复；32/32和模型配置保留 | [输入与部署](postmortem/2026-11-04-iphone-camera-practice.md) |
-| 腾讯云中心考试 | 前端`20261105-student-labels`；HTTP保留，部分网络受阻 | [发布](postmortem/2026-11-05-student-answer-labels.md)、[限制](postmortem/2026-11-05-http-ip-trial.md) |
+| 腾讯云中心考试 | `20261106-model-services`，两API/worker/events与schema8；HTTP试用API内存512MiB | [发布](postmortem/2026-11-06-model-services.md)、[限制](postmortem/2026-11-05-http-ip-trial.md) |
 | Android / iOS | 工作区0.1.82/build83，补齐原生取消信号；Android已在隔离模拟器验证插入、共享补图、多份PDF及系统保存/分享。iOS三项模拟器XCTest及真机目标编译通过，IPA未签名；真机与发行另验 | [模拟器与修复](postmortem/2026-10-30-android-emulator.md)、[前轮PDF](postmortem/2026-10-30-native-pdf.md) |
 
-运行见[Web指南](cookbook/local-web.md)，历史见[问题导航](postmortem/README.md#按问题查报告)。
+入口：[Web](cookbook/local-web.md)、[报告](postmortem/README.md#按问题查报告)。
 
 ## 可核验的交付
 
@@ -30,13 +30,17 @@
 
 ## 中心考试分支
 
-iPhone大图预览、公网任务恢复及原生iOS后台收尾已有Chrome/WebKit、隔离中心、Mac编译和2项iOS模拟器证据，见[验收](postmortem/2026-11-03-iphone-input-background.md)。真机后台/低内存未验，Mac及原生本轮未更新。
+本地核对：2026-11-08。远程版本沿最近发布记录，本轮没有连接或替换腾讯云/Mac；本地测试不代表线上已更新。
 
-上传取消、图片及并发见[边界复查](postmortem/2026-11-03-iphone-review.md)；弹窗与流程见[视觉验收](postmortem/2026-11-03-functional-visual.md)；离线停止及期限见[深度复查](postmortem/2026-11-03-deep-review.md)。无安排临时拍题见[输入验收](postmortem/2026-11-04-iphone-camera-practice.md)，定时/不限时及双方结束见[计时验收](postmortem/2026-11-04-exam-timing.md)，均已发布腾讯云。分配改进及计时提醒偶发延迟见[验收](postmortem/2026-11-04-exam-allocations.md)。
+| 范围 | 当前记录与限制 | 证据 |
+| --- | --- | --- |
+| 腾讯云最近发布 | 双服务方案、顶栏重答和五态配色已发布，版本见上表；仍采用HTTP临时入口 | [模型方案发布](postmortem/2026-11-06-model-services.md)、[HTTP试用](postmortem/2026-11-05-http-ip-trial.md) |
+| 本地未发布 | 三层场次、两级改名/归档/成员汇总、教师独立消息和考试记录分类已实现，要求schema11；选项及填空答案预览同步调整 | [场次与消息](postmortem/2026-11-07-exam-history-messages-events.md)、[答案预览](postmortem/2026-11-07-non-choice-answer-values.md) |
+| 本地逻辑与界面复核 | 归档、保存版本、消息重试及临时拍题取消已补查；统计整合为单一首页。明暗主题、窄屏、焦点与动效有合成浏览器证据，未代表iPhone真机 | [逻辑巡查](postmortem/2026-11-07-platform-logic-ui-audit.md)、[界面与动效](postmortem/2026-11-08-managed-ui-polish.md)、[看板整合](postmortem/2026-11-08-dashboard-consolidation.md) |
+| 输入及计时历史验收 | HEIC、临时拍题、定时/不限时与双方结束已有发布记录；不能将旧版成绩累计为当前版本验收 | [相机与输入](postmortem/2026-11-04-iphone-camera-practice.md)、[考试计时](postmortem/2026-11-04-exam-timing.md) |
+| 生产与真机缺口 | 真题质量、COS策略、持续负载、跨机恢复、目标分数规划及iPhone后台/低内存仍须独立验收 | [当前边界](subsystems/managed-exams.md#当前限制)、[iPhone验收边界](postmortem/2026-11-03-iphone-input-background.md) |
 
-`feat/public-photo-web`已新增独立中心考试服务、固定题位、持久红色问题和老师介入。提醒、题型/官方模板及人工确认在隔离PG和Chrome使用假模型验证，见[核验报告](postmortem/2026-11-03-exam-reviews.md)；自由跳题/跳模块、位置跟踪见[导航报告](postmortem/2026-11-03-exam-navigation.md)。过期互斥、保存、登录、恢复已修正，见[边界回归](postmortem/2026-11-03-exam-review-fixes.md)；人工答案、最近答案、错误归属、开考和焦点样式见[界面修复](postmortem/2026-11-03-exam-ui-fixes.md)。题目总览、按题处理队列及可定位答案的持久解决通知见[问题闭环](postmortem/2026-11-03-exam-attention.md)。控制台图表、大屏及14次合成题真实模型请求见[实测](postmortem/2026-11-03-exam-console-live.md)。已拍题的教师AI/手动选项、并发保护和学生同步见[教师作答](postmortem/2026-11-03-teacher-answer.md)。详情布局见[布局验收](postmortem/2026-11-03-exam-dialog-layout.md)，看板/大屏见[本轮](postmortem/2026-11-04-home-layout.md)，分页与选择框见[列表验收](postmortem/2026-11-04-managed-list-pagination.md)。单机Docker/公网验收见上表；真实题图、COS、负载、备份恢复及目标分数规划仍待验。
-
-本地[六项修复](postmortem/2026-11-05-workflow-repairs.md)待发布。
+功能规则按[平台导航](subsystems/managed-exams.md#功能定位)进入所属页面，操作与升级归[指南](cookbook/managed-exams.md)，历史证据按[报告入口](postmortem/README.md#按问题查报告)和日期/关键词检索。
 
 ## 待完成
 
@@ -51,4 +55,4 @@ iPhone大图预览、公网任务恢复及原生iOS后台收尾已有Chrome/WebK
 | P2 | CI远端执行与保护 | 提交后工作流实际通过，并在外部平台配置分支保护 |
 | P2 | 长负载与多设备性能 | 真实长题转录、持续32/32负载、手机大图导入及内存/逐帧验证，不用短请求压测代替 |
 
-行为见[子系统导航](README.md#按任务阅读)；历史验收日期、失败与未验项保留。
+行为见[子系统](README.md#按任务阅读)。

@@ -1,0 +1,78 @@
+.answer-summary {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.answer-summary .answer-options {
+  font-size: 28px;
+  background: var(--feedback-bg)!important;
+  color: var(--feedback-ink)!important;
+  border: 1px solid var(--feedback-border);
+}
+
+.answer-choice-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  margin-bottom: 12px;
+}
+
+.answer-choice-row>.answer-options {
+  flex-shrink: 0;
+}
+
+.answer-choice-text {
+  flex: 1;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.answer-choice-text>* {
+  display: inline;
+  margin: 0;
+  font-size: inherit;
+}
+
+.answer-choice-text .math.display,.answer-choice-text .katex-display {
+  display: inline;
+  margin: 0;
+}
+
+.answer-fill {
+  display: inline-block;
+  max-width: 100%;
+  min-height: 48px;
+  padding: 8px 14px;
+  margin: 0 0 12px;
+  border: 1px solid var(--feedback-border);
+  border-radius: 12px;
+  background: var(--feedback-bg);
+  color: var(--feedback-ink);
+  font-size: 28px;
+  font-weight: 750;
+  line-height: 1.4;
+  overflow-x: auto;
+  overflow-wrap: anywhere;
+}
+
+.answer-fill>* {
+  display: inline;
+  margin: 0;
+}
+
+.answer-fill .katex {
+  font-size: 1em;
+}
+
+.answer-fill .katex-display {
+  margin: 0;
+}

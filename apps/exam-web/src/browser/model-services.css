@@ -1,0 +1,288 @@
+.service-choices {
+  display: grid;
+  gap: 12px;
+}
+
+.service-choice {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--field);
+  cursor: pointer;
+  min-width: 0;
+}
+
+.service-choice.selected {
+  background: var(--secondary);
+  border-color: var(--blue);
+}
+
+.model-service-choice .service-choice>input {
+  width: 18px;
+  min-width: 0;
+  height: 18px;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  flex: 0 0 18px;
+  accent-color: var(--blue);
+}
+
+.service-choice-icon {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  border-radius: 11px;
+  color: var(--accent-ink);
+  flex-shrink: 0;
+}
+
+.service-choice>span:has(strong) {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.service-choice small,.service-help {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.service-choice-check {
+  color: var(--accent-ink);
+  visibility: hidden;
+  flex-shrink: 0;
+}
+
+.service-choice.selected .service-choice-check {
+  visibility: visible;
+}
+
+.service-choice.unavailable {
+  opacity: .55;
+  cursor: default;
+}
+
+.service-help {
+  margin: 16px 0 0;
+}
+
+.model-services-page {
+  display: grid;
+  gap: 18px;
+}
+
+.model-service-tabs {
+  display: grid;
+  grid-template-columns: repeat(2,minmax(0,1fr));
+  gap: 12px;
+}
+
+.model-service-tab {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: 18px;
+  border-radius: 14px;
+  min-width: 0;
+}
+
+.model-service-tab.selected {
+  background: var(--secondary);
+  border-color: var(--blue);
+}
+
+.model-service-tab>span {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.model-service-tab small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.model-service-tab .icon {
+  flex-shrink: 0;
+  color: var(--accent-ink);
+}
+
+.service-editor {
+  padding: 24px;
+  min-width: 0;
+}
+
+.service-editor .section-head {
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.service-editor h2 {
+  margin: 0;
+}
+
+.service-editor .inline-check {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.service-editor .inline-check input {
+  width: 18px;
+  min-width: 0;
+  height: 18px;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  flex: 0 0 18px;
+  accent-color: var(--blue);
+}
+
+.service-roles {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 20px 0;
+}
+
+.service-roles>button {
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.service-roles>button.selected {
+  background: var(--secondary);
+  border-color: var(--blue);
+  color: var(--accent-ink);
+}
+
+.service-fields {
+  display: grid;
+  grid-template-columns: repeat(2,minmax(0,1fr));
+  gap: 0 20px;
+  min-width: 0;
+}
+
+.service-fields>label,.service-fields>.select-field {
+  min-width: 0;
+}
+
+.service-fields .service-address,.service-fields .service-secret {
+  grid-column: 1/-1;
+}
+
+.service-fields input {
+  width: 100%;
+  min-width: 0;
+}
+
+.service-editor details {
+  margin: 16px 0;
+}
+
+.service-editor details>summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  color: var(--accent-ink);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.service-editor .service-empty {
+  padding: 24px;
+  background: var(--field);
+  border-radius: 12px;
+  color: var(--muted);
+}
+
+.service-editor .service-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 18px;
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.service-save-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.service-save-info .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.service-role-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+@media(max-width:640px) {
+  .service-editor {
+    padding: 16px;
+  }
+  .model-service-tab {
+    padding: 14px;
+    gap: 8px;
+  }
+  .model-service-tab .icon {
+    width: 18px;
+    height: 18px;
+  }
+  .service-fields {
+    grid-template-columns: minmax(0,1fr);
+  }
+  .service-fields .service-address,.service-fields .service-secret {
+    grid-column: auto;
+  }
+  .service-choice {
+    padding: 14px;
+    gap: 10px;
+  }
+  .service-choice-icon {
+    width: 32px;
+    height: 32px;
+  }
+  .service-roles {
+    gap: 6px;
+  }
+  .service-roles>button {
+    padding: 9px 10px;
+  }
+  .service-editor .service-actions>button {
+    flex: 1;
+  }
+  .service-save-info {
+    align-items: flex-start;
+  }
+}

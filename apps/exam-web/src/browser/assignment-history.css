@@ -1,0 +1,55 @@
+.assignment-filters {
+  display: grid;
+  grid-template-columns: repeat(4,minmax(0,1fr));
+  gap: 6px;
+  padding: 5px;
+  margin: 0 0 16px;
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.assignment-filter {
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 6px;
+  font-size: 14px;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.assignment-filter[aria-pressed=true] {
+  background: var(--feedback-bg,var(--secondary));
+  border-color: var(--feedback-border,var(--line));
+  color: var(--feedback-ink,var(--ink));
+  box-shadow: 0 1px 3px #0000000a;
+}
+
+.assignment-filter:first-child[aria-pressed=true] {
+  background: var(--secondary);
+  color: var(--accent-ink);
+  border-color: var(--line);
+}
+
+.assignment-card .assignment-action {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--feedback-border,var(--line));
+  background: var(--feedback-bg,var(--field));
+  color: var(--feedback-ink,var(--muted));
+}
+
+.assignment-card .assignment-action:hover:not(:disabled) {
+  background: var(--feedback-icon-bg,var(--secondary));
+}
+
+.assignment-status {
+  background: var(--feedback-bg,var(--field));
+  color: var(--feedback-ink,var(--muted));
+  border: 1px solid var(--feedback-border,var(--line));
+}

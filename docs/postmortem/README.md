@@ -1,10 +1,10 @@
 # 复盘与验收记录
 
-这里保存带时间范围的事故和实际验证证据，文件用 `YYYY-MM-DD-<topic>.md` 命名，主题使用小写英文短横线，日期取验证开始日期。只在值得追溯的故障、发行或集中验收时新增，普通修改的测试结果可留在交付记录中。
+本目录保存带日期的事故与验收证据，命名和归属沿[编写约定](../cookbook/documentation.md)。普通修改的测试结果可留在交付记录中。
 
 ## 按问题查报告
 
-下表是主题入口，不是全部报告清单；表中日期属于原验收，不表示当前版本重新通过。当前交付范围统一看[发布状态](../project-status.md)，其他报告按文件日期或关键词搜索。
+下表只列主题入口，日期仅代表原验收；当前交付看[发布状态](../project-status.md)，其余按日期或关键词搜索。
 
 | 要追溯的问题 | 报告 |
 | --- | --- |
@@ -20,6 +20,7 @@
 | 裁剪保存失败丢草稿、旧工作台风格与原图读取 | [2026-10-29工作台修复](2026-10-29-ui-workbench-repair.md) |
 | 共享补图、独立重答及弹窗交互 | [异步补图](2026-10-27-batch-material-workbench.md)、[缩略图](2026-10-27-material-thumbnail-controls.md)、[重答反馈](2026-10-27-batch-regeneration-feedback.md)、[提示真实计时](2026-10-27-material-notice-expiry.md) |
 | 开发产物清理及代码、文档整理 | [2026-10-27清理](2026-10-27-development-cleanup.md) |
+| 中心考试的场次分层、消息、逻辑与视觉巡查 | [场次与消息](2026-11-07-exam-history-messages-events.md)、[逻辑巡查](2026-11-07-platform-logic-ui-audit.md)、[界面动效](2026-11-08-managed-ui-polish.md) |
 | 生物批次答案与核验问题 | [2026-10-09逐题判断](2026-10-09-biology-batch-answers.md)、[批测](2026-10-09-biology-batch-acceptance.md) |
 | 答题/校验两队列与判错接手 | [2026-10-09队列修复](2026-10-09-independent-queues.md)、[直接核对](2026-10-09-direct-answer-review.md) |
 | 失败题重试、超时和非流式模型对比 | [2026-10-09运行核查](2026-10-09-batch-retry-and-timeouts.md) |

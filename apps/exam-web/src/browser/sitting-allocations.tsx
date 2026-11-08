@@ -3,11 +3,11 @@ import { ExamAllocationPageSchema, ExamUserPageSchema, type ExamAllocation } fro
 import { api, idResponse, post } from './api.js';
 import { Dialog, ErrorText } from './components.js';
 import { RemoteMultiSelect } from './remote-select.js';
-import { AllocationFields, allocationInput, allocationToken } from './allocation-fields.js';
+import { AllocationFields, AllocationModeFields, allocationInput, allocationToken } from './allocation-fields.js';
 import { ListSearch, Pagination, pageUrl, useCanonicalPage, useListQuery, usePageResource } from './paging.js';
 
 export function SittingAllocations({id,onClose,onSaved}:{id:string;onClose:()=>void;onSaved:()=>void}) {
-    const list=useListQuery(),resource=usePageResource(ExamAllocationPageSchema,pageUrl('/admin/sittings/'+id+'/allocations',{page:list.page,pageSize:list.pageSize,q:list.q}));
+    const list=useListQuery(),resource=usePageResource(ExamAllocationPageSchema,pageUrl('/admin/sittings/'+id+'/allocations',{page:list.page,pageSize:list.pageSize,q:list.q,config:'1'}));
     useCanonicalPage(list.page,resource.data,list.setPage);
     const [editing,setEditing]=useState<ExamAllocation|null>(null),[adding,setAdding]=useState(false),[confirm,setConfirm]=useState<ExamAllocation|null>(null),[busy,setBusy]=useState(false),[ready,setReady]=useState(true),[error,setError]=useState('');
     const request=useRef<AbortController|null>(null),token=useRef<{key:string;id:string}|null>(null);
@@ -22,13 +22,18 @@ export function SittingAllocations({id,onClose,onSaved}:{id:string;onClose:()=>v
         }catch(error){if(!controller.signal.aborted)setError(error instanceof Error?error.message:'保存失败，请重试。');}
         finally{if(!controller.signal.aborted)setBusy(false);}
     }
-    function submit(event:FormEvent<HTMLFormElement>){event.preventDefault();const form=new FormData(event.currentTarget);if(editing)void save('/'+editing.id+'/staff',{expectedVersion:editing.version,supportIds:form.getAll('supportIds').map(String).sort()});else void save('',allocationInput(form));}
+    function submit(event:FormEvent<HTMLFormElement>){
+        event.preventDefault();const form=new FormData(event.currentTarget);
+        if(!editing){void save('',allocationInput(form));return;}
+        const mode=String(form.get('mode')),wrongCounts=form.getAll('wrongCounts').map(Number);
+        const changed=!editing.started&&(mode!==(editing.mode??'original')||mode==='practice_simulation'&&JSON.stringify(wrongCounts)!==JSON.stringify(editing.wrongCounts??[]));
+        void save('/'+editing.id+'/update',{expectedVersion:editing.version,supportIds:form.getAll('supportIds').map(String).sort(),...changed?{settings:{mode,wrongCounts}}:{}});
+    }
     function back(){setEditing(null);setAdding(false);setError('');}
-    return <><Dialog title={editing?'调整负责老师':adding?'添加学生':'调整分配'} className="allocation-dialog" onClose={()=>{if(!busy)onClose();}}>
-      <ErrorText error={error||resource.error}/>
+    return <><Dialog title={editing?'调整学生分配':adding?'添加学生':'人员与错题配置'} className="allocation-dialog" notice={error||resource.error ? <ErrorText error={error||resource.error}/> : null} onClose={()=>{if(!busy)onClose();}}>
       {editing||adding?<form onSubmit={submit}>
-        {editing?<><h3 className="allocation-person">{editing.student.displayName}<span>{editing.student.username}</span></h3><RemoteMultiSelect key={editing.id} label="负责老师" name="supportIds" schema={ExamUserPageSchema} endpoint="/admin/users/page" params={{purpose:'support-assignment'}} initialSelected={editing.support} disabled={busy}/></>:resource.data&&<AllocationFields templateId={resource.data.sitting.templateId} disabled={busy} onReady={setReady}/>}
-        <div className="dialog-footer"><button type="button" disabled={busy} onClick={back}>返回</button><button className="primary" type="submit" disabled={busy||!resource.data||adding&&!ready}>{busy?'保存中…':'保存'}</button></div>
+        {editing?<><h3 className="allocation-person">{editing.student.displayName}<span>{editing.student.username}</span></h3><RemoteMultiSelect key={editing.id} label="负责老师" name="supportIds" schema={ExamUserPageSchema} endpoint="/admin/users/page" params={{purpose:'support-assignment'}} initialSelected={editing.support} disabled={busy}/>{!editing.started&&resource.data&&<AllocationModeFields templateId={resource.data.sitting.templateId} disabled={busy} onReady={setReady} initialMode={editing.mode??'original'} initialCounts={editing.wrongCounts??[]}/>}</>:resource.data&&<AllocationFields templateId={resource.data.sitting.templateId} disabled={busy} onReady={setReady}/>}
+        <div className="dialog-footer"><button type="button" disabled={busy} onClick={back}>返回</button><button className="primary" type="submit" disabled={busy||!resource.data||(adding||!!editing&&!editing.started)&&!ready}>{busy?'保存中…':'保存'}</button></div>
       </form>:<>
         <div className="section-head allocation-head"><h3>{resource.data?.sitting.title??'正在读取…'}</h3><button className="primary" disabled={!resource.data||resource.data.sitting.state!=='published'} onClick={()=>{setAdding(true);setError('');}}>添加学生</button></div>
         <ListSearch label="搜索已分配学生" value={list.q} onSearch={list.setQ}/>

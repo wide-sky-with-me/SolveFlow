@@ -4,8 +4,9 @@ import { ExamError } from '@solveflow/db';
 import { makeSafeAgentError, SolveOutcomeSchema, type NormalizedImage, type PublicAgentEvent, type SolveOutcome } from '@solveflow/contracts/agent';
 import { ExamPracticeSnapshotSchema, type ExamPracticeRequest, type ExamPracticeSnapshot } from '@solveflow/contracts/exam-practice';
 import { normalizeImages } from './images.js';
+import type { ExamModelServiceRef } from '@solveflow/contracts/exam-model-services';
 
-export type PracticeSolve = (input: ExamPracticeRequest & { ownerId: string; image: NormalizedImage }, signal: AbortSignal, report: (event: PublicAgentEvent) => void, authorize: () => Promise<void>) => Promise<SolveOutcome>;
+export type PracticeSolve = (input: ExamPracticeRequest & { ownerId: string; image: NormalizedImage; modelService?: ExamModelServiceRef | null }, signal: AbortSignal, report: (event: PublicAgentEvent) => void, authorize: () => Promise<void>) => Promise<SolveOutcome>;
 type Job = { owner: string; hash: string | null; controller: AbortController; expiresAt: number; snapshot: ExamPracticeSnapshot; done: Promise<void> };
 const retention = 10 * 60_000, deadline = 6 * 60_000;
 
@@ -15,7 +16,7 @@ export class PracticeJobs {
   private readonly cancelled = new Map<string, number>();
   private closing = false;
   private readonly sweeper: ReturnType<typeof setInterval>;
-  constructor(private readonly solve: PracticeSolve, private readonly now = Date.now, private readonly limit = 4) {
+  constructor(private readonly solve: PracticeSolve, private readonly now = Date.now, private readonly limit = 4, private readonly capture?: (owner: string) => Promise<ExamModelServiceRef | null>) {
     this.sweeper = setInterval(() => this.sweep(), 30_000); this.sweeper.unref();
   }
   private key(owner: string, id: string) { return owner + ':' + id; }
@@ -27,6 +28,7 @@ export class PracticeJobs {
     this.sweep();
     const key = this.key(owner, request.requestId), previous = this.jobs.get(key);
     if (previous) {
+      if (previous.snapshot.status === 'cancelled') return this.status(owner, request.requestId);
       if (previous.hash === null) throw new ExamError(409, 'PRACTICE_PREPARING', '题图正在处理，请稍后查看结果。');
       const hash = createHash('sha256').update(request.exam).update(await read()).digest('hex');
       if (hash !== previous.hash) throw new ExamError(409, 'PRACTICE_CONFLICT', '本次标识已用于其他题图，请重新拍摄。');
@@ -38,23 +40,30 @@ export class PracticeJobs {
     if (this.closing || this.jobs.size >= 128 || active.length >= this.limit || active.some(job => job.owner === owner)) throw new ExamError(429, 'PRACTICE_BUSY', '当前答题较多，请稍后重试。');
     const job: Job = { owner, hash: null, controller: new AbortController(), expiresAt: this.now() + retention, snapshot, done: Promise.resolve() };
     this.jobs.set(key, job);
+    // Closing clears the map; a late admission must return cancellation from its
+    // own job rather than querying or recreating a discarded entry.
+    const cancelledResult = (): ExamPracticeSnapshot => ({ ...job.snapshot, status: 'cancelled', outcome: null });
     try {
+      const modelService = await this.capture?.(owner);
+      // Service selection yields before upload admission. Cancellation wins here,
+      // including a stop received before a delayed body reader has been attached.
+      if (job.controller.signal.aborted || this.closing) return cancelledResult();
       const raw = await read();
       job.hash = createHash('sha256').update(request.exam).update(raw).digest('hex');
-      if (job.controller.signal.aborted) return this.status(owner, request.requestId);
+      if (job.controller.signal.aborted || this.closing) return cancelledResult();
       const images = await normalizeImages(raw);
       await authorize();
-      if (job.controller.signal.aborted || this.closing) return this.cancel(owner, request.requestId);
-      job.done = this.run(job, request, { bytes: Uint8Array.from(images.model.data), mimeType: 'image/jpeg' }, authorize);
+      if (job.controller.signal.aborted || this.closing) return cancelledResult();
+      job.done = this.run(job, request, { bytes: Uint8Array.from(images.model.data), mimeType: 'image/jpeg' }, authorize, modelService);
       return this.status(owner, request.requestId);
     } catch (error) {
-      if (job.controller.signal.aborted) return this.status(owner, request.requestId);
+      if (job.controller.signal.aborted || this.closing) return cancelledResult();
       this.jobs.delete(key);
       if (error instanceof ExamError) throw error;
       throw new ExamError(400, 'PRACTICE_IMAGE', '图片无法读取，请重新拍摄或选择图片。');
     }
   }
-  private async run(job: Job, request: ExamPracticeRequest, image: NormalizedImage, authorize: () => Promise<void>) {
+  private async run(job: Job, request: ExamPracticeRequest, image: NormalizedImage, authorize: () => Promise<void>, modelService?: ExamModelServiceRef | null) {
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; job.controller.abort(); }, deadline);
     let removeAbort = () => {};
@@ -64,7 +73,7 @@ export class PracticeJobs {
       removeAbort = () => job.controller.signal.removeEventListener('abort', abort);
     });
     try {
-      const outcome = await Promise.race([this.solve({ ...request, ownerId: job.owner, image }, job.controller.signal, event => {
+      const outcome = await Promise.race([this.solve({ ...request, ownerId: job.owner, image, ...(modelService === undefined ? {} : {modelService}) }, job.controller.signal, event => {
         if (!job.controller.signal.aborted && event.type === 'run.status' && ['understanding', 'solving', 'verifying', 'revising'].includes(event.status))
           job.snapshot.phase = ExamPracticeSnapshotSchema.shape.phase.parse(event.status);
       }, authorize), aborted]);

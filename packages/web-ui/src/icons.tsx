@@ -1,9 +1,11 @@
 import type { ReactNode } from 'react';
 
-type IconName = 'search' | 'camera' | 'album' | 'history' | 'book' | 'chevron-down' | 'chevron-right' | 'check' | 'logout' | 'trash' | 'arrow-right' | 'key' | 'grid' | 'chart' | 'monitor' | 'users' | 'alert' | 'expand' | 'info' | 'close' | 'sun' | 'moon' | 'panel-left' | 'pulse';
+type IconName = 'plus' | 'reset' | 'search' | 'camera' | 'album' | 'history' | 'book' | 'chevron-down' | 'chevron-right' | 'check' | 'logout' | 'trash' | 'arrow-right' | 'key' | 'grid' | 'chart' | 'monitor' | 'users' | 'alert' | 'expand' | 'info' | 'close' | 'sun' | 'moon' | 'panel-left' | 'pulse';
 
 export function Icon({ name, className = '' }: { name: IconName; className?: string }) {
   const paths: Record<IconName, ReactNode> = {
+    plus: <path d="M12 5v14M5 12h14"/>,
+    reset: <><path d="M3 10a9 9 0 1 1 2.6 8.4M3 3v7h7"/></>,
     sun: <><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6 19 19M5 19l1.4-1.4M17.6 6.4 19 5"/></>,
     moon: <path d="M20.8 13.4A9 9 0 0 1 10.6 3.2 9 9 0 1 0 20.8 13.4Z"/>,
     'panel-left': <><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 3v18M13 9l3 3-3 3"/></>,
