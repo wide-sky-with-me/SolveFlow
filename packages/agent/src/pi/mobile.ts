@@ -93,7 +93,9 @@ export function sanitizeJsonStringEscapes(text: string): string {
 
 export function parseModelJson(raw: string): unknown {
   try { return JSON.parse(raw); } catch {}
-  let text = raw.trim();
+  // Models occasionally emit a BOM, non-breaking spaces or a zero-width joiner around
+  // otherwise valid JSON; normalize them before the structural repairs below.
+  let text = raw.replace(/^\uFEFF/, '').replace(/[\u00A0\u2007\u202F]/g, ' ').replace(/\u200B/g, '').trim();
   const fenceMatch = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
   if (fenceMatch) {
     text = fenceMatch[1]!.trim();

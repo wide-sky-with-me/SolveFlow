@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { LocalSettingsSchema } from '@solveflow/contracts/local';
-import { solveOnDevice, modelTransport, readMobileSkill, testModelConnection, thinkingLevelOf } from './mobile.js';
+import { solveOnDevice, modelTransport, parseModelJson, readMobileSkill, testModelConnection, thinkingLevelOf } from './mobile.js';
 import { AnswerCandidateSchema, type SolverInput } from '@solveflow/contracts/agent';
 const settings = LocalSettingsSchema.parse({ schemaVersion: 1, solver: { provider: 'my-provider', baseURL: 'https://model.invalid/v1', model: 'user-selected-model', api: 'openai-completions', contextWindow: 32768, maxTokens: 8192, maxTokensField: 'max_tokens' }, verifier: null });
 const input: SolverInput = { schemaVersion: 1, role: 'solver', identity: { ownerId: 'local-device', sessionId: 'test-session', runId: 'test-run' }, message: '求解x+1=3', image: { bytes: Uint8Array.of(1, 2, 3), mimeType: 'image/jpeg' }, evidence: [] };
@@ -399,4 +399,22 @@ it('does not publish verified when the verifier only transcribed the image', asy
   const outcome = await solveOnDevice(input, settings, { solver: 'fixture', verifier: null }, async () => sse(++calls === 1 ? candidate : { ...pass, checked: ['transcription'] }), new AbortController().signal, () => {});
   expect(outcome).toMatchObject({ status: 'completed', verified: false, verification: { verdict: 'unknown', issues: [{ code: 'INSUFFICIENT_EVIDENCE' }] } });
   expect(calls).toBe(2);
+});
+
+describe('parseModelJson', () => {
+  it('accepts a BOM and non-breaking or zero-width characters', () => {
+    expect(parseModelJson('\uFEFF{"a":1}')).toEqual({ a: 1 });
+    expect(parseModelJson('{\u00A0"a":\u00A01}')).toEqual({ a: 1 });
+    expect(parseModelJson('{\u200B"a":1}')).toEqual({ a: 1 });
+  });
+
+  it('recovers fenced output and trailing commas', () => {
+    expect(parseModelJson('```json\n{"a":1,}\n```')).toEqual({ a: 1 });
+    expect(parseModelJson('前缀 {"a":1} 后缀')).toEqual({ a: 1 });
+  });
+
+  it('repairs an invalid escape that LaTeX output produces', () => {
+    expect(parseModelJson(String.raw`{"answer":"$\sqrt2$"}`)).toEqual({ answer: String.raw`$\sqrt2$` });
+  });
+
 });
