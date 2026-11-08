@@ -1,6 +1,6 @@
 # 发布状态与待办
 
-核对：2026-11-07。试用中，未达生产条件；成绩不跨版本、设备或重复样本累计。
+核对：2026-11-08。本地/腾讯云已核对，其余沿最近记录。试用中，未达生产条件；成绩不跨版本、设备或重复样本累计。
 
 ## 本机与远程版本
 
@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 本机 Web 3100 | 保留10/29工作台构建；本轮只改API易私有预设，服务未启动 | [工作台与草稿](postmortem/2026-10-29-ui-workbench-repair.md) |
 | 远程 Mac Web 3131 | main工作树`20261104-camera-175615`，含相机/HEIC大图修复；32/32和模型配置保留 | [输入与部署](postmortem/2026-11-04-iphone-camera-practice.md) |
-| 腾讯云中心考试 | `20261106-model-services`，两API/worker/events与schema8；HTTP试用API内存512MiB | [发布](postmortem/2026-11-06-model-services.md)、[限制](postmortem/2026-11-05-http-ip-trial.md) |
+| 腾讯云中心考试 | `20261108-53ee2a1`，两API/worker/events与schema11；账号及数据保留，HTTP试用API内存512MiB | [发布](postmortem/2026-11-08-managed-platform-deployment.md)、[入口限制](postmortem/2026-11-05-http-ip-trial.md) |
 | Android / iOS | 工作区0.1.82/build83，补齐原生取消信号；Android已在隔离模拟器验证插入、共享补图、多份PDF及系统保存/分享。iOS三项模拟器XCTest及真机目标编译通过，IPA未签名；真机与发行另验 | [模拟器与修复](postmortem/2026-10-30-android-emulator.md)、[前轮PDF](postmortem/2026-10-30-native-pdf.md) |
 
 入口：[Web](cookbook/local-web.md)、[报告](postmortem/README.md#按问题查报告)。
@@ -30,12 +30,13 @@
 
 ## 中心考试分支
 
-本地核对：2026-11-08。远程版本沿最近发布记录，本轮没有连接或替换腾讯云/Mac；本地测试不代表线上已更新。
+核对：2026-11-08。腾讯云已更新；Mac未连接或替换。隔离与线上验收分开记录。
 
 | 范围 | 当前记录与限制 | 证据 |
 | --- | --- | --- |
-| 腾讯云最近发布 | 双服务方案、顶栏重答和五态配色已发布，版本见上表；仍采用HTTP临时入口 | [模型方案发布](postmortem/2026-11-06-model-services.md)、[HTTP试用](postmortem/2026-11-05-http-ip-trial.md) |
-| 本地未发布 | 三层场次、两级改名/归档/成员汇总、教师独立消息和考试记录分类已实现，要求schema11；选项及填空答案预览同步调整 | [场次与消息](postmortem/2026-11-07-exam-history-messages-events.md)、[答案预览](postmortem/2026-11-07-non-choice-answer-values.md) |
+| 腾讯云最近发布 | 双方案、三层场次、消息及看板整合已发布；schema8→11经隔离恢复验证，保留既有进度和配置，仍采用HTTP临时入口 | [本次发布](postmortem/2026-11-08-managed-platform-deployment.md)、[HTTP试用](postmortem/2026-11-05-http-ip-trial.md) |
+| 场次与学生交互 | 两级改名/归档/成员汇总、教师独立消息、考试记录分类及选项/填空答案预览已有实现及隔离证据 | [场次与消息](postmortem/2026-11-07-exam-history-messages-events.md)、[答案预览](postmortem/2026-11-07-non-choice-answer-values.md) |
+| 线上页面与账号 | 管理员/教师登录及场次读取通过；账号及密码未改。旧清单中的学生密码已失效，学生当前密码登录未验 | [发布与账号核对](postmortem/2026-11-08-managed-platform-deployment.md) |
 | 本地逻辑与界面复核 | 归档、保存版本、消息重试及临时拍题取消已补查；统计整合为单一首页。明暗主题、窄屏、焦点与动效有合成浏览器证据，未代表iPhone真机 | [逻辑巡查](postmortem/2026-11-07-platform-logic-ui-audit.md)、[界面与动效](postmortem/2026-11-08-managed-ui-polish.md)、[看板整合](postmortem/2026-11-08-dashboard-consolidation.md) |
 | 输入及计时历史验收 | HEIC、临时拍题、定时/不限时与双方结束已有发布记录；不能将旧版成绩累计为当前版本验收 | [相机与输入](postmortem/2026-11-04-iphone-camera-practice.md)、[考试计时](postmortem/2026-11-04-exam-timing.md) |
 | 生产与真机缺口 | 真题质量、COS策略、持续负载、跨机恢复、目标分数规划及iPhone后台/低内存仍须独立验收 | [当前边界](subsystems/managed-exams.md#当前限制)、[iPhone验收边界](postmortem/2026-11-03-iphone-input-background.md) |
