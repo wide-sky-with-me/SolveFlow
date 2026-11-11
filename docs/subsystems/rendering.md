@@ -1,6 +1,6 @@
 # 题目阅读与绘制
 
-React Native 管理导航、相机、分页和设置，本地DOM绘制图文。正文跟随设备字体，数学符号用随包字体。渲染禁止 raw HTML、限制链接与内容大小，KaTeX `trust=false`。
+React Native 管理导航、相机、分页和设置，DOM绘图文。正文跟随设备字体，公式用随包字体。禁止 raw HTML、限制链接与内容大小，KaTeX `trust=false`。
 
 ## 答案与长文
 
@@ -10,7 +10,7 @@ React Native 管理导航、相机、分页和设置，本地DOM绘制图文。�
 
 [知识点组件](../../apps/mobile/src/dom/knowledge-panel.tsx)兼容模型把公式包在行内反引号中的输出：标题、解释、题中应用和易错点里的明确数学片段交给 KaTeX，普通代码及代码块保留原样。此兼容仅在展示时启用，不改保存的知识点名称或追问引用；其他正文沿用原有 Markdown 规则，公式语法错误仍提供可读回退，安全和资源限制不变。
 
-[公式渲染入口](../../apps/mobile/src/dom/math-render.ts)显示时移除非空白 C0/DEL（含旧结果 ESC），保留换行、制表与保存原文。KaTeX 继续校验语法、命令信任和宏展开，错误保留可读回退。行内公式预留分数上下空间，关闭纵向滚动，长公式保留横向滚动。[块公式](../../apps/mobile/src/dom/math-text.tsx)释放后的旧回调在测量前退出。
+[公式渲染入口](../../apps/mobile/src/dom/math-render.ts)显示时移除非空白 C0/DEL（含旧结果 ESC），保留换行、制表与保存原文。KaTeX 继续校验语法、命令信任和宏展开，错误保留可读回退。行内公式预留分数上下空间，关闭纵向滚动，长公式保留横向滚动。[块公式](../../apps/mobile/src/dom/math-text.tsx)相同内容复用渲染，释放后的旧回调在测量前退出。
 
 [学科组件](../../apps/mobile/src/dom/subject-content.tsx) 将作文正文与点评分开，将已配平的化学反应式独立展示。KaTeX 使用现有包附带的 mhchem，支持上下标、电荷、反应和平衡箭头；安全和资源限制不变，语法错误保留可读回退。
 

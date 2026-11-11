@@ -26,6 +26,8 @@ macOS Colima 的回环转发保持原样。宿主用已有 Node 运行 gateway.m
 
 同一实例同时供 Wi-Fi 与 Tailnet 访问时，每个固定地址使用独立网关、launchd label 和匹配 SAN 的证书，均转发同一回环端口。新增入口须获得对应访问范围的授权。启动参数使用发布目录真实绝对路径：网关 CLI 按入口路径执行，版本软链接可能令进程空退出。应用和模型配置共用，各 Origin 历史独立；撤回只停止目标入口，见[双入口决策](../../.agents/notes/implemented/architecture/2026-10-23-dual-private-web-entries.md)。
 
+公开静态文本由Node按客户端支持协商Brotli/gzip，保留Vary和既有缓存；模型代理、私有配置和SSE不走此压缩，见[决定](../../.agents/notes/implemented/architecture/2026-11-09-static-text-compression.md)。
+
 ## 维护与撤回
 
 升级前备份 shared/state，模式仍为 700/600；保留旧镜像、发布清单、网关和 launchd 配置。只操作本项目的 Compose 和 launchd label，不重启整个 Colima。

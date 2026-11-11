@@ -15,6 +15,8 @@ import { calculate } from '../tools/calculate.js';
 import { resources, skills, policies } from './mobile-resources.js';
 import { finishContext } from './finish-context.js';
 import { mobileModel, responsesModel, responsePayload, thinkingLevelOf, modelTransport } from './mobile-model.js';
+import { requestProgress } from './request-progress.js';
+import type { LocalFetch } from './mobile-model.js';
 import { bindActSource } from './act-source.js';
 import { imageReviewRegions, prepareImageReview, type ImageReviewViews, type PrepareImageReviewViews } from './image-review.js';
 import type { ImageReviewRegion } from '@solveflow/contracts/agent';
@@ -22,7 +24,7 @@ import { NormalizedImageSchema, type NormalizedImage } from '@solveflow/contract
 export { thinkingLevelOf, modelTransport } from './mobile-model.js';
 export { analyzeBatchPrintQuestion } from './batch-print-layout.js';
 export type LocalCredentials = { solver: string; verifier: string | null; backup?: string | null };
-export type LocalFetch = typeof globalThis.fetch;
+export type { LocalFetch } from './mobile-model.js';
 export type PhaseTimer = (callback: () => void, ms: number) => () => void;
 const defaultTimer: PhaseTimer = (callback, ms) => { const id = setTimeout(callback, ms); return () => clearTimeout(id); };
 export function readMobileSkill(path: string): string {
@@ -124,6 +126,15 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
   const diagnostic = (entry: Omit<LocalDiagnostic, 'schemaVersion' | 'runId' | 'role' | 'attempt' | 'elapsedMs'>) => onDiagnostic(LocalDiagnosticSchema.parse({ schemaVersion: 1, runId: input.identity.runId, role: override?.backup ? 'backup' : input.role, attempt: attemptNumber, elapsedMs: Math.round(performance.now() - started), ...entry }));
   const model = profile.api === 'openai-responses' ? responsesModel(profile) : mobileModel(profile); let failure: unknown; let timedOut = false;
   const controller = new AbortController(); const abort = () => controller.abort(); signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort();
+  const progress = input.role === 'solver' && input.answerMode === 'brief' && override?.allowThinkingTakeover && !override.backup
+    ? requestProgress(schedule, reason => {
+      if (signal.aborted || controller.signal.aborted) return;
+      diagnostic({event:'failure',reason,durationMs:Math.round(performance.now()-requestStarted),...(firstTokenMs===undefined?{}:{firstTokenMs})});
+      timedOut = true;
+      const error = new Error(reason === 'first_content_timeout' ? 'MODEL_FIRST_CONTENT_TIMEOUT' : 'MODEL_STREAM_IDLE_TIMEOUT');
+      error.name = 'TimeoutError';
+      controller.abort(error);
+    }) : undefined;
   // Decision: .agents/notes/implemented/agent/2026-10-07-exam-reliability-recovery.md
   // Decision: .agents/notes/implemented/agent/2026-10-08-unlimited-device-time.md
   // Decision: .agents/notes/implemented/agent/2026-10-08-device-time-and-stream-budget.md
@@ -214,7 +225,10 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
       catch (error) { failure = error; throw error; }
       clearThinkingTimer(); thinkingTimerStarted = false; visibleOutput = false; thinkingBytes = 0;
       attemptNumber++; requestStarted = performance.now(); firstTokenMs = undefined; lastHttpStatus = null; diagnostic({ event: 'request', phaseMs: Math.max(1, Math.floor(phaseDeadline - performance.now())), streaming, imageCount: 1 + (input.materials?.length ?? 0) + (override?.views?.length ?? 0), model: profile.model, maxTokens: profile.maxTokens, contextWindow: profile.contextWindow, ...(toolStopReason ? { toolStopReason } : {}) });
-      const streamOptions = { apiKey: key, fetch: modelTransport(profile, fetch, (status, error, reason, responseFormat) => { if (status !== null) lastHttpStatus = status; if (error) failure = error; diagnostic({ event: error ? 'failure' : 'response', ...(responseFormat ? { responseFormat } : {}), ...(status === null ? {} : { httpStatus: status }), ...(error ? { reason: reason ?? (status === null ? 'network' : 'http') } : {}) }); }, streaming), signal: controller.signal, maxTokens: profile.maxTokens, maxRetries: 0, timeoutMs: Math.max(1, Math.floor(Math.min(budget.remainingMs(), phaseDeadline - performance.now()))), env: {}, ...(effort ? { reasoningEffort: effort } : {}),
+      const begin = progress?.prepare(); let hasDispatched = false;
+      const dispatched = () => { if (hasDispatched) return; hasDispatched = true; requestStarted = performance.now(); begin?.(); };
+      const requestFetch: LocalFetch = (url, init) => { if (!fetch.defersDispatch) dispatched(); return fetch(url, init, dispatched); };
+      const streamOptions = { apiKey: key, fetch: modelTransport(profile, requestFetch, (status, error, reason, responseFormat) => { if (status !== null) lastHttpStatus = status; if (error) failure = error; diagnostic({ event: error ? 'failure' : 'response', ...(responseFormat ? { responseFormat } : {}), ...(status === null ? {} : { httpStatus: status }), ...(error ? { reason: reason ?? (status === null ? 'network' : 'http') } : {}) }); }, streaming), signal: controller.signal, maxTokens: profile.maxTokens, maxRetries: 0, timeoutMs: Math.max(1, Math.floor(Math.min(budget.remainingMs(), phaseDeadline - performance.now()))), env: {}, ...(effort ? { reasoningEffort: effort } : {}),
         ...(finishOnly ? { toolChoice: 'none' as const } : {}),
         onPayload: (payload: unknown) => { const value = model.api === 'openai-responses' ? responsePayload(payload) : payload; if (new TextEncoder().encode(JSON.stringify(value)).length > Math.ceil(MAX_QUESTION_IMAGE_BYTES / 3) * 4 + 1024 * 1024) throw new SolvePhaseError('INVALID_INPUT'); return value; } };
       const requestContext = finishOnly ? { ...finishContext(context), systemPrompt: context.systemPrompt + '\n工具阶段已结束。不得再次调用工具；依据原图与已有结果直接给最终JSON，不添加未获得的证据。缺少必要题意则明确澄清，不猜测。' } : context;
@@ -225,7 +239,10 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
   const unsubscribe = agent.subscribe(event => {
     if (event.type === 'message_update' && ['text_delta', 'thinking_delta', 'toolcall_delta'].includes(event.assistantMessageEvent.type)) {
       lastProgressAt = performance.now();
+      const first = firstTokenMs === undefined;
       firstTokenMs ??= Math.round(lastProgressAt - requestStarted);
+      progress?.progress(event.assistantMessageEvent.type !== 'thinking_delta' || visibleOutput);
+      if (first) diagnostic({event:'first_content',firstTokenMs});
       if (event.assistantMessageEvent.type === 'thinking_delta') thinkingBytes = Math.min(MAX_MODEL_STREAM_BYTES, thinkingBytes + new TextEncoder().encode(event.assistantMessageEvent.delta).length);
       if (event.assistantMessageEvent.type !== 'thinking_delta') { visibleOutput = true; clearThinkingTimer(); }
       else if (!thinkingTimerStarted && !visibleOutput && input.role === 'solver' && input.answerMode === 'brief' && override?.allowThinkingTakeover && !override.backup) {
@@ -237,12 +254,12 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
         }, MAX_DEVICE_BRIEF_THINKING_MS);
       }
     }
-    if (event.type === 'message_end' && event.message.role === 'assistant') clearThinkingTimer();
+    if (event.type === 'message_end' && event.message.role === 'assistant') { clearThinkingTimer(); progress?.stop(); }
     if (event.type === 'message_end' && event.message.role === 'assistant' && event.message.stopReason === 'toolUse') {
       diagnostic({ event: 'finish', ...timing(), textBytes: new TextEncoder().encode(event.message.content.filter(part => part.type === 'text').map(part => part.text).join('')).length, thinkingBytes: new TextEncoder().encode(event.message.content.filter(part => part.type === 'thinking').map(part => part.thinking).join('')).length, stopReason: 'toolUse', inputTokens: event.message.usage.input, outputTokens: event.message.usage.output });
     }
   });
-  const cancel = () => agent.abort(); controller.signal.addEventListener('abort', cancel, { once: true });
+  const cancel = () => { progress?.stop(); agent.abort(); }; controller.signal.addEventListener('abort', cancel, { once: true });
   try {
     const { image, materials, identity: _identity, useBackup: _useBackup, ...data } = input;
     // Decision: .agents/notes/implemented/agent/2026-10-26-act-material-source-isolation.md
@@ -339,7 +356,7 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
       }
     }
     throw new SolvePhaseError('MODEL_OUTPUT_INVALID');
-  } finally { unsubscribe(); clearThinkingTimer(); clearTimer(); signal.removeEventListener('abort', abort); controller.signal.removeEventListener('abort', cancel); agent.abort(); await agent.waitForIdle(); agent.reset(); }
+  } finally { unsubscribe(); progress?.stop(); clearThinkingTimer(); clearTimer(); signal.removeEventListener('abort', abort); controller.signal.removeEventListener('abort', cancel); agent.abort(); await agent.waitForIdle(); agent.reset(); }
 }
 export async function solveOnDevice(input: SolverInput, settingsValue: LocalSettings, keys: LocalCredentials, fetch: LocalFetch, signal: AbortSignal, onEvent: (event: PublicAgentEvent) => void, onDiagnostic: (entry: LocalDiagnostic) => void = () => {}, schedule: PhaseTimer = defaultTimer, lifecycle?: SolveLifecycle, prepareActViews?: (input: SolverInput, signal: AbortSignal) => Promise<NormalizedImage[]>, prepareReviewViews?: PrepareImageReviewViews) {
   const settings = LocalSettingsSchema.parse(settingsValue);

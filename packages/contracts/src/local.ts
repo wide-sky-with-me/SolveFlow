@@ -259,7 +259,7 @@ export const LocalFavoriteSchema = z.strictObject({ schemaVersion: z.literal(1),
 /** Diagnostic metadata only: no prompts, images, response bodies, credentials or thinking. */
 export const LocalDiagnosticSchema = z.strictObject({
   schemaVersion: z.literal(1), runId: z.string().min(1).max(128),
-  role: z.enum(['solver', 'verifier', 'backup', 'runtime']), event: z.enum(['request', 'response', 'finish', 'validation', 'failure', 'lifecycle', 'retry', 'tool', 'queue']),
+  role: z.enum(['solver', 'verifier', 'backup', 'runtime']), event: z.enum(['request', 'response', 'first_content', 'finish', 'validation', 'failure', 'lifecycle', 'retry', 'tool', 'queue']),
   attempt: z.number().int().min(0).max(32), elapsedMs: z.number().int().min(0).max(1_000_000),
   httpStatus: z.number().int().min(100).max(599).optional(),
   stopReason: z.enum(['stop', 'length', 'toolUse', 'pending', 'error', 'aborted', 'unknown']).optional(),
@@ -274,7 +274,7 @@ export const LocalDiagnosticSchema = z.strictObject({
   phaseMs: z.number().int().positive().max(1_000_000).optional(), imageCount: z.number().int().min(1).max(MAX_MATERIAL_IMAGES + 1 + MAX_IMAGE_REVIEW_REGIONS).optional(),
   streaming: z.boolean().optional(), responseFormat: z.enum(['sse', 'json']).optional(),
   model: ModelReferenceSchema.optional(), resourcePath: z.string().max(160).regex(/^\/skills\/[a-z]+\/(?:references\/)?[a-zA-Z.-]+\.md$/).optional(),
-  reason: z.enum(['http', 'upload_timeout', 'network', 'truncated', 'json', 'schema', 'output_limit', 'invalid_finish', 'background_start', 'started', 'completed', 'failed', 'cancelled', 'deadline', 'thinking_limit', 'storage', 'image_review']).optional(),
+  reason: z.enum(['http', 'upload_timeout', 'network', 'truncated', 'json', 'schema', 'output_limit', 'invalid_finish', 'background_start', 'started', 'completed', 'failed', 'cancelled', 'deadline', 'thinking_limit', 'first_content_timeout', 'stream_idle', 'storage', 'image_review']).optional(),
 });
 export type LocalDiagnostic = z.infer<typeof LocalDiagnosticSchema>;
 export const LocalDiagnosticsSchema = z.strictObject({ schemaVersion: z.literal(1), runId: z.string().min(1).max(128), entries: z.array(LocalDiagnosticSchema).max(MAX_LOCAL_DIAGNOSTICS) });

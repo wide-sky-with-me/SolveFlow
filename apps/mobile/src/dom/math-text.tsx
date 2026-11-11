@@ -37,7 +37,7 @@ function DisplayFormula({ html }: { html: string }) {
   }, [html]);
   return <div className="formula-shell"><div ref={viewport} className="math-block" tabIndex={0} aria-label="公式，可横向滚动"><div ref={content} className="formula-content" dangerouslySetInnerHTML={{ __html: html }} /></div>{overflow && <span className="formula-hint">左右滑动查看完整公式</span>}</div>;
 }
-export function MathBlock({ latex }: { latex: string }) { return <Formula latex={latex} />; }
+export const MathBlock = memo(function MathBlock({ latex }: { latex: string }) { return <Formula latex={latex} />; });
 export const MathText = memo(function MathText({ text, originalImageUrl, inlineMathCode = false, inlineDisplayStyle = false }: { text: string; originalImageUrl?: string | undefined; inlineMathCode?: boolean | undefined; inlineDisplayStyle?: boolean | undefined }) {
   const image = originalImageUrl && originalImageUrl.length <= 6 * 1024 * 1024 && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(originalImageUrl) ? originalImageUrl : undefined;
   // Stable component identities preserve loaded images and formula scroll state

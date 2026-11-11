@@ -23,6 +23,20 @@ test('one top-level manual stopwatch continues across pages and restores after r
   expect(posts).toBe(0); await page.screenshot({ path: info.outputPath('overall-stopwatch.png') });
 });
 
+test('foreground stopwatch catches up after a hidden page without background display updates', async ({ page }) => {
+  await page.clock.install();
+  await page.goto('/');
+  const timer = page.getByTestId('study-stopwatch'), time = timer.getByLabel('整体做题用时', {exact:true});
+  await timer.getByRole('button', {name:'开始计时',exact:true}).click();
+  await page.clock.runFor(2000); await expect(time).toHaveText('00:00:02');
+  await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', {configurable:true,get:()=> 'hidden'}); document.dispatchEvent(new Event('visibilitychange')); });
+  await page.clock.runFor(120_000); await expect(time).toHaveText('00:00:02');
+  await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', {configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); });
+  await expect(time).toHaveText('00:02:02');
+  await timer.getByRole('button', {name:'停止计时',exact:true}).click();
+  await page.clock.runFor(3000); await expect(time).toHaveText('00:02:02');
+});
+
 test('top stopwatch and profile hover stay contained at narrow and wide widths in both themes', async ({ page }, info) => {
   await page.goto('/'); await page.getByRole('tab', { name: '我的', exact: true }).click();
   for (const width of [320, 390, 1100, 1280, 1920]) {

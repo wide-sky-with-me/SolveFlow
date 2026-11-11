@@ -6,6 +6,7 @@ import type { Runtime } from '../runtime';
 import { clientError } from '@solveflow/client/presentation';
 import { Pressable, Text, View } from '../theme/primitives';
 import { Notice, colors } from './ui';
+import { displayClock } from './display-clock';
 
 function TimerControl({ label, children, disabled, primary = false, onPress }: { label: string; children: ReactNode; disabled: boolean; primary?: boolean; onPress: () => void }) {
   const [focused, setFocused] = useState(false);
@@ -30,7 +31,7 @@ export function StudyStopwatch({ runtime }: { runtime: Runtime }) {
     void runtime.repository.readOverallStudyTimer().then(value => { if (alive) { setTimer(value); setNow(Date.now()); setReady(true); } }).catch(cause => { if (alive) setError(clientError(cause)); });
     return () => { alive = false; };
   }, [runtime]);
-  useEffect(() => { if (!timer.startedAt) return; const handle = setInterval(() => setNow(Date.now()), 250); return () => clearInterval(handle); }, [timer.startedAt]);
+  useEffect(() => { if (timer.startedAt) return displayClock(() => setNow(Date.now())); }, [timer.startedAt]);
   async function change(reset = false) {
     if ((!ready && !reset) || busy) return;
     setBusy(true); setError(''); const current = Date.now();

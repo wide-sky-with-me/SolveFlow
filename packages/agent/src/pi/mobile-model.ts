@@ -3,7 +3,8 @@ import { MAX_MODEL_STREAM_BYTES, MAX_MODEL_JSON_BYTES } from '@solveflow/contrac
 import { resolveThinking, type LocalModelProfile, type LocalDiagnostic } from '@solveflow/contracts/local';
 import { SolvePhaseError } from '../orchestration/solve.js';
 import { nonStreamResponse } from './non-stream-response.js';
-export type LocalFetch = typeof globalThis.fetch;
+/** Trusted adapters with admission queues signal actual network dispatch. */
+export type LocalFetch = ((input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit, onDispatch?: () => void) => Promise<Response>) & { readonly defersDispatch?: boolean };
 /** Device effort ladder mapped to provider values; the UI offers exactly these three levels. */
 const THINKING_EFFORT = {
   'thinking-type': { low: 'low', medium: 'high', high: 'max' },

@@ -154,7 +154,11 @@ test('supplement success notice expires after real elapsed time and a fresh noti
   await info.attach('real-time-expiry', { contentType: 'application/json', body: timing });
   await selectFiles(page, 1); await assignRange(page, 1, '2');
   await page.getByRole('button', { name: '保存补图并自动重答', exact: true }).click();
-  await expect(notice).toBeVisible(); await page.getByRole('button', { name: '关闭提示', exact: true }).click();
+  await expect(notice).toBeVisible();
+  const dismiss = page.getByRole('button', { name: '关闭提示', exact: true });
+  const target = await dismiss.boundingBox();
+  expect(target?.width).toBeGreaterThanOrEqual(44); expect(target?.height).toBeGreaterThanOrEqual(44);
+  await dismiss.click();
   await expect(notice).toHaveCount(0);
   await expect.poll(() => completedRecipient(page, ids[1]!)).toBe('completed');
   expect(models.solves).toHaveLength(2); expect(models.verifications()).toBe(2); expect(models.unexpected()).toBe(0);

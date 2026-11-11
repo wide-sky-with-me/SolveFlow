@@ -14,7 +14,7 @@ export function Notice({ text, error = false, onDismiss }: { text: string; error
   return <View accessibilityRole={error ? 'alert' : onDismiss ? undefined : 'text'} accessibilityLiveRegion="polite" style={[s.notice, error && { backgroundColor: '#fff0ee' }, onDismiss && { flexDirection: 'row', alignItems: 'center', gap: 8 }]}>
     <Text style={{ color: error ? '#a33229' : colors.muted, lineHeight: 22, ...(onDismiss ? { flex: 1 } : {}) }}>{text}</Text>
     {onDismiss && <Pressable accessibilityRole="button" accessibilityLabel="关闭提示" hitSlop={6} onPress={onDismiss} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
-      style={{ width: 28, height: 28, alignItems: 'center', justifyContent: 'center', borderRadius: 6, borderWidth: 1, borderColor: focused ? colors.blue : 'transparent' }}><Text accessible={false} style={{ fontSize: 20, lineHeight: 24, color: error ? '#a33229' : colors.muted }}>×</Text></Pressable>}
+      style={{ width: 44, height: 44, flexShrink: 0, alignItems: 'center', justifyContent: 'center', borderRadius: 10, borderWidth: 1, borderColor: focused ? colors.blue : 'transparent' }}><Text accessible={false} style={{ fontSize: 20, lineHeight: 24, color: error ? '#a33229' : colors.muted }}>×</Text></Pressable>}
   </View>;
 }
 export function MenuLabel({ children }: { children: ReactNode }) {

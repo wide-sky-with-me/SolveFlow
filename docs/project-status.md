@@ -1,14 +1,14 @@
 # 发布状态与待办
 
-核对：2026-11-05（本轮补齐main图片源码，未部署）。试用中，未达生产条件；不同版本、设备和重复样本的成绩不累计。
+核对：2026-11-11。共享优化与文档整理，远程沿11/09发布记录；本轮未探活或部署。未达生产条件，成绩不跨版本、设备或样本累计。
 
 ## 本机与远程版本
 
 | 环境 | 最近确认的版本与范围 | 证据 |
 | --- | --- | --- |
 | 本机 Web 3100 | 保留10/29图片工作台构建，入口正常；本轮Mac发布未替换本机资源 | [工作台与草稿](postmortem/2026-10-29-ui-workbench-repair.md) |
-| 远程 Mac Web 3131 | 保留11/04发布`20261104-camera-175615`的记录；本轮未探活或部署，32/32与模型设置不改 | [源码恢复](postmortem/2026-11-05-main-camera-input.md)、[此前部署](postmortem/2026-11-02-main-mac-deployment.md) |
-| Android / iOS | 工作区0.1.82/build83，补齐原生取消信号；Android已在隔离模拟器验证插入、共享补图、多份PDF及系统保存/分享。iOS三项模拟器XCTest及真机目标编译通过，IPA未签名；真机与发行另验 | [模拟器与修复](postmortem/2026-10-30-android-emulator.md)、[前轮PDF](postmortem/2026-10-30-native-pdf.md) |
+| 远程 Mac Web 3131 | main`20261109-main-encoded-205650`，共享修复及静态压缩；两HTTPS入口、模型及32/32保留，跨网络完整交互仍未通过 | [11/09发布](postmortem/2026-11-09-main-mac-progress-release.md) |
+| Android / iOS | 工作区0.1.82/build83；Android隔离模拟器、iOS三项XCTest及真机目标编译已有验收；IPA未签名，真机与发行另验 | [模拟器与修复](postmortem/2026-10-30-android-emulator.md)、[前轮PDF](postmortem/2026-10-30-native-pdf.md) |
 
 本页汇总最近证据，不执行服务探活。启动、构建和更新步骤归[Web指南](cookbook/local-web.md)，历史报告按[问题导航](postmortem/README.md#按问题查报告)查找。
 
@@ -16,7 +16,7 @@
 
 | 范围 | 已有证据与限制 | 报告入口 |
 | --- | --- | --- |
-| 本地工作流与UI | 重试不新增失败空题，补图保留原题号，局部删除不阻塞其他批次；导入和旧编辑统一缩略图，单图保存失败保留裁剪。对应单元、隔离Web及实际PDF见各报告；未代表原生或真实模型验收 | [工作流](postmortem/2026-10-29-workflow-isolation-repair.md)、[图片工作台](postmortem/2026-10-29-ui-workbench-repair.md) |
+| 本地工作流与UI | 重试不新增失败空题，补图保留原题号，局部删除不阻塞其他批次；导入和旧编辑统一缩略图，单图保存失败保留裁剪。对应单元、隔离Web及实际PDF见各报告；未代表原生或真实模型验收 | [工作流](postmortem/2026-10-29-workflow-isolation-repair.md)、[图片工作台](postmortem/2026-10-29-ui-workbench-repair.md)、[共享修复](postmortem/2026-11-09-shared-progress-ui.md) |
 | 当前模型服务 | 答题/校验各32路合成短请求，80/80成功，无429或超时；未改本机并发偏好，不代表真实ACT题图或持续负载容量。备用接手仍属旧流程，同供应商不构成容灾 | [32路实测](postmortem/2026-10-29-model-concurrency-32.md)、[旧流程](postmortem/2026-10-10-model-service-stability.md) |
 | PDF导出 | 原生快速原文已接入多份错题数/备注、答案表、高亮、书签、补图和文件交接；Android/iOS模拟器实际PDF/ZIP通过。网页其他版式、源题长负载和Firefox/Safari分别验收 | [原生PDF](postmortem/2026-10-30-native-pdf.md)、[Web保存恢复](postmortem/2026-10-24-export-save-recovery.md)、[远程复核](postmortem/2026-10-29-mac-web-update.md) |
 | ACT识别与答题 | 最新四科实拍工作流与PDF已实测，仍有表格误读、材料/裁片核验疑点及偶发网络失败；校验通过或选项一致不等于完整转录和正确率 | [本轮实测](postmortem/2026-10-30-act-workflow-live.md)、[转录](postmortem/2026-10-23-act-source-capture.md)、[低质材料](postmortem/2026-10-26-act-material-diagnosis.md) |
@@ -27,7 +27,7 @@
 | iOS | 0.1.82/build83三项模拟器XCTest、SQLite和实际文件通过，含PDF、分享、相册/补图/裁剪、设置与横屏；真机目标Release编译通过，IPA未签名；真机、真实联网和发行未验 | [本轮模拟器](postmortem/2026-10-30-android-emulator.md)、[前轮原生PDF](postmortem/2026-10-30-native-pdf.md) |
 | 依赖与工程管理 | 34项依赖版本告警已消除，deepmerge本地补丁保留但原始审计仍失败；CI不放宽。文档分层和本地检查已有，远端CI及分支保护未完成 | [依赖修复](postmortem/2026-10-29-dependency-hardening.md)、[管理修正](postmortem/2026-10-04-project-practice.md) |
 
-main网页图片修复已恢复到本地，见[本次验收](postmortem/2026-11-05-main-camera-input.md)；当前Mac版本未重测，沿用原部署记录。
+main已同步首响应/停滞保护、前台秒表、公式复用、提示触控目标与静态文本压缩；共享边界见[双分支验收](postmortem/2026-11-09-shared-progress-ui.md)，本轮工作树恢复与提交前检查见[整理记录](postmortem/2026-11-11-branch-commit-check.md)。中心考试专用页面、事务和迁移未合入main。
 
 ## 待完成
 
