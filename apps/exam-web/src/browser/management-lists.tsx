@@ -3,12 +3,14 @@ import type { z } from 'zod';
 import { ExamAssignmentPageSchema, ExamChoicePageSchema, ExamProgressPageSchema, ExamTemplatePageSchema, ExamUserPageSchema, type ExamUser, type ExamTemplate } from '@solveflow/contracts/managed-exam';
 import { EXAM_LABELS } from '@solveflow/contracts/exam';
 import { Select, type SelectOption } from '@solveflow/web-ui/select';
+import { Icon } from '@solveflow/web-ui/icons';
 import { ErrorText, RefreshButton } from './components.js';
 import { StudentProgressTable } from './dashboard.js';
 import { RemoteSelect } from './remote-select.js';
 import { assignmentDisplay, formatExamWindow } from './exam-presentation.js';
 import './assignment-history.css';
 import { ListSearch, Pagination, pageUrl, useCanonicalPage, useListQuery, usePageResource } from './paging.js';
+import { FilterActions, useStagedFilters } from './list-filters.js';
 
 type Page<T>={items:T[];selected:T|null;total:number;page:number;pageSize:number;onlineTotal?:number};
 type Filter={key:string;label:string;options:SelectOption[]};
@@ -16,20 +18,22 @@ const roles={student:'学生',support:'老师 / 技术支持',manager:'场次管
 const states={active:'正常',disabled:'已停用',archived:'已归档'};
 
 function ListPanel<T>({schema,endpoint,label,search,filters=[],render,version=0,scene,initialScene='',actions,params={}}:{schema:z.ZodType<Page<T>>;endpoint:string;label:string;search:string;filters?:Filter[];render:(items:T[])=>ReactNode;version?:number;scene?:boolean;initialScene?:string;actions?:ReactNode;params?:Record<string,string>}) {
-    const list=useListQuery();
-    const resource=usePageResource(schema,pageUrl(endpoint,{...params,...list.filters,sittingId:list.filters.sittingId??(initialScene||undefined),page:list.page,pageSize:list.pageSize,q:list.q}));
+    const list=useListQuery(),query=useStagedFilters({q:'',sittingId:initialScene});
+    const resource=usePageResource(schema,pageUrl(endpoint,{...params,...query.applied,page:list.page,pageSize:list.pageSize}));
+    function apply(){query.apply();list.setPage(1);}
+    function reset(){query.reset();list.setPage(1);}
     useCanonicalPage(list.page,resource.data,list.setPage);
     useEffect(()=>{if(version)void resource.refresh(true);},[version]);
     return <section className="panel paged-panel" aria-label={label}>
-      <div className="list-toolbar"><ListSearch label={search} value={list.q} onSearch={list.setQ}/>{actions}{filters.map(filter=><Select key={filter.key} label={filter.label} value={list.filters[filter.key]??''} onChange={value=>list.setParam(filter.key,value)} options={filter.options}/>)}{scene&&<RemoteSelect label="具体考试" allLabel="全部考试" value={list.filters.sittingId??initialScene} onChange={value=>list.setParam('sittingId',value)} schema={ExamChoicePageSchema} endpoint="/admin/dashboard/sittings/page"/>}<RefreshButton busy={resource.refreshing} disabled={resource.loading} onRefresh={resource.refreshManually}/></div>
+      <div className="list-toolbar"><ListSearch label={search} value={query.draft.q??''} onDraftChange={value=>query.setField('q',value)} onSearch={apply}/>{filters.map(filter=><Select key={filter.key} label={filter.label} value={query.draft[filter.key]??''} onChange={value=>query.setField(filter.key,value)} options={filter.options}/>)}{scene&&<RemoteSelect label="具体考试" allLabel="全部考试" value={query.draft.sittingId??''} onChange={value=>query.setField('sittingId',value)} schema={ExamChoicePageSchema} endpoint="/admin/dashboard/sittings/page"/>}<FilterActions {...query} onApply={apply} onReset={reset}/><RefreshButton busy={resource.refreshing} disabled={resource.loading} onRefresh={resource.refreshManually}/>{actions&&<div className="list-actions">{actions}</div>}</div>
       <ErrorText error={resource.error}/>{resource.data?.onlineTotal!==undefined&&<div className="list-summary">{resource.data.onlineTotal} 位在线</div>}
       {!resource.data&&!resource.error&&<p className="empty">正在读取…</p>}{resource.data&&!resource.data.items.length&&<p className="empty">没有匹配记录</p>}{resource.data&&resource.data.items.length>0&&render(resource.data.items)}
       <Pagination label={label} data={resource.data} pendingPage={list} disabled={resource.loading&&!resource.data} onPage={list.setPage} onPageSize={list.setPageSize}/>
     </section>;
 }
 
-export function UserList({admin,onEdit,version}:{admin:boolean;onEdit:(user:ExamUser)=>void;version:number}) {
-    return <ListPanel schema={ExamUserPageSchema} endpoint="/admin/users/page" label="用户列表" search="搜索姓名或用户名" version={version} filters={[{key:'role',label:'身份',options:[{value:'',label:'全部身份'},...Object.entries(roles).map(([value,label])=>({value,label}))]},{key:'state',label:'用户状态',options:[{value:'',label:'全部状态'},...Object.entries(states).map(([value,label])=>({value,label}))]}]} render={items=><div className="table-wrap"><table><thead><tr><th>学生 / 用户</th><th>身份</th><th>状态</th><th>操作</th></tr></thead><tbody>{items.map(person=><tr key={person.id}><td><strong>{person.displayName}</strong><span className="table-sub">{person.username}</span></td><td>{person.roles.map(role=>roles[role]).join('、')}</td><td>{states[person.state]}</td><td>{admin&&person.state!=='archived'&&<button className="quiet" onClick={()=>onEdit(person)}>编辑</button>}</td></tr>)}</tbody></table></div>}/>;
+export function UserList({admin,onEdit,onCreate,version}:{admin:boolean;onEdit:(user:ExamUser)=>void;onCreate:()=>void;version:number}) {
+    return <ListPanel schema={ExamUserPageSchema} endpoint="/admin/users/page" label="用户列表" search="搜索姓名或用户名" version={version} actions={<button className="primary" onClick={onCreate}><Icon name="plus"/>新建用户</button>} filters={[{key:'role',label:'身份',options:[{value:'',label:'全部身份'},...Object.entries(roles).map(([value,label])=>({value,label}))]},{key:'state',label:'用户状态',options:[{value:'',label:'全部状态'},...Object.entries(states).map(([value,label])=>({value,label}))]}]} render={items=><div className="table-wrap"><table><thead><tr><th>学生 / 用户</th><th>身份</th><th>状态</th><th>操作</th></tr></thead><tbody>{items.map(person=><tr key={person.id}><td><strong>{person.displayName}</strong><span className="table-sub">{person.username}</span></td><td>{person.roles.map(role=>roles[role]).join('、')}</td><td>{states[person.state]}</td><td>{admin&&person.state!=='archived'&&<button className="quiet" onClick={()=>onEdit(person)}>编辑</button>}</td></tr>)}</tbody></table></div>}/>;
 }
 
 export function TrackingList({onWatch,initialScene=''}:{onWatch:(id:string)=>void;initialScene?:string}) {
@@ -40,6 +44,6 @@ export function AssignmentList({version,onWatch,onManage}:{version:number;onWatc
     return <ListPanel schema={ExamAssignmentPageSchema} endpoint="/admin/assignments/page" label="考试分配列表" params={{entryState:'1'}} search="搜索学生或考试" version={version} scene filters={[{key:'state',label:'分配状态',options:[{value:'',label:'全部状态'},{value:'available',label:'可进入'},{value:'upcoming',label:'待开始'},{value:'ended',label:'已结束'},{value:'expired',label:'已过期'},{value:'attention',label:'待处理'},{value:'revoked',label:'已撤回'}]}]} render={items=><div className="table-wrap"><table><thead><tr><th>学生</th><th>考试</th><th>时间</th><th>待处理</th><th>操作</th></tr></thead><tbody>{items.map(item=><tr key={item.id}><td>{item.studentName}</td><td>{item.title}<span className={'badge assignment-status feedback-tone-'+assignmentDisplay(item).tone}>{assignmentDisplay(item).label}</span></td><td>{formatExamWindow(item.opensAt,item.closesAt)}</td><td>{item.pendingReviewCount||'—'}</td><td><button className="quiet" disabled={!item.attemptId} onClick={()=>{if(item.attemptId)onWatch(item.attemptId);}}>查看</button>{onManage&&<button className="quiet" onClick={()=>onManage(item.sittingId)}>人员与错题配置</button>}</td></tr>)}</tbody></table></div>}/>;
 }
 
-export function TemplateList({version,onUse}:{version:number;onUse:(template:ExamTemplate)=>void}) {
-    return <ListPanel schema={ExamTemplatePageSchema} endpoint="/admin/templates/page" label="考试模板列表" search="搜索模板名称或标识" version={version} filters={[{key:'exam',label:'考试类型',options:[{value:'',label:'全部考试'},...Object.entries(EXAM_LABELS).map(([value,label])=>({value,label}))]}]} render={items=><div className="table-wrap"><table><thead><tr><th>模板</th><th>考试</th><th>版本</th><th>操作</th></tr></thead><tbody>{items.map(item=><tr key={item.id}><td>{item.title}<span className="table-sub">{item.code} · {item.modules.length} 个模块</span></td><td>{EXAM_LABELS[item.exam]}</td><td>{item.version}</td><td><button className="quiet" onClick={()=>onUse(item)}>新建场次</button></td></tr>)}</tbody></table></div>}/>;
+export function TemplateList({version,onUse,actions}:{version:number;onUse:(template:ExamTemplate)=>void;actions?:ReactNode}) {
+    return <ListPanel schema={ExamTemplatePageSchema} endpoint="/admin/templates/page" label="考试模板列表" search="搜索模板名称或标识" version={version} actions={actions} filters={[{key:'exam',label:'考试类型',options:[{value:'',label:'全部考试'},...Object.entries(EXAM_LABELS).map(([value,label])=>({value,label}))]}]} render={items=><div className="table-wrap"><table><thead><tr><th>模板</th><th>考试</th><th>版本</th><th>操作</th></tr></thead><tbody>{items.map(item=><tr key={item.id}><td>{item.title}<span className="table-sub">{item.code} · {item.modules.length} 个模块</span></td><td>{EXAM_LABELS[item.exam]}</td><td>{item.version}</td><td><button className="quiet" onClick={()=>onUse(item)}>新建场次</button></td></tr>)}</tbody></table></div>}/>;
 }

@@ -84,12 +84,17 @@ dialog.dialog-wide {
 }
 
 .review-heading {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 14px 24px;
   margin-bottom: 24px;
+  padding: 10px 0;
+  background: var(--surface);
 }
 
 .review-heading .section-head {
@@ -98,7 +103,7 @@ dialog.dialog-wide {
   margin: 0;
 }
 
-.review-heading .review-actions {
+.review-heading .review-mode-tabs {
   margin: 0;
 }
 
@@ -162,12 +167,22 @@ dialog.dialog-wide {
   margin-bottom: 0;
 }
 
-.review-response > details {
+.review-panel {
+  display: grid;
+  min-width: 0;
+  gap: 18px;
+}
+
+.review-panel[hidden] {
+  display: none;
+}
+
+.review-panel > details {
   margin: 0;
   border-top: 1px solid var(--line);
 }
 
-.review-response > details summary {
+.review-panel > details summary {
   padding-top: 14px;
 }
 
@@ -187,8 +202,23 @@ dialog.dialog-wide {
   padding: 14px 0;
 }
 
-.review-choice > div {
-  min-width: 0;
+.review-ai-actions {
+  margin: 0;
+  gap: 8px;
+}
+
+.review-draft-note {
+  margin: 0;
+  font-size: 13px;
+}
+
+.review-sent {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--sf-success-border);
+  border-radius: 12px;
+  color: var(--sf-success-ink);
+  background: var(--sf-success-bg);
 }
 
 @media (max-width: 999px) {
@@ -230,10 +260,11 @@ dialog.dialog-wide {
     margin-bottom: 18px;
     gap: 12px;
   }
-  .review-heading .review-actions {
+  .review-heading .review-mode-tabs {
     width: 100%;
   }
-  .review-heading .review-actions button {
+  .review-heading .review-mode-tabs button {
+    flex: 1;
     padding: 10px 8px;
     font-size: 14px;
     white-space: nowrap;
@@ -247,10 +278,12 @@ dialog.dialog-wide {
   .review-current-answer .badge {
     white-space: normal;
   }
+  .review-choices {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .review-choice {
     padding: 10px;
     gap: 8px;
-    grid-template-columns: 18px 18px minmax(0, 1fr);
   }
 }
 

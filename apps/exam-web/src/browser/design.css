@@ -190,6 +190,11 @@ dialog::backdrop {
   box-shadow: var(--ui-overlay-shadow);
 }
 
+/* A currently operated menu must stay above the persistent reminder (12). */
+.select-control.is-open {
+  z-index: 14;
+}
+
 .teacher-attention-heading>.icon, .account-trigger>.icon, .select-trigger>.icon:last-child {
   transition: transform var(--ui-fast) var(--ui-ease);
 }

@@ -76,7 +76,7 @@ it('retries an interrupted stream without replaying successful tools or sending 
 it('bounds each phase to one retry and permits only one configured verifier takeover', async () => {
   const windows: number[] = []; let calls = 0;
   const result = await solveOnDevice({ ...input, verificationMode: 'manual' }, { ...settings, backup: null }, { ...keys, backup: null }, async () => { calls++; return new Response('{}', { status: 503 }); }, new AbortController().signal, () => {}, () => {}, (_callback, ms) => { windows.push(ms); return () => {}; });
-  expect(result).toMatchObject({ status: 'failed', error: { code: 'MODEL_UNAVAILABLE' } }); expect(calls).toBe(4); expect(windows).toEqual([300_000, 300_000]);
+  expect(result).toMatchObject({ status: 'failed', error: { code: 'MODEL_UNAVAILABLE' } }); expect(calls).toBe(4); expect(windows).toEqual([300_000, 90_000, 90_000, 300_000]);
 });
 it('uses at most the two existing verifier dispatches even after format repair and stream failure', async () => {
   let checks = 0;

@@ -132,7 +132,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
     it('keeps legacy migrations intact and resume does not duplicate slots', async () => {
         expect((await startAttempt(pool(), student, assignmentId)).id).toBe(attemptId);
         expect((await snapshot(pool(), student, attemptId)).slots).toHaveLength(5);
-        expect((await pool().query('SELECT count(*) FROM solveflow_migrations')).rows[0]?.count).toBe('11');
+        expect((await pool().query('SELECT count(*) FROM solveflow_migrations')).rows[0]?.count).toBe('12');
         expect((await pool().query('SELECT e.id,e.title,s.event_id FROM exam_app.exam_sittings s JOIN exam_app.exam_events e ON e.id=s.event_id WHERE s.id=$1', [sittingId])).rows[0]).toMatchObject({ id: sittingId, event_id: sittingId, title: '合成考试' });
         expect((await pool().query('SELECT count(*) FROM solveflow_migrations WHERE version<=7')).rows[0]?.count).toBe('7');
         expect((await pool().query('SELECT id FROM owners WHERE id=$1', [legacyOwnerId])).rowCount).toBe(1);
@@ -378,6 +378,61 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
         const phases = (await pool().query('SELECT phase FROM exam_app.model_call_attempts WHERE run_id=$1 ORDER BY phase', [job.id])).rows.map(r => r.phase);
         expect(phases).toEqual(['solver', 'verifier']);
         expect((await pool().query('SELECT count(*) FROM exam_app.execution_permits WHERE holder_call_id IS NOT NULL')).rows[0]?.count).toBe('0');
+    });
+    it.each(['first_content_timeout', 'stream_idle', 'http_error'] as const)('progress: audits primary failure and releases permits after takeover: %s', async fault => {
+        const queued = await queuedReviewSlot('progress_' + fault);
+        const job = await claimJob(pool());
+        if (!job || job.id !== queued.run.runId) throw new Error('JOB_MISSING');
+        const profile = (model: string) => ({ provider: 'fixture', baseURL: 'https://fixture.invalid/v1', model, api: 'openai-completions', contextWindow: 32768, maxTokens: 8192, maxTokensField: 'max_tokens' });
+        const models = WebStoredModelsSchema.parse({ schemaVersion: 1, models: { solver: profile('primary'), verifier: profile('verifier'), backup: profile('backup') }, keys: { solver: 'synthetic-local-only', verifier: 'synthetic-local-only', backup: 'synthetic-local-only' } });
+        const calls: string[] = [];
+        const frame = (content: string, finish: string | null = null) => 'data: ' + JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: { content }, finish_reason: finish }] }) + '\n\n';
+        const network: typeof fetch = async (_url, init) => {
+            const { model } = z.object({ model: z.string() }).parse(JSON.parse(String(init?.body)));
+            calls.push(model);
+            if (model === 'primary') {
+                if (fault === 'http_error') return new Response('synthetic provider unavailable', {status: 503});
+                return new Response(new ReadableStream<Uint8Array>({ start(stream) {
+                    stream.enqueue(new TextEncoder().encode(fault === 'stream_idle' ? frame('{"schemaVersion":') : ': keepalive\n\n'));
+                    init?.signal?.addEventListener('abort', () => stream.error(new Error('PRIVATE_STREAM_CANARY')), {once: true});
+                } }), { headers: {'content-type': 'text/event-stream'} });
+            }
+            const base = outcome(); if (!('candidate' in base)) throw new Error('CANDIDATE_MISSING');
+            const value = model === 'verifier' ? { schemaVersion: 1, verdict: 'pass', checked: ['transcription', 'logic'], issues: [], independentChoices: [{selectedOptions: ['B'], decisiveEvidence: 'Two plus two equals four, option B.'}] } : base.candidate;
+            return new Response(frame(JSON.stringify(value)) + frame('', 'stop') + 'data: [DONE]\n\n', {headers: {'content-type': 'text/event-stream'}});
+        };
+        const solve = modelSolver(pool(), storage, models, {solver: 2, verifier: 2, daily: 1000}, network, (callback, ms) => {
+            const timer = ms === (fault === 'stream_idle' ? 60_000 : 90_000) ? setTimeout(callback, 10) : null;
+            return () => { if (timer !== null) clearTimeout(timer); };
+        });
+        const result = await solve(job, AbortSignal.timeout(5000), () => {});
+        expect(result).toMatchObject({status: 'completed', verified: true});
+        expect(calls).toEqual([...(fault === 'http_error' ? ['primary', 'primary'] : ['primary']), 'backup', 'verifier']);
+        const rows = z.array(z.object({id:z.string(),model:z.string(),status:z.string(),error_code:z.string().nullable()})).parse((await pool().query('SELECT id,model_name AS model,status,error_code FROM exam_app.model_call_attempts WHERE run_id=$1 ORDER BY started_at', [job.id])).rows);
+        const primaryError = {model: 'primary', status: 'failed', error: fault === 'http_error' ? 'HTTP_503' : fault === 'stream_idle' ? 'MODEL_STREAM_IDLE_TIMEOUT' : 'MODEL_FIRST_CONTENT_TIMEOUT'};
+        expect(rows.map(row => ({model: row.model, status: row.status, error: row.error_code}))).toEqual([
+            primaryError, ...(fault === 'http_error' ? [primaryError] : []),
+            {model: 'backup', status: 'completed', error: null}, {model: 'verifier', status: 'completed', error: null}
+        ]);
+        const primary = rows[0]; if (!primary) throw new Error('PRIMARY_CALL_MISSING');
+        await settleCall(pool(), primary.id, true);
+        expect((await pool().query('SELECT error_code FROM exam_app.model_call_attempts WHERE id=$1', [primary.id])).rows[0]?.error_code).toBe(primary.error_code);
+        expect((await pool().query('SELECT count(*) FROM exam_app.execution_permits WHERE holder_call_id IS NOT NULL')).rows[0]?.count).toBe('0');
+        await finishJob(pool(), job, result, null);
+    });
+    it('progress: phase expiry aborts permit wait without dispatching or charging a model call', async () => {
+        const queued = await queuedReviewSlot('progress_permit_wait');
+        const job = await claimJob(pool()); if (!job || job.id !== queued.run.runId) throw new Error('JOB_MISSING');
+        const profile = {provider:'fixture',baseURL:'https://fixture.invalid/v1',model:'fixture',api:'openai-completions',contextWindow:32768,maxTokens:8192,maxTokensField:'max_tokens'};
+        const models = WebStoredModelsSchema.parse({schemaVersion:1,models:{solver:profile,verifier:profile,backup:null},keys:{solver:'synthetic-only',verifier:'synthetic-only',backup:null}});
+        const windows: number[] = []; let calls = 0;
+        const solve = modelSolver(pool(), storage, models, {solver:0,verifier:0,daily:1000}, async () => {calls++; throw new Error('UNEXPECTED_NETWORK');}, (callback,ms) => {
+            windows.push(ms);const timer=setTimeout(callback,10);return()=>clearTimeout(timer);
+        });
+        const result = await solve(job, AbortSignal.timeout(5000), () => {});
+        expect(result.status).toBe('failed'); expect(calls).toBe(0); expect(windows).not.toContain(90_000);
+        expect((await pool().query('SELECT count(*) FROM exam_app.model_call_attempts WHERE run_id=$1', [job.id])).rows[0]?.count).toBe('0');
+        await finishJob(pool(), job, result, null);
     });
     it('persists accumulating red incidents across next question, reload, retries, and scoped teacher confirmation', async () => {
         const teacher = await createUser(pool(), admin, { username: 'teacher_' + randomUUID().slice(0, 8), displayName: '负责老师', password: 'synthetic-password-123', roles: ['support'] }, password);
@@ -735,7 +790,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             const monitor = managerPage.getByRole('dialog');
             await monitor.getByRole('region', { name: '待处理核验问题' }).locator('summary').click();
             await monitor.getByRole('region', { name: '待处理核验问题' }).locator('.alert-links button').first().click();
-            await monitor.getByRole('button', { name: '手动作答', exact: true }).click();
+            await monitor.getByRole('tab', { name: '手动作答', exact: true }).click();
             await monitor.getByLabel('处理意见', { exact: true }).fill('核对原图，正确答案为B。');
             await managerPage.screenshot({ path: join(screens, 'navigation-teacher-review.png'), fullPage: true });
             await monitor.getByRole('button', { name: '保存并通知学生', exact: true }).click();
@@ -748,6 +803,8 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await adminNavigate(managerPage,'考试安排');
             await managerPage.setViewportSize({ width: 390, height: 844 });
             await managerPage.getByRole('tab',{name:'考试模板',exact:true}).click();
+            await managerPage.getByRole('button', { name: '选择考试模板', exact: true }).waitFor();
+            await managerPage.screenshot({ path: join(screens, 'template-toolbar-mobile.png'), fullPage: true, animations: 'disabled' });
             await managerPage.getByRole('button', { name: '选择考试模板', exact: true }).click();
             const picker = managerPage.getByRole('dialog');
             await picker.getByRole('combobox', { name: '考试及版本', exact: true }).click();
@@ -764,6 +821,11 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await picker.getByRole('button', { name: '添加模板', exact: true }).click();
             await picker.waitFor({ state: 'hidden' });
             await adminNavigate(managerPage,'用户管理');
+            await managerPage.getByRole('region', { name: '用户列表', exact: true }).getByRole('table').waitFor();
+            await managerPage.screenshot({ path: join(screens, 'user-toolbar-mobile.png'), fullPage: true, animations: 'disabled' });
+            await managerPage.setViewportSize({ width: 1440, height: 1000 });
+            await managerPage.screenshot({ path: join(screens, 'user-toolbar-desktop.png'), fullPage: true, animations: 'disabled' });
+            await managerPage.setViewportSize({ width: 390, height: 844 });
             await managerPage.getByRole('button', { name: '新建用户' }).click();
             await managerPage.getByLabel('姓名', { exact: true }).fill('界面同学');
             await managerPage.getByLabel('用户名', { exact: true }).fill('ui_student');
@@ -1104,9 +1166,9 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             const teacher=await signedIn('test_admin',1440,1000);
             await teacher.locator('.student-row').filter({hasText:child.displayName}).click();
             const dialog=teacher.getByRole('dialog'); await dialog.getByRole('region',{name:'待处理核验问题'}).locator('summary').click(); await dialog.locator('.alert-links button').filter({hasText:'第1题'}).click();
-            await dialog.getByRole('button',{name:'手动作答',exact:true}).click();
+            await dialog.getByRole('tab',{name:'手动作答',exact:true}).click();
             await dialog.getByRole('radio',{name:'C',exact:true}).check();
-            expect(await dialog.locator('.review-choice.selected').innerText()).toContain('5'); expect(await dialog.getByRole('textbox',{name:'确认答案',exact:true}).count()).toBe(0);
+            expect(await dialog.locator('.review-choice.selected').innerText()).toBe('C'); expect(await dialog.getByRole('textbox',{name:'确认答案',exact:true}).count()).toBe(0);
             await dialog.getByLabel('处理意见',{exact:true}).fill('合成界面回归：检查选项与答案一致。');
             await teacher.screenshot({path:join(screens,'manual-choice-desktop.png'),animations:'disabled'});
             await teacher.setViewportSize({width:390,height:844}); await teacher.emulateMedia({colorScheme:'dark'});
@@ -1296,13 +1358,15 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             expect(await queue.locator('.issue-row').count()).toBe(2);
             await queue.getByRole('combobox', { name: '问题类型', exact: true }).click();
             await staff.getByRole('option', { name: '核验未通过', exact: true }).click();
+            await queue.getByRole('button', { name: '查询', exact: true }).click();
             await queue.getByText('暂无待处理题', { exact: true }).waitFor();
             await queue.getByRole('combobox', { name: '问题类型', exact: true }).click();
             await staff.getByRole('option', { name: '全部问题', exact: true }).click();
+            await queue.getByRole('button', { name: '查询', exact: true }).click();
             await queue.getByText('2 题', { exact: true }).waitFor();
             await staff.screenshot({ path: join(screens, 'teacher-queue-desktop.png'), animations: 'disabled' });
             await queue.locator('.issue-row').filter({ hasText: '第1题' }).click();
-            const monitor = staff.getByRole('dialog'); await monitor.getByRole('button', { name: '手动作答', exact: true }).click();
+            const monitor = staff.getByRole('dialog'); await monitor.getByRole('tab', { name: '手动作答', exact: true }).click();
             await monitor.getByRole('textbox', { name: '确认答案', exact: true }).fill('B. 4');
             await monitor.getByRole('textbox', { name: '处理意见', exact: true }).fill('检查原图后确认答案为B。');
             await staff.emulateMedia({ colorScheme: 'dark' }); await staff.setViewportSize({ width: 390, height: 844 });
@@ -1642,6 +1706,8 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
         try {
             const staff = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
             const pupil = await browser.newPage({ viewport: { width: 390, height: 844 } });
+            let answerRequests = 0;
+            staff.on('request', request => { if (request.method() === 'POST' && request.url().endsWith('/run')) answerRequests++; });
             for (const [page, username] of [[staff, teacher.username], [pupil, child.username]] as const) {
                 page.on('pageerror', error => errors.push(error.message));
                 await page.goto(local); await page.getByLabel('用户名', { exact: true }).fill(username); await page.getByLabel('密码', { exact: true }).fill('synthetic-password-123'); await page.getByRole('button', { name: '登录', exact: true }).click();
@@ -1651,16 +1717,44 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             const dialog = staff.getByRole('dialog');
             const nav = dialog.getByRole('region', { name: '题目导航', exact: true }); await nav.waitFor();
             await nav.locator('section').first().getByRole('button', { name: /第1题$/, exact: false }).click();
-            await dialog.getByRole('button', { name: 'AI 答题', exact: true }).waitFor();
-            expect(await dialog.getByRole('button', { name: 'AI 答题', exact: true }).isEnabled()).toBe(true);
-            await dialog.getByRole('button', { name: '手动作答', exact: true }).click();
+            await dialog.getByRole('button', { name: '开始 AI 答题', exact: true }).waitFor();
+            expect(await dialog.getByRole('button', { name: '开始 AI 答题', exact: true }).isEnabled()).toBe(true);
+            const modes = dialog.getByRole('tablist', { name: '题目处理', exact: true });
+            expect(await modes.getByRole('tab').count()).toBe(3);
+            const leftQuestion = dialog.getByRole('region', { name: '题目与原图', exact: true });
+            const questionText = await leftQuestion.innerText();
+            const imageSource = await leftQuestion.locator('img').first().getAttribute('src');
+            await modes.getByRole('tab', { name: 'AI 答题', exact: true }).focus();
+            await staff.keyboard.press('ArrowRight');
+            expect(await modes.getByRole('tab', { name: '手动作答', exact: true }).evaluate(el => el === document.activeElement)).toBe(true);
+            expect(await modes.getByRole('tab', { name: 'AI 答题', exact: true }).getAttribute('aria-selected')).toBe('true');
+            await staff.keyboard.press('Enter');
             expect(await dialog.locator('.review-choice').count()).toBe(4);
-            expect(await dialog.getByRole('radio', { name: 'A', exact: true }).evaluate(el => el === document.activeElement)).toBe(true);
+            expect(await dialog.getByRole('tab', { name: '手动作答', exact: true }).evaluate(el => el === document.activeElement)).toBe(true);
+            expect(await dialog.locator('.review-question .option').count()).toBe(4);
             expect(await dialog.getByRole('button', { name: '保存并通知学生', exact: true }).isDisabled()).toBe(true);
-            expect(await dialog.locator('.review-choice').filter({ has: staff.getByRole('radio', { name: 'C', exact: true }) }).innerText()).toContain('5');
+            expect(await dialog.locator('.review-choice').filter({ has: staff.getByRole('radio', { name: 'C', exact: true }) }).innerText()).toBe('C');
+            expect(await dialog.locator('.review-question .option').filter({ hasText: '5' }).count()).toBe(1);
             await dialog.getByRole('radio', { name: 'C', exact: true }).check();
-            expect(await dialog.locator('.review-choice.selected').innerText()).toContain('5'); expect(await dialog.getByRole('textbox', { name: '确认答案', exact: true }).count()).toBe(0);
+            expect(await dialog.locator('.review-choice.selected').innerText()).toBe('C'); expect(await dialog.getByRole('textbox', { name: '确认答案', exact: true }).count()).toBe(0);
             await dialog.getByLabel('处理意见', { exact: true }).fill('合成界面测试：验证老师选项能同步，不评估数学正确率。');
+            await modes.getByRole('tab', { name: '发消息', exact: true }).click();
+            const composer = dialog.getByRole('tabpanel', { name: '发消息', exact: true });
+            await composer.getByLabel('消息内容', { exact: true }).fill('仅用于验证模式切换保留草稿。');
+            expect(await staff.getByRole('dialog').count()).toBe(1);
+            expect(await leftQuestion.innerText()).toBe(questionText);
+            expect(await leftQuestion.locator('img').first().getAttribute('src')).toBe(imageSource);
+            await staff.screenshot({ path: join(screens, 'teacher-message-desktop.png'), animations: 'disabled' });
+            await modes.getByRole('tab', { name: 'AI 答题', exact: true }).click();
+            expect(await dialog.getByRole('button', { name: '开始 AI 答题', exact: true }).isDisabled()).toBe(true);
+            expect(answerRequests).toBe(0);
+            expect(await leftQuestion.locator('.option').count()).toBe(4);
+            await modes.getByRole('tab', { name: '发消息', exact: true }).click();
+            expect(await composer.getByLabel('消息内容', { exact: true }).inputValue()).toBe('仅用于验证模式切换保留草稿。');
+            await composer.getByRole('button', { name: '取消', exact: true }).click();
+            await modes.getByRole('tab', { name: '手动作答', exact: true }).click();
+            expect(await dialog.getByRole('radio', { name: 'C', exact: true }).isChecked()).toBe(true);
+            expect(await dialog.getByLabel('处理意见', { exact: true }).inputValue()).toBe('合成界面测试：验证老师选项能同步，不评估数学正确率。');
             await dialog.locator('.review-choices').scrollIntoViewIfNeeded();
             await staff.screenshot({ path: join(screens, 'teacher-choice-desktop.png'), animations: 'disabled' });
             await staff.setViewportSize({ width: 390, height: 844 }); await staff.emulateMedia({ colorScheme: 'dark' });
@@ -1673,27 +1767,27 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             expect((await snapshot(pool(), child, attempt.id)).resolutions).toHaveLength(0);
             await pupil.screenshot({ path: join(screens, 'student-teacher-answer.png'), animations: 'disabled' });
             await expect.poll(() => dialog.getByRole('button', { name: '重新核验', exact: true }).isDisabled()).toBe(true);
-            await dialog.getByRole('button', { name: '手动作答', exact: true }).click();
+            await dialog.getByRole('tab', { name: '手动作答', exact: true }).click();
             expect(await dialog.getByRole('radio', { name: 'C', exact: true }).isChecked()).toBe(true);
             await dialog.getByRole('button', { name: '取消', exact: true }).click();
-            await dialog.getByRole('button', { name: 'AI 答题', exact: true }).click();
+            await dialog.getByRole('button', { name: '开始 AI 答题', exact: true }).click();
             await dialog.locator('.review-detail .badge').filter({ hasText: '排队中' }).waitFor({ timeout: 8000 });
-            expect(await dialog.getByRole('button', { name: 'AI 答题', exact: true }).isDisabled()).toBe(true);
+            expect(await dialog.getByRole('button', { name: '开始 AI 答题', exact: true }).isDisabled()).toBe(true);
             const job = await claimJob(pool()); if (!job || job.slotId !== first.id) throw new Error('WRONG_JOB');
             await finishJob(pool(), job, pass, null);
             await pupil.locator('.answer-card').getByText('B. 4', { exact: true }).waitFor({ timeout: 8000 });
             await pupil.locator('.answer-card').getByText('AI 已核验', { exact: true }).waitFor();
-            await expect.poll(() => dialog.getByRole('button', { name: 'AI 答题', exact: true }).isEnabled()).toBe(true);
+            await expect.poll(() => dialog.getByRole('button', { name: '开始 AI 答题', exact: true }).isEnabled()).toBe(true);
             await staff.setViewportSize({ width: 1440, height: 1000 }); await staff.emulateMedia({ colorScheme: 'light' });
             await nav.locator('section').first().getByRole('button', { name: /第2题$/ }).click();
             await dialog.getByRole('heading', { name: '第2题', exact: true }).waitFor();
-            await dialog.getByRole('button', { name: '手动作答', exact: true }).click();
+            await dialog.getByRole('tab', { name: '手动作答', exact: true }).click();
             expect(await dialog.getByRole('checkbox', { name: 'B', exact: true }).isChecked()).toBe(true);
             expect(await dialog.getByRole('checkbox', { name: 'D', exact: true }).isChecked()).toBe(true);
             await dialog.getByRole('checkbox', { name: 'D', exact: true }).uncheck();
-            expect(await dialog.locator('.review-choice.selected').allTextContents()).toEqual([expect.stringContaining('4')]);
+            expect(await dialog.locator('.review-choice.selected').allTextContents()).toEqual(['B']);
             await dialog.getByRole('checkbox', { name: 'D', exact: true }).check();
-            expect(await dialog.locator('.review-choice.selected').allTextContents()).toEqual([expect.stringContaining('4'),expect.stringContaining('6')]);
+            expect(await dialog.locator('.review-choice.selected').allTextContents()).toEqual(['B','D']);
             await dialog.getByLabel('处理意见', { exact: true }).fill('确认两个偶数选项。');
             await dialog.locator('.review-choices').scrollIntoViewIfNeeded();
             await staff.screenshot({ path: join(screens, 'teacher-multiple-choice.png'), animations: 'disabled' });
@@ -1704,14 +1798,14 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await expect.poll(async () => (await slotDetail(pool(), child, second.id)).slot.presentation?.selectedOptions).toEqual(['B', 'D']);
             await nav.locator('section').first().getByRole('button', { name: /第3题$/ }).click();
             await dialog.getByRole('heading', { name: '第3题', exact: true }).waitFor();
-            expect(await dialog.getByRole('button', { name: 'AI 答题', exact: true }).count()).toBe(0);
-            expect(await dialog.getByRole('button', { name: '手动作答', exact: true }).count()).toBe(0);
+            expect(await dialog.getByRole('button', { name: '开始 AI 答题', exact: true }).count()).toBe(0);
+            expect(await dialog.getByRole('tab', { name: '手动作答', exact: true }).count()).toBe(0);
             const third = snap.slots[2]; if (!third) throw new Error('NO_SLOT');
             await submit(pool(), child, third.id, { requestId: randomUUID(), expectedRevision: 0, kind: 'initial', assetIds: [await asset(third.id, child)] });
             const incomplete = await claimJob(pool()); if (!incomplete || incomplete.slotId !== third.id) throw new Error('WRONG_JOB');
             await finishJob(pool(), incomplete, SolveOutcomeSchema.parse({ schemaVersion: 1, status: 'needs_clarification', verified: false, candidate: { schemaVersion: 1, kind: 'clarification', problem: { text: 'What is 2 + 2?', subject: 'math', uncertainties: ['未拍到完整选项'], response: { type: 'single-choice' }, options: [{ label: 'A', text: '3' }], optionsComplete: false }, answer: null, steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: ['请补充选项。'] } }), null);
             await dialog.locator('.review-detail .badge').filter({ hasText: '需要补图' }).waitFor({ timeout: 8000 });
-            await dialog.getByRole('button', { name: '手动作答', exact: true }).click();
+            await dialog.getByRole('tab', { name: '手动作答', exact: true }).click();
             expect(await dialog.getByRole('radio').count()).toBe(0);
             const written = dialog.getByRole('textbox', { name: '确认答案', exact: true });
             expect(await written.getAttribute('readonly')).toBeNull();
@@ -2043,7 +2137,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await page.setViewportSize({width:1440,height:1000});await adminNavigate(page,'考试安排');await page.getByRole('button',{name:'新建场次',exact:true}).click();const dialog=page.getByRole('dialog');
             const eventTitle='选择器场次 '+engine;await dialog.getByLabel('场次名称',{exact:true}).fill(eventTitle);await dialog.getByRole('button',{name:'保存场次',exact:true}).click();await page.getByRole('article',{name:eventTitle,exact:true}).getByRole('button',{name:'查看考试',exact:true}).click();await page.getByRole('button',{name:'新建具体考试',exact:true}).click();
             await dialog.getByRole('combobox',{name:'学生',exact:true}).click();const studentSearch=dialog.getByRole('searchbox',{name:'搜索学生',exact:true});await studentSearch.fill('分页学生 620');await studentSearch.press('Enter');await dialog.getByRole('option',{name:/分页学生 620/}).click();expect(await dialog.locator('select[name=studentIds] option:checked').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('value')))).toEqual([fixture.lastId]);await page.keyboard.press('Escape');
-            await dialog.getByRole('combobox',{name:'负责老师',exact:true}).click();const teachers=dialog.locator('.select-options');await expect.poll(()=>teachers.getByRole('option').count()).toBe(20);await teachers.getByRole('option').first().click();await teachers.getByRole('button',{name:'下一页',exact:true}).click();await expect.poll(()=>teachers.locator('.page-position').innerText()).toContain('第 2');await teachers.getByRole('option').first().click();expect(await dialog.locator('select[name=supportIds] option:checked').count()).toBe(2);await page.keyboard.press('Escape');
+            await dialog.getByRole('combobox',{name:'负责老师',exact:true}).click();const teachers=dialog.locator('.select-options');await expect.poll(()=>teachers.getByRole('option').count()).toBe(20);await teachers.getByRole('option').first().click();await teachers.getByRole('button',{name:'下一页',exact:true}).click();await expect.poll(()=>teachers.locator('.page-position').innerText()).toContain('第 2');await teachers.getByRole('option').first().click();expect(await dialog.locator('select[name=supportIds] option:checked').count()).toBe(2);await expect.poll(()=>dialog.getByRole('combobox',{name:'负责老师',exact:true}).innerText()).toContain('已选 2 / 32');await page.keyboard.press('Escape');
             await page.screenshot({path:join(screens,'assignment-selector-'+engine+'.png'),animations:'disabled'});await dialog.getByRole('button',{name:'取消',exact:true}).click();
             await page.getByRole('tab',{name:'考试模板',exact:true}).click();const templatesPanel=page.getByRole('region',{name:'考试模板列表',exact:true}),templateSearch=templatesPanel.getByRole('searchbox',{name:'搜索模板名称或标识'});await templateSearch.fill('分页模板 125');await templateSearch.press('Enter');await templatesPanel.getByRole('button',{name:'新建场次',exact:true}).click();await page.getByRole('dialog').getByRole('combobox',{name:'考试模板',exact:true}).getByText('分页模板 125 · 第1版',{exact:true}).waitFor();await page.getByRole('dialog').getByRole('button',{name:'取消',exact:true}).click();
             await page.getByRole('button',{name:'退出登录',exact:true}).click();await page.getByLabel('用户名',{exact:true}).fill('paging_user_1');await page.getByLabel('密码',{exact:true}).fill('synthetic-password-123');await page.getByRole('button',{name:'登录',exact:true}).click();
@@ -2106,7 +2200,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             const job=await claimJob(pool());if(!job||job.slotId!==slot.id)throw new Error('HTTP_TRIAL_JOB_MISSING');await finishJob(pool(),job,null,'SYNTHETIC_FAILURE');
             await studentPage.getByRole('button',{name:'总览',exact:true}).click();await studentPage.getByRole('dialog',{name:'题目总览',exact:true}).getByRole('button',{name:'第2题',exact:true}).click();await studentPage.getByRole('button',{name:'拍摄第2题',exact:true}).waitFor();
             const teacherPage=await client(teacher.username);await teacherPage.getByRole('navigation',{name:'管理导航'}).getByRole('button',{name:'实时跟踪',exact:true}).click();await teacherPage.getByRole('button',{name:'查看',exact:true}).click();const monitor=teacherPage.getByRole('dialog').filter({has:teacherPage.locator('.monitor-tools')});
-            await expect.poll(()=>monitor.innerText()).toContain('第2题');await monitor.getByRole('region',{name:'题目导航',exact:true}).getByRole('button',{name:'模块一 · 第1题',exact:true}).click();await monitor.getByRole('button',{name:'手动作答',exact:true}).click();await monitor.getByLabel('确认答案',{exact:true}).fill('4');await monitor.getByLabel('处理意见',{exact:true}).fill('合成题图人工核对，答案为4。');await monitor.getByRole('button',{name:'保存并通知学生',exact:true}).click();
+            await expect.poll(()=>monitor.innerText()).toContain('第2题');await monitor.getByRole('region',{name:'题目导航',exact:true}).getByRole('button',{name:'模块一 · 第1题',exact:true}).click();await monitor.getByRole('tab',{name:'手动作答',exact:true}).click();await monitor.getByLabel('确认答案',{exact:true}).fill('4');await monitor.getByLabel('处理意见',{exact:true}).fill('合成题图人工核对，答案为4。');await monitor.getByRole('button',{name:'保存并通知学生',exact:true}).click();
             await studentPage.getByRole('dialog',{name:'答案已更新',exact:true}).waitFor({timeout:10000});expect((await slotDetail(pool(),child,slot.id)).slot.presentation?.humanConfirmed).toBe(true);
             const aliasPage=await client(child.username,true,domainOrigin);await aliasPage.getByRole('dialog',{name:'答案已更新',exact:true}).waitFor();expect((await aliasPage.context().cookies(domainOrigin)).some(c=>c.name==='solveflow_exam_http_trial'&&!c.secure)).toBe(true);
             const teacherCookie=(await teacherPage.context().cookies(publicOrigin)).find(c=>c.name==='solveflow_exam_http_trial');if(!teacherCookie)throw new Error('HTTP_TRIAL_COOKIE_MISSING');
@@ -2323,7 +2417,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
     for (const engine of ['chrome','webkit'] as const) it(`console: teacher warning stays bottom right and opens the exact question in ${engine}`, async () => {
         const base = ExamAttemptSchema.parse(await snapshot(pool(), student, attemptId)), first = base.slots[0]; if (!first) throw new Error('MISSING_ALERT_SLOT');
         const issue = { id: randomUUID(), slotId: first.id, moduleId: first.moduleId, moduleTitle: '阅读与写作一', position: first.position, revision: 1, reason: 'answer_failed', openedAt: new Date().toISOString(), attemptId: base.id, studentId: student.id, studentName: '合成学生', title: base.title };
-        const bundle = await browserHarness(`import{useState}from'react';import{createRoot}from'react-dom/client';import{TeacherAttention}from'./src/browser/teacher-attention.tsx';function Preview(){const[hidden,setHidden]=useState(false),[selected,setSelected]=useState('');return <div className="admin-shell" style={{display:"block"}}><main className="admin-content" style={{height:1500,display:"flex",flexDirection:"column"}}><button onClick={()=>setHidden(value=>!value)}>切换处理窗口</button><output aria-label="处理题位">{selected}</output><button style={{marginTop:"auto",alignSelf:"flex-end"}}>最后一行操作</button></main><TeacherAttention hidden={hidden} onOpen={item=>{setSelected(item.attemptId+':'+item.slotId);setHidden(true);}} onViewAll={()=>setSelected('all')}/></div>};createRoot(document.getElementById('root')).render(<Preview/>);`);
+        const bundle = await browserHarness(`import{useState}from'react';import{createRoot}from'react-dom/client';import{TeacherAttention}from'./src/browser/teacher-attention.tsx';function Preview(){const[space,setSpace]=useState(0),[hidden,setHidden]=useState(false),[selected,setSelected]=useState('');return <div className="admin-shell" style={{display:"block"}}><main className="admin-content" style={{height:1500,display:"flex",flexDirection:"column",paddingBottom:space}}><button onClick={()=>setHidden(value=>!value)}>切换处理窗口</button><output aria-label="处理题位">{selected}</output><button style={{marginTop:"auto",alignSelf:"flex-end"}}>最后一行操作</button></main><TeacherAttention onSpaceChange={setSpace} hidden={hidden} onOpen={item=>{setSelected(item.attemptId+':'+item.slotId);setHidden(true);}} onViewAll={()=>setSelected('all')}/></div>};createRoot(document.getElementById('root')).render(<Preview/>);`);
         const browser = await (engine === 'chrome' ? chromium.launch({ executablePath: '/usr/bin/google-chrome' }) : webkit.launch());
         let total = 4, fail = false, writes = 0;
         try {
@@ -2432,7 +2526,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
         let revoked=false;
         const guarded=new Proxy(pool(),{get(target,property){if(property==='query')return async(...args:unknown[])=>{
             const result=await Reflect.apply(target.query,target,args);
-            if(!revoked&&typeof args[0]==='string'&&args[0].startsWith('UPDATE exam_app.auth_sessions s SET last_seen_at=')){
+            if(!revoked&&typeof args[0]==='string'&&(args[0].startsWith('UPDATE exam_app.auth_sessions s SET last_seen_at=')||args[0].startsWith("SELECT jsonb_build_object('user',"))){
                 revoked=true;await updateUser(pool(),admin,actor.id,{displayName:actor.displayName,state:'disabled',roles:['manager']},undefined);
             }
             return result;
@@ -2825,7 +2919,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
         try{
             await page.goto('http://127.0.0.1:3199/');const navigation=page.getByRole('region',{name:'题目导航',exact:true});await navigation.waitFor();
             expect(await page.getByRole('dialog').count()).toBe(1);expect(await page.getByRole('button',{name:'题目导航',exact:true}).getAttribute('aria-expanded')).toBe('true');
-            await navigation.getByRole('button',{name:/第1题$/}).first().click();await page.getByRole('button',{name:'手动作答',exact:true}).waitFor();
+            await navigation.getByRole('button',{name:/第1题$/}).first().click();await page.getByRole('tab',{name:'手动作答',exact:true}).waitFor();
             expect(await navigation.isVisible()).toBe(true);expect(await page.getByRole('dialog').count()).toBe(1);
             expect(await page.getByRole('list',{name:'题目状态图例'}).innerText()).toBe('未答\n正在回答\n校验\n通过\n出错');
             for(const [position,label] of [[1,'通过'],[2,'正在回答'],[3,'校验'],[4,'出错'],[5,'通过'],[6,'未答']] as const)expect(await navigation.getByRole('button',{name:current.modules[0]?.title+' · 第'+position+'题',exact:true}).innerText()).toContain(label);
@@ -2848,10 +2942,11 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await page.getByRole('button',{name:'题目导航',exact:true}).click();expect(await navigation.count()).toBe(0);
             await page.evaluate(()=>window.dispatchEvent(new Event('online')));expect(await navigation.count()).toBe(0);
             await page.getByRole('button',{name:'题目导航',exact:true}).click();await navigation.waitFor();
-            await page.getByRole('button',{name:'手动作答',exact:true}).click();
-            expect(await navigation.getByRole('button').first().isDisabled()).toBe(true);expect(await page.getByRole('button',{name:'定位当前题',exact:true}).count()).toBeLessThanOrEqual(1);
+            await page.getByRole('tab',{name:'手动作答',exact:true}).click();
+            expect(await navigation.getByRole('button').first().isEnabled()).toBe(true);expect(await page.getByRole('button',{name:'定位当前题',exact:true}).count()).toBeLessThanOrEqual(1);
             expect(await page.getByRole('textbox',{name:'确认答案',exact:true}).count()).toBe(0);
-            await page.getByRole('radio',{name:'C',exact:true}).check();await page.getByLabel('处理意见',{exact:true}).fill('合成草稿，不应自动保存。');expect(await page.getByRole('button',{name:'保存并通知学生',exact:true}).isEnabled()).toBe(true);expect(await page.locator('.review-current-answer').innerText()).toContain('B. $4.25');await page.getByRole('button',{name:'取消',exact:true}).click();
+            await page.getByRole('radio',{name:'C',exact:true}).check();await page.getByLabel('处理意见',{exact:true}).fill('合成草稿，不应自动保存。');expect(await navigation.getByRole('button').first().isDisabled()).toBe(true);expect(await page.getByRole('button',{name:'保存并通知学生',exact:true}).isEnabled()).toBe(true);expect(await page.locator('.review-current-answer').innerText()).toContain('B. $4.25');await page.getByRole('button',{name:'取消',exact:true}).click();
+            expect(await navigation.getByRole('button').first().isEnabled()).toBe(true);
             expect(writes).toEqual([]);expect(errors).toEqual([]);
         }finally{await browser.close();}
     });
@@ -2939,9 +3034,11 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
                     expect(await question(1).evaluate(el=>getComputedStyle(el).borderColor)).toBe('rgb(40, 103, 221)');
                     await f.page.screenshot({path:join(screens,`overview-${engine}-${width}-${theme}.png`),fullPage:true,animations:'disabled'});
                 }
-                await question(6).click(); await f.page.locator('.current-answer .answer-options').waitFor();
-                for (const theme of ['light','dark']) { await f.page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);expect(await f.page.locator('.current-answer .answer-options').evaluate(el=>getComputedStyle(el).backgroundColor)).toBe(theme==='light'?'rgb(255, 248, 233)':'rgb(50, 42, 29)'); }
-                expect(await f.page.locator('.current-answer').innerText()).toContain('待核验');
+                await question(6).click();
+                const selectedAnswer = f.page.getByRole('region',{name:'第6题答案',exact:true});
+                await selectedAnswer.locator('.answer-options').waitFor();
+                for (const theme of ['light','dark']) { await f.page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);expect(await selectedAnswer.locator('.answer-options').evaluate(el=>getComputedStyle(el).backgroundColor)).toBe(theme==='light'?'rgb(255, 248, 233)':'rgb(50, 42, 29)'); }
+                expect(await selectedAnswer.innerText()).toContain('待核验');
                 await f.page.getByRole('button',{name:'总览',exact:true}).click(); await question(5).click(); await f.page.locator('.capture-box h2').getByText('第5题',{exact:true}).waitFor(); await f.page.getByRole('button',{name:'总览',exact:true}).click();
                 expect(await question(5).getAttribute('aria-current')).toBe('step'); expect(await question(5).innerText()).toContain('出错'); expect(await question(5).getByLabel('待处理').count()).toBe(1); expect(await question(1).getAttribute('aria-current')).toBeNull();
                 flowAnswer(failed,'B','重新核验通过'); await f.sync(); await expect.poll(()=>question(5).innerText()).toContain('出错');
@@ -3171,5 +3268,90 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             } finally { release(); await f.browser.close(); }
         });
     }
+
+    it('performance: SAT entry batches writes while preserving every slot and concurrent entry',async()=>{
+        const child=await createUser(pool(),admin,{username:'perf_entry',displayName:'合成批量入场',password:'synthetic-password-123',roles:['student']},password);
+        const template=await createTemplate(pool(),admin,{code:'perf-entry-sat',title:'合成入场',exam:'sat',modules:[27,27,22,22].map((questionCount,i)=>({code:'m'+i,title:'模块'+i,sectionCode:i<2?'reading':'math',questionCount,durationSeconds:null}))});
+        const sitting=await createSitting(pool(),admin,{templateId:template.id,title:'合成批量入场',opensAt:new Date(Date.now()-10000).toISOString(),closesAt:null});
+        const allocation=await createAssignment(pool(),admin,{sittingId:sitting.id,studentId:child.id,mode:'practice_simulation',wrongCounts:[3,2,1,4]});
+        let queries=0;const traced=interceptClientQueries(async(_sql,perform)=>{queries++;return perform();});
+        const first=await startAttempt(traced,child,allocation.id);
+        const value=await snapshot(pool(),child,first.id);expect(value.slots).toHaveLength(98);expect(value.slots.map(slot=>slot.ordinal)).toEqual(Array.from({length:98},(_,i)=>i+1));
+        expect(value.nextSlotId).toBe(value.slots[0]?.id);expect(value.modules.map(module=>value.slots.filter(slot=>slot.moduleId===module.id).length)).toEqual([27,27,22,22]);
+        const plan=await pool().query("SELECT m.position,count(*) FILTER(WHERE p.action='simulate_alternative')::int AS wrong FROM exam_app.answer_plan_items p JOIN exam_app.question_slots q ON q.id=p.slot_id JOIN exam_app.attempt_modules m ON m.id=q.module_id WHERE q.attempt_id=$1 GROUP BY m.position ORDER BY m.position",[first.id]);expect(plan.rows.map(row=>row.wrong)).toEqual([3,2,1,4]);
+        expect(queries).toBeLessThanOrEqual(40);
+        expect(await Promise.all([startAttempt(pool(),child,allocation.id),startAttempt(pool(),child,allocation.id)])).toEqual([first,first]);
+    });
+    it('performance: authentication skips fresh presence writes and concurrent stale touches write once',async()=>{
+        const {authenticate,createSession}=await import('@solveflow/db');
+        const actor=await createUser(pool(),admin,{username:'perf_auth',displayName:'合成认证',password:'synthetic-password-123',roles:['student']},password),session=await createSession(pool(),actor,1);
+        const version=async()=>one(pool(),z.string(),'SELECT xmin::text AS value FROM exam_app.auth_sessions WHERE user_id=$1',[actor.id]);
+        const before=await version();await Promise.all(Array.from({length:12},()=>authenticate(pool(),session.token)));expect(await version()).toBe(before);
+        await pool().query("UPDATE exam_app.auth_sessions SET last_seen_at=now()-interval '6 seconds' WHERE user_id=$1",[actor.id]);
+        let touched=0;const observed=new Proxy(pool(),{get(target,property){if(property==='query')return async(...args:unknown[])=>{const result:unknown=await Reflect.apply(target.query,target,args);if(typeof args[0]==='string'&&args[0].startsWith('UPDATE exam_app.auth_sessions s SET last_seen_at='))touched+=z.object({rowCount:z.number()}).parse(result).rowCount;return result;};const value:unknown=Reflect.get(target,property);return typeof value==='function'?value.bind(target):value;}});
+        await Promise.all(Array.from({length:32},()=>authenticate(observed,session.token)));expect(touched).toBe(1);
+        await updateUser(pool(),admin,actor.id,{displayName:actor.displayName,state:'disabled',roles:['student']},undefined);
+        await expect(authenticate(pool(),session.token)).rejects.toMatchObject({status:401});
+    });
+    it('performance: repeat image reads reuse bytes but recheck teacher access and HEAD',async()=>{
+        const child=await createUser(pool(),admin,{username:'perf_media_child',displayName:'合成图片',password:'synthetic-password-123',roles:['student']},password);
+        const teacher=await createUser(pool(),admin,{username:'perf_media_teacher',displayName:'合成图片老师',password:'synthetic-password-123',roles:['support']},password);
+        const allocation=await createAssignment(pool(),admin,{sittingId,studentId:child.id,supportIds:[teacher.id]}),attempt=await startAttempt(pool(),child,allocation.id),slot=(await snapshot(pool(),child,attempt.id)).slots[0];if(!slot)throw new Error('NO_PERF_MEDIA_SLOT');
+        const media=await asset(slot.id,child),run=await submit(pool(),child,slot.id,{requestId:randomUUID(),expectedRevision:0,kind:'initial',assetIds:[media]});await cancelJob(pool(),child,run.runId);
+        let reads=0;const scopedStorage={put:storage.put.bind(storage),remove:storage.remove.bind(storage),close:()=>{},async get(key:string){reads++;return storage.get(key);}};
+        const local=createExamService({pool:pool(),storage:scopedStorage,origin,publicDir:root}),cookie=await login(teacher.username);
+        const get=(method='GET')=>local.app.request('/api/v2/media/'+media,{method,headers:{origin,cookie}});
+        const first=await get();expect(first.status).toBe(200);const original=await first.arrayBuffer();
+        const second=await get();expect(second.status).toBe(200);expect(await second.arrayBuffer()).toEqual(original);expect(reads).toBe(1);
+        expect((await get('HEAD')).status).toBe(200);expect(reads).toBe(1);
+        await pool().query('UPDATE exam_app.staff_assignments SET revoked_at=now() WHERE staff_id=$1',[teacher.id]);expect((await get()).status).toBe(404);expect(reads).toBe(1);
+    });
+    it('performance: upload joins all three writes before recording a failed family',async()=>{
+        const child=await createUser(pool(),admin,{username:'perf_upload_child',displayName:'合成上传',password:'synthetic-password-123',roles:['student']},password),allocation=await createAssignment(pool(),admin,{sittingId,studentId:child.id}),attempt=await startAttempt(pool(),child,allocation.id),slot=(await snapshot(pool(),child,attempt.id)).slots[0];if(!slot)throw new Error('NO_PERF_UPLOAD_SLOT');
+        let started=0,release=()=>{},settled=false;const held=new Promise<void>(resolve=>release=resolve),requestId=randomUUID();
+        const fake={get:storage.get.bind(storage),remove:storage.remove.bind(storage),close:()=>{},async put(){started++;if(started===1)throw new Error('SYNTHETIC_PUT_FAILURE');await held;}};
+        const task=upload(pool(),fake,child,slot.id,requestId,image).then(()=>null,error=>error).finally(()=>{settled=true;});
+        try{await expect.poll(()=>started,{timeout:2000}).toBe(3);expect(settled).toBe(false);}finally{release();await task;}
+        expect(await one(pool(),z.string(),'SELECT state AS value FROM exam_app.upload_intents WHERE student_id=$1 AND client_request_id=$2',[child.id,requestId])).toBe('rejected');
+        const states=await pool().query('SELECT state FROM exam_app.media_assets WHERE owner_user_id=$1',[child.id]);expect(states.rows).toHaveLength(3);expect(states.rows.every(row=>row.state==='deleting')).toBe(true);
+    });
+    it('performance: additive image indexes support reverse references and variants',async()=>{
+        const indexes=await pool().query("SELECT indexname FROM pg_indexes WHERE schemaname='exam_app' AND indexname IN ('revision_images_asset','media_assets_parent_variant')");expect(indexes.rows).toHaveLength(2);
+    });
+
+    it('performance: failed batched entry rolls back and a later explicit entry creates the full maximum template',async()=>{
+        const child=await createUser(pool(),admin,{username:'perf_entry_rollback',displayName:'合成入场回滚',password:'synthetic-password-123',roles:['student']},password);
+        const template=await createTemplate(pool(),admin,{code:'perf-entry-max',title:'合成最大模板',exam:'sat',modules:Array.from({length:16},(_,i)=>({code:'m'+i,title:'模块'+i,sectionCode:'math',questionCount:300,durationSeconds:null}))});
+        const sitting=await createSitting(pool(),admin,{templateId:template.id,title:'合成回滚',opensAt:new Date(Date.now()-10000).toISOString(),closesAt:null}),allocation=await createAssignment(pool(),admin,{sittingId:sitting.id,studentId:child.id});
+        const failed=interceptClientQueries(async(sql,perform)=>{if(sql.startsWith('INSERT INTO exam_app.answer_plan_items'))throw new Error('SYNTHETIC_PLAN_WRITE');return perform();});
+        await expect(startAttempt(failed,child,allocation.id)).rejects.toThrow('SYNTHETIC_PLAN_WRITE');
+        expect(await one(pool(),z.coerce.number(),'SELECT count(*) AS value FROM exam_app.exam_attempts WHERE assignment_id=$1',[allocation.id])).toBe(0);
+        expect(await one(pool(),z.coerce.number(),'SELECT count(*) AS value FROM exam_app.question_slots WHERE student_id=$1',[child.id])).toBe(0);
+        let queries=0;const traced=interceptClientQueries(async(_sql,perform)=>{queries++;return perform();}),attempt=await startAttempt(traced,child,allocation.id);
+        expect(queries).toBeLessThanOrEqual(40);
+        const totals=await pool().query('SELECT count(*)::int AS total,count(DISTINCT ordinal)::int AS ordinals,count(DISTINCT module_id)::int AS modules FROM exam_app.question_slots WHERE attempt_id=$1',[attempt.id]);expect(totals.rows[0]).toEqual({total:4800,ordinals:4800,modules:16});
+    });
+    it('performance: a stale presence touch waiting behind revocation cannot restore authentication',async()=>{
+        const {authenticate,createSession}=await import('@solveflow/db');
+        const actor=await createUser(pool(),admin,{username:'perf_auth_revocation',displayName:'合成撤权竞争',password:'synthetic-password-123',roles:['student']},password),session=await createSession(pool(),actor,1);
+        await pool().query("UPDATE exam_app.auth_sessions SET last_seen_at=now()-interval '6 seconds' WHERE user_id=$1",[actor.id]);
+        const blocker=await pool().connect();let started=()=>{},pending:Promise<unknown>|undefined;
+        const entered=new Promise<void>(resolve=>started=resolve),observed=new Proxy(pool(),{get(target,property){if(property==='query')return(...args:unknown[])=>{if(typeof args[0]==='string'&&args[0].startsWith('UPDATE exam_app.auth_sessions s SET last_seen_at='))started();return Reflect.apply(target.query,target,args);};const value:unknown=Reflect.get(target,property);return typeof value==='function'?value.bind(target):value;}});
+        try{
+            await blocker.query('BEGIN');await blocker.query('SELECT id FROM exam_app.auth_sessions WHERE user_id=$1 FOR UPDATE',[actor.id]);
+            pending=authenticate(observed,session.token);const rejected=expect(pending).rejects.toMatchObject({status:401});await entered;
+            await blocker.query('UPDATE exam_app.auth_sessions SET revoked_at=now() WHERE user_id=$1',[actor.id]);await blocker.query('COMMIT');await rejected;
+        }finally{await blocker.query('ROLLBACK');blocker.release();await pending?.catch(()=>{});}
+    });
+
+    it('performance: cancelling during solver image reads stops storage before model dispatch',async()=>{
+        const f=await queuedReviewSlot('perf_solver_image_abort'),job=await claimJob(pool());if(!job||job.id!==f.run.runId)throw new Error('NO_PERF_IMAGE_JOB');
+        let started=()=>{},calls=0;const reading=new Promise<void>(resolve=>started=resolve),abort=new AbortController();
+        const profile={provider:'openai',baseURL:'https://synthetic.invalid/v1',model:'synthetic',api:'openai-completions',contextWindow:32768,maxTokens:4096,maxTokensField:'max_tokens'};
+        const models=WebStoredModelsSchema.parse({schemaVersion:1,models:{solver:profile,verifier:profile,backup:null},keys:{solver:'synthetic',verifier:'synthetic',backup:null}});
+        const fake={put:storage.put.bind(storage),remove:storage.remove.bind(storage),close:()=>{},get:async(_key:string,signal?:AbortSignal)=>{started();if(!signal)throw new Error('READ_NOT_CANCELLABLE');return new Promise<Uint8Array>((_resolve,reject)=>{signal.addEventListener('abort',()=>reject(signal.reason),{once:true});if(signal.aborted)reject(signal.reason);});}};
+        const solve=modelSolver(pool(),fake,models,{solver:8,verifier:8,daily:100},async()=>{calls++;throw new Error('UNEXPECTED_MODEL_DISPATCH');});
+        try{const rejected=expect(solve(job,abort.signal,()=>{})).rejects.toMatchObject({name:'AbortError'});await reading;abort.abort();await rejected;expect(calls).toBe(0);}finally{abort.abort();await cancelJob(pool(),f.child,job.id);}
+    });
 
 });

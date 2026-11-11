@@ -6,7 +6,7 @@ import { createClient } from 'redis';
 import type { Pool } from 'pg';
 import type { ExamSessionSchema } from '@solveflow/contracts/managed-exam';
 import { ExamWsClientSchema } from '@solveflow/contracts/managed-exam';
-import { attemptAssignment, one, scope, tx, rows } from '@solveflow/db';
+import { attemptSequence, rows } from '@solveflow/db';
 import { z } from 'zod';
 type Session = z.infer<typeof ExamSessionSchema>;
 export function realtime(server: Server, pool: Pool, origin: string, authenticate: (cookie: string | undefined) => Promise<Session>, aliases: readonly string[] = []) {
@@ -60,13 +60,13 @@ export function realtime(server: Server, pool: Pool, origin: string, authenticat
                 return;
             }
             const target = parsed.data;
-            void authenticate(request.headers.cookie).then(async (session) => { await scope(pool, session.user, await attemptAssignment(pool, target.attemptId)); attemptId = target.attemptId; lastSeq = target.afterSeq; }).catch(() => ws.close(1008));
+            void authenticate(request.headers.cookie).then(async (session) => { await attemptSequence(pool, session.user, target.attemptId); attemptId = target.attemptId; lastSeq = target.afterSeq; }).catch(() => ws.close(1008));
         });
         const timer = setInterval(() => { if (Date.now() - lastBeat > 45000) {
             ws.close(1001);
             return;
         } if (busy || !attemptId)
-            return; busy = true; const target = attemptId; void authenticate(request.headers.cookie).then(async (session) => { await scope(pool, session.user, await attemptAssignment(pool, target)); const seq = await one(pool, z.coerce.number(), 'SELECT last_seq AS value FROM exam_app.attempt_streams WHERE attempt_id=$1', [target]); if (attemptId === target && seq !== lastSeq) {
+            return; busy = true; const target = attemptId; void authenticate(request.headers.cookie).then(async (session) => { const seq = await attemptSequence(pool, session.user, target); if (attemptId === target && seq !== lastSeq) {
             send({ type: 'changed', attemptId: target, lastSeq: seq });
             lastSeq = seq;
         } }).catch(() => ws.close(1008)).finally(() => busy = false); }, 2000);

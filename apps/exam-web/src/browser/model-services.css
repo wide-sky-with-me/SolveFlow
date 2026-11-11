@@ -274,13 +274,26 @@
     height: 32px;
   }
   .service-roles {
+    display: grid;
+    grid-template-columns: repeat(3,minmax(0,1fr));
+    width: 100%;
     gap: 6px;
   }
   .service-roles>button {
-    padding: 9px 10px;
+    padding: 9px 4px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .service-editor .service-actions {
+    display: grid;
+    grid-template-columns: repeat(2,minmax(0,1fr));
   }
   .service-editor .service-actions>button {
-    flex: 1;
+    width: 100%;
+    white-space: nowrap;
+  }
+  .service-editor .service-actions>.primary {
+    grid-column: 1/-1;
   }
   .service-save-info {
     align-items: flex-start;

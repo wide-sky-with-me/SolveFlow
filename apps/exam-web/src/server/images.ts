@@ -1,8 +1,9 @@
+// Decision: .agents/notes/implemented/architecture/2026-11-09-managed-backend-performance.md
 import sharp from 'sharp';
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 import { z } from 'zod';
-import { audit, attemptAssignment, conflict, forbidden, hash, one, rows, scope, tx, ExamError } from '@solveflow/db';
+import { assignmentAccessSql, audit, attemptAssignment, conflict, forbidden, hash, isAdmin, one, rows, scope, tx } from '@solveflow/db';
 import { EXAM_SOURCE_IMAGE_BYTES, EXAM_MODEL_IMAGE_BYTES, type ExamUser, type ExamMediaView } from '@solveflow/contracts/managed-exam';
 import type { NormalizedImage, SolverInput } from '@solveflow/contracts/agent';
 import type { ExamStorage } from './storage.js';
@@ -57,8 +58,11 @@ export async function upload(pool: Pool, storage: ExamStorage, actor: ExamUser, 
     if (reservation.existing)
         return { id: reservation.existing };
     try {
-        for (const asset of reservation.assets)
-            await storage.put(asset.key, asset.image.data);
+        // Join every write before marking a failed family for GC; a late PUT must not
+        // recreate an object that the failure cleanup already removed.
+        const writes = await Promise.allSettled(reservation.assets.map(asset => storage.put(asset.key, asset.image.data)));
+        const failed = writes.find(result => result.status === 'rejected');
+        if (failed?.status === 'rejected') throw failed.reason;
         await tx(pool, async (c) => { await c.query(`UPDATE exam_app.media_assets SET state='ready' WHERE id=ANY($1::uuid[])`, [reservation.assets.map(a => a.id)]); await c.query(`UPDATE exam_app.upload_intents SET state='validated' WHERE student_id=$1 AND client_request_id=$2`, [actor.id, requestId]); });
     }
     catch (error) {
@@ -73,24 +77,11 @@ export async function upload(pool: Pool, storage: ExamStorage, actor: ExamUser, 
 }
 // Decision: .agents/notes/implemented/rendering/2026-11-04-progressive-image-viewer.md
 export async function imageAccess(pool: Pool, actor: ExamUser, id: string, view: ExamMediaView) {
-    const asset = await one(pool, z.object({ owner: z.uuid(), parent: z.uuid().nullable(), key: z.string(), byteSize: z.number().int().positive() }), `SELECT jsonb_build_object('owner',owner_user_id,'parent',parent_asset_id,'key',object_key,'byteSize',byte_size) AS value FROM exam_app.media_assets WHERE id=$1 AND state='ready'`, [id]);
-    if (asset.owner !== actor.id) {
-        const assignments = await rows(pool, z.uuid(), `SELECT DISTINCT x.assignment_id AS value FROM exam_app.revision_images i JOIN exam_app.question_revisions v ON v.id=i.revision_id JOIN exam_app.question_slots q ON q.id=v.slot_id JOIN exam_app.exam_attempts x ON x.id=q.attempt_id WHERE i.asset_id=$1 LIMIT 100`, [id]);
-        let allowed = false;
-        for (const assignment of assignments) {
-            try {
-                await scope(pool, actor, assignment);
-                allowed = true;
-                break;
-            }
-            catch (error) {
-                if (!(error instanceof ExamError) || error.status !== 404)
-                    throw error;
-            }
-        }
-        if (!allowed)
-            throw forbidden();
-    }
+    const asset = await one(pool, z.object({ parent: z.uuid().nullable(), key: z.string(), byteSize: z.number().int().positive(), allowed: z.boolean() }), `SELECT jsonb_build_object('parent',m.parent_asset_id,'key',m.object_key,'byteSize',m.byte_size,'allowed',m.owner_user_id=$3 OR EXISTS(
+      SELECT 1 FROM exam_app.revision_images i JOIN exam_app.question_revisions v ON v.id=i.revision_id JOIN exam_app.question_slots q ON q.id=v.slot_id JOIN exam_app.exam_attempts x ON x.id=q.attempt_id JOIN exam_app.exam_assignments a ON a.id=x.assignment_id JOIN exam_app.exam_sittings s ON s.id=a.sitting_id
+      WHERE i.asset_id=m.id AND ${assignmentAccessSql}
+    )) AS value FROM exam_app.media_assets m WHERE m.id=$1 AND m.state='ready'`, [id,isAdmin(actor),actor.id,actor.roles.includes('manager'),actor.roles.includes('support')]);
+    if (!asset.allowed) throw forbidden();
     let selected = { key: asset.key, byteSize: asset.byteSize };
     if (view !== 'model') {
         const parent = asset.parent ?? id;

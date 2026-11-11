@@ -440,8 +440,4 @@
   transform: rotate(180deg);
 }
 
-/* Keep the final controls reachable above the persistent corner reminder. */
-
-.admin-shell>.admin-content {
-  padding-bottom: 124px;
-}
+/* Admin reserves the measured reminder height, including its expanded list. */

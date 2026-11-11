@@ -33,6 +33,9 @@ export const MAX_DEVICE_SOLVER_PHASE_MS = 240_000;
 export const MAX_DEVICE_VERIFIER_PHASE_MS = 300_000;
 /** Only a brief primary solve with an available takeover may limit thinking-only output. */
 export const MAX_DEVICE_BRIEF_THINKING_MS = 60_000;
+/** Brief primary solves with a configured takeover must not wait silently forever. */
+export const MAX_DEVICE_FIRST_CONTENT_MS = 90_000;
+export const MAX_DEVICE_STREAM_IDLE_MS = 60_000;
 export const MAX_MODEL_STREAM_BYTES = 8 * 1024 * 1024;
 export const MAX_MODEL_JSON_BYTES = 1024 * 1024;
 /** Native leak guard exceeds the maximum legal sequence of bounded dispatches. */

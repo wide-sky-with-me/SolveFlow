@@ -51,7 +51,7 @@
   font-size: 14px;
   color: var(--accent-ink);
   padding: 6px 10px;
-  min-height: 40px;
+  min-height: 44px;
 }
 
 .full {
@@ -752,10 +752,6 @@ summary {
   box-shadow: 0 0 0 2px #d9534a26;
 }
 
-.review-actions {
-  margin: 22px 0;
-}
-
 .review-detail {
   padding-top: 18px;
   border-top: 1px solid var(--line);
@@ -795,12 +791,6 @@ summary {
 @media(max-width:640px) {
   .human-review {
     padding: 14px;
-  }
-  .review-actions {
-    gap: 8px;
-  }
-  .review-actions button {
-    flex: 1;
   }
 }
 
@@ -1164,14 +1154,15 @@ dialog .dialog-head {
 .review-choices {
   padding: 12px;
   display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 
 .review-choice {
   display: grid;
-  grid-template-columns: 18px 22px minmax(0,1fr);
-  align-items: start;
-  gap: 10px;
+  grid-template-columns: 18px minmax(0,1fr);
+  align-items: center;
+  gap: 8px;
   margin: 0;
   padding: 12px;
   border: 1px solid var(--line);
@@ -1179,7 +1170,7 @@ dialog .dialog-head {
   background: var(--surface);
   color: var(--ink);
   cursor: pointer;
-  min-height: 52px;
+  min-height: 48px;
 }
 
 .review-choice.selected {
@@ -1192,7 +1183,7 @@ dialog .dialog-head {
   min-height: 18px;
   height: 18px;
   padding: 0;
-  margin: 3px 0 0;
+  margin: 0;
   accent-color: var(--blue);
   flex-shrink: 0;
 }
@@ -1200,12 +1191,6 @@ dialog .dialog-head {
 .review-choice b {
   color: var(--accent-ink);
   line-height: 1.6;
-}
-
-.review-choice p:first-child {
-  margin-top: 0;
-}
-
-.review-choice p:last-child {
-  margin-bottom: 0;
+  text-align: center;
+  overflow-wrap: anywhere;
 }

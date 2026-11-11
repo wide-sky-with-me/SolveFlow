@@ -61,7 +61,7 @@ export async function admitCall(pool: pg.Pool, job: ExamJob, role: 'solver' | 'v
         return callId;
     });
 }
-export async function settleCall(pool: pg.Pool, callId: string, success: boolean) { await tx(pool, async (c) => { await c.query(`UPDATE exam_app.model_call_attempts SET status=$2,finished_at=now() WHERE id=$1 AND status='started'`, [callId, success ? 'completed' : 'failed']); await c.query(`UPDATE exam_app.usage_reservations SET status='settled',settled_at=now() WHERE model_call_id=$1`, [callId]); await c.query('UPDATE exam_app.execution_permits SET holder_call_id=NULL,lease_token=NULL,lease_expires_at=NULL WHERE holder_call_id=$1', [callId]); }); }
+export async function settleCall(pool: pg.Pool, callId: string, success: boolean, errorCode: string | null = null) { await tx(pool, async (c) => { await c.query(`UPDATE exam_app.model_call_attempts SET status=$2,finished_at=now(),error_code=$3 WHERE id=$1 AND status='started'`, [callId, success ? 'completed' : 'failed', success ? null : errorCode]); await c.query(`UPDATE exam_app.usage_reservations SET status='settled',settled_at=now() WHERE model_call_id=$1`, [callId]); await c.query('UPDATE exam_app.execution_permits SET holder_call_id=NULL,lease_token=NULL,lease_expires_at=NULL WHERE holder_call_id=$1', [callId]); }); }
 
 /** Provisional answer for display while verification runs. Additive only: the
  * queued run row, immutable run_results and answer_presentations are untouched.

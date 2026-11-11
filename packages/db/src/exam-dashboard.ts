@@ -1,3 +1,4 @@
+// Decision: .agents/notes/implemented/architecture/2026-11-09-managed-backend-performance.md
 // Decision: .agents/notes/implemented/architecture/2026-11-07-archived-exam-visibility.md
 // Decision: .agents/notes/implemented/architecture/2026-11-03-exam-console-dashboard.md
 import type pg from 'pg';
@@ -30,8 +31,12 @@ export async function dashboard(pool: pg.Pool, actor: ExamUser, raw: unknown) {
     return tx(pool, async c => {
         if (input.sittingId && !await one(c, z.boolean(), `WITH ${visible} SELECT EXISTS(SELECT 1 FROM permitted WHERE sitting_id=$5) AS value`, params)) throw forbidden();
         const sittings = await rows(c, ExamDashboardSchema.shape.sittings.element, `WITH ${visible} SELECT jsonb_build_object('id',sitting_id,'title',title) AS value FROM permitted GROUP BY sitting_id,title ORDER BY (sitting_id=$5) DESC NULLS LAST,max(opens_at) DESC,sitting_id LIMIT 200`, params);
-        const totals = await one(c, ExamDashboardSchema.shape.summary.extend({ unphotographed: z.number().int().nonnegative(), processingClear: z.number().int().nonnegative(), answeredClear: z.number().int().nonnegative() }), `WITH ${visible}, planned AS (
-          SELECT coalesce(sum(CASE WHEN a.attempt_id IS NULL THEN (SELECT sum(m.question_count) FROM exam_app.template_modules m WHERE m.template_id=a.template_id) ELSE (SELECT count(*) FROM slots q WHERE q.attempt_id=a.attempt_id) END),0)::integer AS total FROM visible a
+        const totals = await one(c, ExamDashboardSchema.shape.summary.extend({ unphotographed: z.number().int().nonnegative(), processingClear: z.number().int().nonnegative(), answeredClear: z.number().int().nonnegative() }), `WITH ${visible}, attempt_counts AS (
+          SELECT attempt_id,count(*) AS total FROM slots GROUP BY attempt_id
+        ), template_counts AS (
+          SELECT template_id,sum(question_count) AS total FROM exam_app.template_modules GROUP BY template_id
+        ), planned AS (
+          SELECT coalesce(sum(CASE WHEN a.attempt_id IS NULL THEN coalesce(t.total,0) ELSE coalesce(n.total,0) END),0)::integer AS total FROM visible a LEFT JOIN attempt_counts n ON n.attempt_id=a.attempt_id LEFT JOIN template_counts t ON t.template_id=a.template_id
         ) SELECT jsonb_build_object(
           'students',(SELECT count(DISTINCT student_id) FROM visible),
           'online',(SELECT count(DISTINCT a.student_id) FROM visible a WHERE a.student_state='active' AND EXISTS(SELECT 1 FROM exam_app.auth_sessions s WHERE s.user_id=a.student_id AND s.auth_version=a.auth_version AND s.revoked_at IS NULL AND s.expires_at>now() AND s.last_seen_at>now()-interval '45 seconds')),
@@ -50,8 +55,10 @@ export async function dashboard(pool: pg.Pool, actor: ExamUser, raw: unknown) {
           UNION ALL SELECT h.created_at,true FROM exam_app.teacher_reviews h JOIN slots q ON q.id=h.slot_id WHERE h.created_at>=(SELECT min(at) FROM buckets)
         ) SELECT jsonb_build_object('at',b.at,'ai',count(p.created_at) FILTER(WHERE NOT p.human),'human',count(p.created_at) FILTER(WHERE p.human)) AS value FROM buckets b LEFT JOIN publications p ON p.created_at>=b.at AND p.created_at<b.at+interval '5 minutes' GROUP BY b.at ORDER BY b.at`, params);
         const issues = await rows(c, ExamDashboardSchema.shape.issues.element, `WITH ${visible} SELECT jsonb_build_object('reason',i.reason,'count',count(*)) AS value FROM exam_app.verification_incidents i JOIN visible a ON a.attempt_id=i.attempt_id WHERE i.resolved_at IS NULL GROUP BY i.reason ORDER BY count(*) DESC,i.reason`, params);
-        const modules = await rows(c, ExamDashboardSchema.shape.modules.element, `WITH ${visible}, module_counts AS (
-          SELECT a.exam_type,m.title,m.section_code,m.question_count AS total,(SELECT count(*) FROM slots q WHERE q.module_id=m.id AND q.answered) AS answered,(SELECT count(*) FROM slots q WHERE q.module_id=m.id AND q.attention) AS attention FROM visible a JOIN exam_app.attempt_modules m ON m.attempt_id=a.attempt_id
+        const modules = await rows(c, ExamDashboardSchema.shape.modules.element, `WITH ${visible}, slot_counts AS (
+          SELECT module_id,count(*) FILTER(WHERE answered) AS answered,count(*) FILTER(WHERE attention) AS attention FROM slots GROUP BY module_id
+        ), module_counts AS (
+          SELECT a.exam_type,m.title,m.section_code,m.question_count AS total,coalesce(n.answered,0) AS answered,coalesce(n.attention,0) AS attention FROM visible a JOIN exam_app.attempt_modules m ON m.attempt_id=a.attempt_id LEFT JOIN slot_counts n ON n.module_id=m.id
           UNION ALL SELECT a.exam_type,m.title,m.section_code,m.question_count,0,0 FROM visible a JOIN exam_app.template_modules m ON m.template_id=a.template_id WHERE a.attempt_id IS NULL
         ) SELECT jsonb_build_object('exam',exam_type,'title',title,'sectionCode',section_code,'total',sum(total),'answered',sum(answered),'attention',sum(attention)) AS value FROM module_counts GROUP BY exam_type,title,section_code ORDER BY sum(attention) DESC,sum(total) DESC,exam_type,title,section_code LIMIT 8`, params);
         const students = await rows(c, ExamDashboardSchema.shape.students.element, `WITH ${visible}, counts AS (

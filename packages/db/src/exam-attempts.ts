@@ -1,3 +1,4 @@
+// Decision: .agents/notes/implemented/architecture/2026-11-09-managed-backend-performance.md
 import { pinRunModelService } from './exam-model-services.js';
 // Decision: .agents/notes/implemented/architecture/2026-11-05-exam-client-recovery.md
 // Decision: .agents/notes/implemented/architecture/2026-11-03-teacher-question-actions.md
@@ -8,7 +9,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import { z } from 'zod';
 import { EXAM_MATERIAL_COUNT, EXAM_QUESTION_IMAGE_BYTES, ExamAttemptSchema, ExamDetailSchema, ExamEventsSchema, ExamSubmissionSchema, ExamTemplateSchema, type ExamUser } from '@solveflow/contracts/managed-exam';
-import { audit, conflict, event, forbidden, hash, one, rows, scope, tx, type Queryable } from './exam-store.js';
+import { assignmentAccessSql, audit, conflict, event, forbidden, hash, isAdmin, one, rows, scope, tx, type Queryable } from './exam-store.js';
 import { incidentFrom, incidentJson } from './exam-review-state.js';
 import { unreadAnswerRevisions, unreadResolutions } from './exam-attention.js';
 import { activityFrom, activityJson, navigateAttempt } from './exam-navigation.js';
@@ -46,25 +47,33 @@ export async function startAttempt(pool: pg.Pool, actor: ExamUser, assignmentId:
         const id = randomUUID(), seed = randomBytes(32), planId = randomUUID();
         await c.query(`INSERT INTO exam_app.exam_attempts(id,assignment_id,student_id,attempt_no,template_id,delivery_policy_id,template_snapshot,state,started_at) VALUES($1,$2,$3,1,$4,$5,$6,'in_progress',now())`, [id, assignmentId, actor.id, template.id, assignment.policyId, JSON.stringify(template)]);
         await c.query(`INSERT INTO exam_app.answer_plans(id,attempt_id,student_id,policy_id,version,seed,allocation,confidence,proposed_by,state,approved_by,frozen_at) VALUES($1,$2,$3,$4,1,$5,$6,'estimate','deterministic','frozen',$7,now())`, [planId, id, actor.id, assignment.policyId, seed, JSON.stringify(assignment.settings), assignment.approvedBy]);
-        let ordinal = 0, firstSlot: string | null = null;
+        const templateModules = await rows(c, z.object({id:z.uuid(),position:z.number().int()}), "SELECT jsonb_build_object('id',id,'position',position) AS value FROM exam_app.template_modules WHERE template_id=$1 ORDER BY position", [template.id]);
+        const moduleIds = new Map(templateModules.map(module => [module.position,module.id]));
+        const modules: {id:string;template_module_id:string;position:number;section_code:string;title:string;question_count:number;rules_snapshot:unknown;state:string}[] = [];
+        const slots: {id:string;module_id:string;position:number;ordinal:number;plan_item_id:string;action:string}[] = [];
+        let ordinal = 0;
         for (const [i, module] of template.modules.entries()) {
-            const moduleId = randomUUID();
-            const templateModule = await one(c, z.uuid(), 'SELECT id AS value FROM exam_app.template_modules WHERE template_id=$1 AND position=$2', [template.id, i + 1]);
-            await c.query(`INSERT INTO exam_app.attempt_modules(id,attempt_id,student_id,template_module_id,position,section_code,title,question_count,rules_snapshot,state,opened_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CASE WHEN $5=1 THEN now() ELSE NULL END)`, [moduleId, id, actor.id, templateModule, i + 1, module.sectionCode, module.title, module.questionCount, JSON.stringify(module), i === 0 ? 'in_progress' : 'available']);
+            const moduleId = randomUUID(), templateModule = moduleIds.get(i + 1);
+            if (!templateModule) throw new Error('TEMPLATE_MODULE_MISSING');
+            modules.push({id:moduleId,template_module_id:templateModule,position:i+1,section_code:module.sectionCode,title:module.title,question_count:module.questionCount,rules_snapshot:module,state:i===0?'in_progress':'available'});
             const wrong = assignment.settings.mode === 'practice_simulation' ? (assignment.settings.wrongCounts[i] ?? 0) : 0;
             const selected = new Set<number>();
             for (let j = 0; j < wrong; j++) {
                 const start = Math.floor(j * module.questionCount / wrong), end = Math.floor((j + 1) * module.questionCount / wrong);
                 selected.add(start + 1 + parseInt(hash(seed.toString('hex') + ':' + i + ':' + j).slice(0, 8), 16) % (end - start));
             }
-            for (let n = 1; n <= module.questionCount; n++) {
-                const slotId = randomUUID();
-                if (!firstSlot)
-                    firstSlot = slotId;
-                await c.query('INSERT INTO exam_app.question_slots(id,module_id,attempt_id,student_id,position,ordinal) VALUES($1,$2,$3,$4,$5,$6)', [slotId, moduleId, id, actor.id, n, ++ordinal]);
-                await c.query('INSERT INTO exam_app.answer_plan_items(id,plan_id,attempt_id,student_id,slot_id,action) VALUES($1,$2,$3,$4,$5,$6)', [randomUUID(), planId, id, actor.id, slotId, selected.has(n) ? 'simulate_alternative' : 'original']);
-            }
+            for (let n = 1; n <= module.questionCount; n++) slots.push({id:randomUUID(),module_id:moduleId,position:n,ordinal:++ordinal,plan_item_id:randomUUID(),action:selected.has(n)?'simulate_alternative':'original'});
         }
+        // The validated template bounds these records to 16 modules and 4,800 slots.
+        await c.query(`INSERT INTO exam_app.attempt_modules(id,attempt_id,student_id,template_module_id,position,section_code,title,question_count,rules_snapshot,state,opened_at)
+          SELECT m.id,$1,$2,m.template_module_id,m.position,m.section_code,m.title,m.question_count,m.rules_snapshot,m.state,CASE WHEN m.position=1 THEN now() ELSE NULL END
+          FROM jsonb_to_recordset($3::jsonb) AS m(id uuid,template_module_id uuid,position integer,section_code text,title text,question_count integer,rules_snapshot jsonb,state text)`, [id,actor.id,JSON.stringify(modules)]);
+        const slotRecords = JSON.stringify(slots);
+        await c.query(`INSERT INTO exam_app.question_slots(id,module_id,attempt_id,student_id,position,ordinal)
+          SELECT q.id,q.module_id,$1,$2,q.position,q.ordinal FROM jsonb_to_recordset($3::jsonb) AS q(id uuid,module_id uuid,position integer,ordinal integer)`, [id,actor.id,slotRecords]);
+        await c.query(`INSERT INTO exam_app.answer_plan_items(id,plan_id,attempt_id,student_id,slot_id,action)
+          SELECT q.plan_item_id,$1,$2,$3,q.id,q.action FROM jsonb_to_recordset($4::jsonb) AS q(id uuid,plan_item_id uuid,action text)`, [planId,id,actor.id,slotRecords]);
+        const firstSlot = slots[0]?.id ?? null;
         await c.query('UPDATE exam_app.exam_attempts SET next_slot_id=$2 WHERE id=$1', [id, firstSlot]);
         await c.query(`UPDATE exam_app.delivery_policies SET state='frozen' WHERE id=$1`, [assignment.policyId]);
         await event(c, id, 'attempt.started');
@@ -73,6 +82,10 @@ export async function startAttempt(pool: pg.Pool, actor: ExamUser, assignmentId:
     });
 }
 export async function attemptAssignment(db: Queryable, attemptId: string) { return one(db, z.uuid(), 'SELECT assignment_id AS value FROM exam_app.exam_attempts WHERE id=$1', [attemptId]); }
+/** One indexed read still checks the current assignment before exposing a stream sequence. */
+export async function attemptSequence(db: Queryable, actor: ExamUser, attemptId: string) {
+    return one(db, z.coerce.number(), `SELECT stream.last_seq AS value FROM exam_app.attempt_streams stream JOIN exam_app.exam_attempts x ON x.id=stream.attempt_id JOIN exam_app.exam_assignments a ON a.id=x.assignment_id JOIN exam_app.exam_sittings s ON s.id=a.sitting_id WHERE x.id=$1 AND ${assignmentAccessSql}`, [attemptId,isAdmin(actor),actor.id,actor.roles.includes('manager'),actor.roles.includes('support')]);
+}
 // Decision: .agents/notes/implemented/rendering/2026-11-07-non-choice-answer-values.md
 export async function snapshot(pool: pg.Pool, actor: ExamUser, attemptId: string, options: {answerValues?: boolean} = {}) {
     await tx(pool, async c => {

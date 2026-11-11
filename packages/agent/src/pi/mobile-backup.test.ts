@@ -109,5 +109,5 @@ it('reserves a bounded primary window so a stalled solve can hand over with an i
     const timer = setTimeout(callback, 0); return () => clearTimeout(timer);
   });
   expect(result).toMatchObject({ status: 'completed', verified: true });
-  expect(windows).toEqual([240_000, 300_000, 300_000]);
+  expect(windows).toEqual([240_000, 90_000, 300_000, 300_000]);
 });

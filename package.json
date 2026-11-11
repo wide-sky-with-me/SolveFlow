@@ -17,7 +17,7 @@
     "build:mobile": "pnpm build:shared && pnpm --filter @solveflow/mobile build && node scripts/check-mobile-build.mjs",
     "build:web": "pnpm build:shared && pnpm --filter @solveflow/mobile build:web",
     "package:web": "pnpm build:web && node scripts/package-web-container.mjs",
-    "test:web-container": "node --test scripts/web-container.test.mjs scripts/web-lan-gateway.test.mjs",
+    "test:web-container": "node --test scripts/web-container.test.mjs scripts/web-lan-gateway.test.mjs scripts/web-static-compression.test.mjs",
     "test": "pnpm build:workspace && pnpm test:web-container && vitest run --maxWorkers=2",
     "test:unit": "pnpm test --project unit",
     "test:offline": "pnpm test --project offline",

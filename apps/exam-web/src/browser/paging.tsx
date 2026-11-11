@@ -1,4 +1,5 @@
 // Decision: .agents/notes/implemented/architecture/2026-11-04-managed-list-pagination.md
+// Decision: .agents/notes/implemented/architecture/2026-11-09-browser-sync-continuity.md
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { z } from 'zod';
 import { Icon } from '@solveflow/web-ui/icons';
@@ -27,7 +28,14 @@ export function usePageResource<T>(schema: z.ZodType<T>, url: string|null, inter
     },[schema,url]);
     const refresh=useCallback((force=false)=>read(force),[read]);
     const refreshManually=useCallback(()=>read(false,true),[read]);
-    useEffect(()=>{void refresh();const timer=url&&interval?setInterval(()=>void refresh(),interval):null;return()=>{if(timer)clearInterval(timer);const old=active.current;active.current=null;old?.controller.abort();};},[refresh,url,interval]);
+    useEffect(()=>{
+        void refresh();
+        const foreground=()=>{if(document.visibilityState==='visible')void refresh();};
+        const polling=!!url&&interval>0;
+        const timer=polling?setInterval(foreground,interval):null;
+        if(polling){document.addEventListener('visibilitychange',foreground);window.addEventListener('online',foreground);}
+        return()=>{if(timer)clearInterval(timer);document.removeEventListener('visibilitychange',foreground);window.removeEventListener('online',foreground);const old=active.current;active.current=null;old?.controller.abort();};
+    },[refresh,url,interval]);
     const data=snapshot?.key===url?snapshot.data:null,error=failure?.key===url?failure.message:'';
     return {data,error,errorStatus:failure?.key===url?failure.status:null,loading:!!url&&data===null&&!error,refreshing:manualKey===url&&!!active.current?.manual,refresh,refreshManually};
 }
@@ -37,10 +45,10 @@ export function useListQuery() {
     return {...state,setParam:(key:string,value:string)=>setState(s=>({...s,filters:{...s.filters,[key]:value},page:1})),setPage:(page:number)=>setState(s=>({...s,page})),setPageSize:(pageSize:number)=>setState(s=>({...s,pageSize,page:1})),setQ:(q:string)=>setState(s=>({...s,q,page:1})),setFilter:(filter:string)=>setState(s=>({...s,filter,page:1}))};
 }
 
-export function ListSearch({value,onSearch,label='搜索',disabled=false}:{value:string;onSearch:(q:string)=>void;label?:string;disabled?:boolean}) {
+export function ListSearch({value,onSearch,onDraftChange,label='搜索',disabled=false}:{value:string;onSearch:(q:string)=>void;onDraftChange?:(q:string)=>void;label?:string;disabled?:boolean}) {
     const [draft,setDraft]=useState(value);useEffect(()=>setDraft(value),[value]);
     function submit(){onSearch(draft.trim());}
-    return <div className="list-search" role="search"><input type="search" aria-label={label} placeholder={label} maxLength={120} disabled={disabled} value={draft} onChange={e=>{setDraft(e.target.value);if(!e.target.value)onSearch('');}} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();e.stopPropagation();submit();}}}/><button type="button" className="icon-button" aria-label={'提交'+label} disabled={disabled} onClick={submit}><Icon name="search"/></button></div>;
+    return <div className="list-search" role="search"><input type="search" aria-label={label} placeholder={label} maxLength={120} disabled={disabled} value={draft} onChange={e=>{setDraft(e.target.value);if(onDraftChange)onDraftChange(e.target.value);else if(!e.target.value)onSearch('');}} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();e.stopPropagation();submit();}}}/>{onDraftChange?<span className="list-search-mark" aria-hidden="true"><Icon name="search"/></span>:<button type="button" className="icon-button" aria-label={'提交'+label} disabled={disabled} onClick={submit}><Icon name="search"/></button>}</div>;
 }
 
 type PageMeta={page:number;pageSize:number;total:number};

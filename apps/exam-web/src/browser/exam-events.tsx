@@ -10,6 +10,7 @@ import { ListSearch, Pagination, pageUrl, useCanonicalPage, useListQuery, usePag
 import { formatExamWindow } from './exam-presentation.js';
 import { EventEditor, ConcreteEditor } from './exam-event-editors.js';
 import { EventMembers } from './exam-event-members.js';
+import { FilterActions, useStagedFilters } from './list-filters.js';
 import './exam-events.css';
 
 export function ExamEvents({ onManage, createTemplate, onCreateClose, onSaved }: {
@@ -18,7 +19,9 @@ export function ExamEvents({ onManage, createTemplate, onCreateClose, onSaved }:
     onCreateClose: () => void;
     onSaved: () => void;
 }) {
-    const list = useListQuery(), exams = useListQuery();
+    const list = useListQuery(), exams = useListQuery(), query = useStagedFilters({ q: '', exam: '' });
+    function applyFilters() { query.apply(); list.setPage(1); }
+    function resetFilters() { query.reset(); list.setPage(1); }
     const [parent, setParent] = useState<ExamEvent | null>(null),
         [editor, setEditor] = useState<{ item: ExamEvent | null } | null>(null),
         [examEditor, setExamEditor] = useState<{ item: ExamConcrete | null } | null>(null),
@@ -29,8 +32,7 @@ export function ExamEvents({ onManage, createTemplate, onCreateClose, onSaved }:
     const events = usePageResource(ExamEventPageSchema, parent ? null : pageUrl('/admin/exam-events/page', {
         page: list.page,
         pageSize: list.pageSize,
-        q: list.q,
-        exam: list.filter,
+        ...query.applied,
     }));
     const children = usePageResource(ExamConcretePageSchema, parent ? pageUrl('/admin/exam-events/' + parent.id + '/exams/page', {
         page: exams.page,
@@ -82,9 +84,6 @@ export function ExamEvents({ onManage, createTemplate, onCreateClose, onSaved }:
                 <button className="quiet" onClick={() => { setParent(null); setError(''); }}>‹ 全部场次</button>
                 <div className="event-toolbar-actions">
                     <button className="secondary" onClick={() => setEditor({ item: selected })}>编辑场次</button>
-                    <button className="primary" onClick={() => setExamEditor({ item: null })}>
-                        <Icon name="plus"/>新建具体考试
-                    </button>
                 </div>
             </div>
             <div className="card event-summary">
@@ -102,6 +101,9 @@ export function ExamEvents({ onManage, createTemplate, onCreateClose, onSaved }:
             <div className="list-toolbar student-list-tools">
                 <ListSearch label="搜索具体考试" value={exams.q} onSearch={exams.setQ}/>
                 <RefreshButton busy={children.refreshing} onRefresh={children.refreshManually}/>
+                <div className="list-actions"><button className="primary" onClick={() => setExamEditor({ item: null })}>
+                    <Icon name="plus"/>新建具体考试
+                </button></div>
             </div>
             {children.loading && !children.data && <p className="empty">正在读取…</p>}
             {children.data?.items.map(item => <article key={item.id} className="card event-record" aria-label={item.title}>
@@ -126,12 +128,13 @@ export function ExamEvents({ onManage, createTemplate, onCreateClose, onSaved }:
                 onPage={exams.setPage} onPageSize={exams.setPageSize}/>
         </> : <>
             <div className="list-toolbar event-list-tools">
-                <ListSearch label="搜索场次或模板" value={list.q} onSearch={list.setQ}/>
-                <Select label="考试类型" value={list.filter} onChange={list.setFilter} options={[
+                <ListSearch label="搜索场次或模板" value={query.draft.q??''} onDraftChange={value=>query.setField('q',value)} onSearch={applyFilters}/>
+                <Select label="考试类型" value={query.draft.exam??''} onChange={value=>query.setField('exam',value)} options={[
                     { value: '', label: '全部类型' },
                     ...ExamTypeSchema.options.map(exam => ({ value: exam, label: EXAM_LABELS[exam] })),
                 ]}/>
-                <button className="primary" onClick={() => setEditor({ item: null })}><Icon name="plus"/>新建场次</button>
+                <FilterActions {...query} onApply={applyFilters} onReset={resetFilters}/>
+                <div className="list-actions"><button className="primary" onClick={() => setEditor({ item: null })}><Icon name="plus"/>新建场次</button></div>
             </div>
             {events.loading && !events.data && <p className="empty">正在读取…</p>}
             {events.data?.items.map(item => <article key={item.id} className="card event-record" aria-label={item.title}>

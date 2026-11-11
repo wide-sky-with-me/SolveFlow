@@ -1,3 +1,4 @@
+// Decision: .agents/notes/implemented/architecture/2026-11-09-managed-backend-performance.md
 // Decision: .agents/notes/implemented/architecture/2026-11-04-managed-exam-audit-fixes.md
 // Decision: .agents/notes/implemented/architecture/2026-11-03-exam-review-hardening.md
 // Decision: .agents/notes/implemented/architecture/2026-11-02-managed-exam-foundation.md
@@ -54,8 +55,10 @@ export async function lockActor(c: pg.PoolClient, actor: ExamUser) {
         throw forbidden();
     return current;
 }
+// Fixed trusted aliases a/s; used by scoped assignment, image and sequence reads.
+export const assignmentAccessSql = `($2::boolean OR a.student_id=$3 OR ($4::boolean AND s.manager_id=$3) OR ($5::boolean AND EXISTS(SELECT 1 FROM exam_app.staff_assignments f WHERE f.assignment_id=a.id AND f.staff_id=$3 AND f.revoked_at IS NULL)))`;
 export async function scope(db: Queryable, actor: ExamUser, assignmentId: string, studentOnly = false) {
-    const allowed = await one(db, z.boolean(), `SELECT EXISTS(SELECT 1 FROM exam_app.exam_assignments a JOIN exam_app.exam_sittings s ON s.id=a.sitting_id WHERE a.id=$1 AND ($2::boolean OR a.student_id=$3 OR ($4::boolean AND s.manager_id=$3) OR ($5::boolean AND EXISTS(SELECT 1 FROM exam_app.staff_assignments f WHERE f.assignment_id=a.id AND f.staff_id=$3 AND f.revoked_at IS NULL)))) AS value`, [assignmentId, !studentOnly && isAdmin(actor), actor.id, !studentOnly && actor.roles.includes('manager'), !studentOnly && actor.roles.includes('support')]);
+    const allowed = await one(db, z.boolean(), `SELECT EXISTS(SELECT 1 FROM exam_app.exam_assignments a JOIN exam_app.exam_sittings s ON s.id=a.sitting_id WHERE a.id=$1 AND ${assignmentAccessSql}) AS value`, [assignmentId, !studentOnly && isAdmin(actor), actor.id, !studentOnly && actor.roles.includes('manager'), !studentOnly && actor.roles.includes('support')]);
     if (!allowed)
         throw forbidden();
 }
@@ -87,8 +90,17 @@ export async function createSession(pool: pg.Pool, user: ExamUser, expectedAuthV
 export async function authenticate(pool: pg.Pool, token: string | undefined) {
     if (!token || !/^[\w-]{43}$/.test(token))
         throw new ExamError(401, 'UNAUTHORIZED', '请先登录。');
-    const found = await rows(pool, z.strictObject({ user: ExamUserSchema, expiresAt: z.coerce.date().transform(v => v.toISOString()) }), `UPDATE exam_app.auth_sessions s SET last_seen_at=now() FROM exam_app.users u WHERE s.user_id=u.id AND s.token_hash=decode($1,'hex') AND s.revoked_at IS NULL AND s.expires_at>now() AND s.auth_version=u.auth_version AND u.state='active' RETURNING jsonb_build_object('user',${userJson},'expiresAt',s.expires_at) AS value`, [hash(token)]);
-    if (!found[0])
+    const sessionSchema = z.strictObject({ user: ExamUserSchema, expiresAt: z.coerce.date().transform(v => v.toISOString()) });
+    const predicate = `s.user_id=u.id AND s.token_hash=decode($1,'hex') AND s.revoked_at IS NULL AND s.expires_at>now() AND s.auth_version=u.auth_version AND u.state='active'`;
+    const params = [hash(token)];
+    const found = (await rows(pool, sessionSchema.extend({ touch: z.boolean() }), `SELECT jsonb_build_object('user',${userJson},'expiresAt',s.expires_at,'touch',s.last_seen_at<=now()-interval '5 seconds') AS value FROM exam_app.auth_sessions s JOIN exam_app.users u ON ${predicate}`, params))[0];
+    if (!found)
         throw new ExamError(401, 'UNAUTHORIZED', '登录已失效，请重新登录。');
-    return found[0];
+    if (!found.touch) return { user: found.user, expiresAt: found.expiresAt };
+    // Recheck revocation after any lock wait. Concurrent readers may already have touched it.
+    const touched = (await rows(pool, sessionSchema, `UPDATE exam_app.auth_sessions s SET last_seen_at=now() FROM exam_app.users u WHERE ${predicate} AND s.last_seen_at<=now()-interval '5 seconds' RETURNING jsonb_build_object('user',${userJson},'expiresAt',s.expires_at) AS value`, params))[0];
+    if (touched) return touched;
+    const current = (await rows(pool, sessionSchema, `SELECT jsonb_build_object('user',${userJson},'expiresAt',s.expires_at) AS value FROM exam_app.auth_sessions s JOIN exam_app.users u ON ${predicate}`, params))[0];
+    if (!current) throw new ExamError(401, 'UNAUTHORIZED', '登录已失效，请重新登录。');
+    return current;
 }

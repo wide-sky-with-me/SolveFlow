@@ -1,22 +1,32 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ExamIssueQueueSchema, type ExamIssueQueueItem } from '@solveflow/contracts/managed-exam';
 import { Icon } from '@solveflow/web-ui/icons';
 import { alertLabels, ErrorText } from './components.js';
 import { usePageResource } from './paging.js';
 
-export function TeacherAttention({ hidden, onOpen, onViewAll }: { hidden: boolean; onOpen: (item: ExamIssueQueueItem) => void; onViewAll: () => void }) {
+export function TeacherAttention({ hidden, onOpen, onViewAll, onSpaceChange }: { hidden: boolean; onOpen: (item: ExamIssueQueueItem) => void; onViewAll: () => void; onSpaceChange: (space: number) => void }) {
     const { data, error } = usePageResource(ExamIssueQueueSchema, '/admin/issues?limit=3');
     const [expanded, setExpanded] = useState(false);
     useEffect(() => { if ((data?.total ?? 0) < 2) setExpanded(false); }, [data?.total]);
     const [host, setHost] = useState<Element>(() => document.fullscreenElement ?? document.body);
+    const reminder = useRef<HTMLElement>(null), visible = !hidden && (!!data?.total || !!error);
+    useLayoutEffect(() => {
+        const element = reminder.current;
+        // Dialogs temporarily hide the reminder; keep its space so the page does not jump behind them.
+        if (!visible || !element) { if (!hidden) onSpaceChange(0); return; }
+        const measure = () => onSpaceChange(Math.ceil(element.getBoundingClientRect().height + (parseFloat(getComputedStyle(element).bottom) || 0) + 20));
+        const observer = new ResizeObserver(measure);
+        observer.observe(element); window.addEventListener('resize', measure); measure();
+        return () => { observer.disconnect(); window.removeEventListener('resize', measure); };
+    }, [visible, hidden, host, onSpaceChange]);
     useEffect(() => {
         const change = () => setHost(document.fullscreenElement ?? document.body);
         document.addEventListener('fullscreenchange', change);
         return () => document.removeEventListener('fullscreenchange', change);
     }, []);
-    if (hidden || !data?.total && !error) return null;
-    return createPortal(<aside className="teacher-attention" aria-label="教师待处理提醒">
+    if (!visible) return null;
+    return createPortal(<aside ref={reminder} className="teacher-attention" aria-label="教师待处理提醒">
       {!!data?.total && <>
         <button className="teacher-attention-heading" aria-label="打开教师待处理提醒" aria-expanded={data.total > 1 ? expanded : undefined} onClick={() => { const first = data.items[0]; if (data.total === 1 && first) onOpen(first); else setExpanded(value => !value); }}>
           <span className="teacher-attention-mark"><Icon name="alert"/></span><strong aria-live="polite">待处理 · {data.total} 题</strong><Icon name={data.total > 1 ? 'chevron-down' : 'chevron-right'}/>

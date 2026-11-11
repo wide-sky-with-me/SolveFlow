@@ -1,3 +1,4 @@
+import { MediaReader } from './media-reader.js';
 // Decision: .agents/notes/implemented/architecture/2026-11-05-exam-client-recovery.md
 import { Hono } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
@@ -14,7 +15,7 @@ import { userPage, templatePage, sittingPage, assignmentPage, progressPage, stud
 import { buildCatalogTemplate, EXAM_CATALOG } from '@solveflow/contracts/exam-catalog';
 // Decision: .agents/notes/implemented/architecture/2026-11-06-student-rerun.md
 import { hasAvailableExam, endExamAttempt, studentRun, teacherRun, teacherConfirm, deferSlot, navigateAttempt, issueQueue, readResolution, readAnswerRevision, dashboard } from '@solveflow/db';
-import { upload, readImage, imageAccess } from './images.js';
+import { upload, imageAccess } from './images.js';
 import type { ExamStorage } from './storage.js';
 import { clientAddressResolver } from './client-address.js';
 import { ExamPracticeRequestSchema } from '@solveflow/contracts/exam-practice';
@@ -112,6 +113,7 @@ export function createExamService(options: ExamServiceOptions) {
     const app = new Hono();
     const clientAddress = clientAddressResolver(options.trustedProxyCidrs);
     let imageJobs = 0;
+    const media = new MediaReader(storage);
     const dummyHash = passwordHash('synthetic-invalid-account', { algorithm: 2, memoryCost: 19456, timeCost: 2, parallelism: 1, outputLen: 32 });
     app.use('*', async (c, next) => { c.header('Cache-Control', 'no-store'); c.header('X-Content-Type-Options', 'nosniff'); c.header('Referrer-Policy', 'no-referrer'); c.header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"); c.header('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()'); if (secure)
         c.header('Strict-Transport-Security', 'max-age=31536000'); if (!['GET', 'HEAD'].includes(c.req.method) && !allowedOrigins.has(c.req.header('origin') ?? ''))
@@ -197,7 +199,8 @@ export function createExamService(options: ExamServiceOptions) {
         const headers={'content-type':'image/jpeg','cache-control':'private, no-store','x-content-type-options':'nosniff'};
         // Hono dispatches HEAD through GET; authorize it before touching object storage.
         if(c.req.method==='HEAD'){const access=await imageAccess(pool,actor,id,view);return new Response(null,{headers:{...headers,'content-length':String(access.byteSize)}});}
-        const bytes=await readImage(pool,storage,actor,id,view);return new Response(Uint8Array.from(bytes),{headers});
+        const access=await imageAccess(pool,actor,id,view);
+        return new Response(await media.read(access,view!=='source',c.req.raw.signal),{headers:{...headers,'content-length':String(access.byteSize)}});
     });
     app.post('/api/v2/runs/:id/cancel', async (c) => c.json(await cancelJob(pool, (await session(c.req.header('cookie'))).user, z.uuid().parse(c.req.param('id')))));
     app.post('/api/v2/slots/:id/run', async c => {
@@ -275,5 +278,5 @@ export function createExamService(options: ExamServiceOptions) {
         return c.json({ code: error.code, message: error.message }, error.status >= 500 ? 503 : error.status === 401 ? 401 : error.status === 403 ? 403 : error.status === 404 ? 404 : error.status === 409 ? 409 : error.status === 413 ? 413 : error.status === 415 ? 415 : error.status === 429 ? 429 : 400); if (error instanceof z.ZodError)
         return c.json({ code: 'INVALID_INPUT', message: '输入内容不符合要求，请检查后重试。' }, 400); if ('code' in error && error.code === '23505')
         return c.json({ code: 'CONFLICT', message: '记录已存在或操作已提交，请刷新后重试。' }, 409); console.error(JSON.stringify({ event: 'exam.request.failed', code: 'INTERNAL' })); return c.json({ code: 'UNAVAILABLE', message: '服务暂不可用，请稍后重试。' }, 503); });
-    return { app, session };
+    return { app, session, close: () => media.close() };
 }

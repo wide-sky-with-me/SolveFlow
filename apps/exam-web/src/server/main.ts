@@ -50,7 +50,7 @@ async function main() {
             console.info(JSON.stringify({ event: 'exam.bootstrap.complete' }));
         }
         else {
-            const version = await database.pool.query('SELECT 1 FROM solveflow_migrations WHERE version=11');
+            const version = await database.pool.query('SELECT 1 FROM solveflow_migrations WHERE version=12');
             if (version.rowCount !== 1)
                 throw new Error('EXAM_MIGRATION_REQUIRED');
             if (storage instanceof PrivateS3Storage)
@@ -82,7 +82,7 @@ async function main() {
                         void cache.presence(session.user.id).catch(() => { });
                     return session;
                 }, config.httpTrialAliases);
-                cleanup = () => { closeRealtime(); server.closeAllConnections(); server.close(); };
+                cleanup = () => { service.close(); closeRealtime(); server.closeAllConnections(); server.close(); };
                 console.info(JSON.stringify({ event: 'exam.api.ready', port }));
                 tasks.push(new Promise<void>(resolve => controller.signal.addEventListener('abort', () => resolve(), { once: true })));
             }

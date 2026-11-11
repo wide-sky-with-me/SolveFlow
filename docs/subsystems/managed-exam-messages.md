@@ -1,6 +1,6 @@
 # 教师独立消息
 
-教师可以对已拍题只发消息，无须选择或填写答案；与[人工确认和问题解决](managed-exam-attention.md)分开。界面入口为教师题目详情“发消息”，契约归[managed-exam](../../packages/contracts/src/managed-exam.ts)，事务归[exam-messages](../../packages/db/src/exam-messages.ts)。
+教师可以对已拍题只发消息，无须选择或填写答案；与[人工确认和问题解决](managed-exam-attention.md)分开。从教师详情“发消息”标签进入右侧面板，不另开编辑弹窗；发送成功原位提示并清空正文，同题草稿切换归[界面约定](managed-interface.md)。契约归[managed-exam](../../packages/contracts/src/managed-exam.ts)，事务归[exam-messages](../../packages/db/src/exam-messages.ts)。
 
 ## 发送与接收
 

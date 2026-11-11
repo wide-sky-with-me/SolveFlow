@@ -336,15 +336,15 @@ describe.skipIf(!url)('exam event hierarchy and standalone teacher messages', ()
                 await context.request.post(origin+'/api/v2/auth/login',{headers:{origin},data:{username:teacher.username,password:'synthetic-password-123'}});await page.goto(origin);
                 await page.getByRole('navigation',{name:'管理导航'}).getByRole('button',{name:'实时跟踪',exact:true}).click();
                 await page.getByRole('row').filter({hasText:f.child.displayName}).getByRole('button',{name:'查看',exact:true}).click();
-                const monitor=page.getByRole('dialog',{name:f.child.displayName,exact:true});await monitor.getByRole('button',{name:'模块1 · 第2题',exact:true}).click();await monitor.getByRole('button',{name:'发消息',exact:true}).click();
+                const monitor=page.getByRole('dialog',{name:f.child.displayName,exact:true});await monitor.getByRole('button',{name:'模块1 · 第2题',exact:true}).click();await monitor.getByRole('tab',{name:'发消息',exact:true}).click();
                 await page.route('**/api/v2/admin/slots/*/messages',async route=>{
                     const body:unknown=route.request().postDataJSON();const value=body&&typeof body==='object'&&'requestId'in body&&typeof body.requestId==='string'&&'message'in body&&typeof body.message==='string'?{requestId:body.requestId,message:body.message}:null;if(!value)throw new Error('NO_MESSAGE_BODY');sent.push(value);
                     const response=await route.fetch();if(sent.length<3){expect(response.status()).toBe(200);await route.fulfill({status:503,json:{message:'合成响应丢失'}});}else await route.fulfill({response});
                 });
-                const composer=page.getByRole('dialog',{name:'通知学生',exact:true});await composer.getByLabel('消息内容').fill('第一条内容');
+                const composer=monitor.getByRole('tabpanel',{name:'发消息',exact:true});await composer.getByLabel('消息内容').fill('第一条内容');
                 for(let i=0;i<2;i++){await composer.getByRole('button',{name:'发送消息',exact:true}).click();await composer.getByText('合成响应丢失',{exact:true}).waitFor();}
                 expect((await teacherMessages(pool(),f.child)).items).toHaveLength(1);expect(sent[0]?.requestId).toBe(sent[1]?.requestId);
-                await composer.getByLabel('消息内容').fill('修改后的第二条内容');await composer.getByRole('button',{name:'发送消息',exact:true}).click();await composer.waitFor({state:'hidden'});
+                await composer.getByLabel('消息内容').fill('修改后的第二条内容');await composer.getByRole('button',{name:'发送消息',exact:true}).click();await composer.getByText('消息已发送',{exact:true}).waitFor();
                 expect(sent[2]?.requestId).not.toBe(sent[0]?.requestId);expect((await teacherMessages(pool(),f.child)).items.map(item=>item.message)).toEqual(['第一条内容','修改后的第二条内容']);
             }finally{await context.close();await browser.close();}
         },30000);
@@ -429,6 +429,7 @@ describe.skipIf(!url)('exam event hierarchy and standalone teacher messages', ()
                 await members.getByRole('cell', { name: 'student_two', exact: true }).first().waitFor();
                 await members.getByRole('combobox', { name: '人员类型', exact: true }).click();
                 await members.getByRole('option', { name: '老师', exact: true }).click();
+                await members.getByRole('button', { name: '查询', exact: true }).click();
                 await browserExpect(members.locator('tbody tr')).toHaveCount(2);
                 await members.getByRole('button', { name: '关闭', exact: true }).click();
                 await row.getByRole('button', { name: '删除', exact: true }).click();
@@ -466,12 +467,25 @@ describe.skipIf(!url)('exam event hierarchy and standalone teacher messages', ()
                 await t.getByRole('row').filter({ hasText: f.child.displayName }).getByRole('button', { name: '查看', exact: true }).click();
                 const monitor = t.getByRole('dialog', { name: f.child.displayName, exact: true });
                 await monitor.getByRole('button', { name: '模块1 · 第2题', exact: true }).click();
-                await monitor.getByRole('button', { name: '发消息', exact: true }).click();
-                const composer = t.getByRole('dialog', { name: '通知学生', exact: true });
+                await monitor.getByRole('tab', { name: '发消息', exact: true }).click();
+                const composer = monitor.getByRole('tabpanel', { name: '发消息', exact: true });
                 expect(await composer.locator('input[type=radio]').count()).toBe(0);
                 await composer.getByLabel('消息内容', { exact: true }).fill('请重新拍摄完整表格，暂时不要重新解答。');
+                expect(await t.getByRole('dialog').count()).toBe(1);
+                const modes = monitor.getByRole('tablist', { name: '题目处理', exact: true });
+                const questionImage = await monitor.getByRole('region', { name: '题目与原图', exact: true }).locator('img').getAttribute('src');
+                await modes.getByRole('tab', { name: '手动作答', exact: true }).click();
+                await monitor.getByLabel('确认答案', { exact: true }).fill('未提交的人工答案。');
+                await monitor.getByLabel('处理意见', { exact: true }).fill('切换面板不应自动提交。');
+                await modes.getByRole('tab', { name: '发消息', exact: true }).click();
+                expect(await composer.getByLabel('消息内容', { exact: true }).inputValue()).toBe('请重新拍摄完整表格，暂时不要重新解答。');
+                expect(await monitor.getByRole('region', { name: '题目与原图', exact: true }).locator('img').getAttribute('src')).toBe(questionImage);
+                await modes.getByRole('tab', { name: '手动作答', exact: true }).click();
+                expect(await monitor.getByLabel('确认答案', { exact: true }).inputValue()).toBe('未提交的人工答案。');
+                await monitor.getByRole('tabpanel', { name: '手动作答', exact: true }).getByRole('button', { name: '取消', exact: true }).click();
+                await modes.getByRole('tab', { name: '发消息', exact: true }).click();
                 await composer.getByRole('button', { name: '发送消息', exact: true }).click();
-                await composer.waitFor({ state: 'hidden' });
+                await composer.getByText('消息已发送', { exact: true }).waitFor();
                 await s.goto(origin);
                 const notice = s.getByRole('region', { name: '老师消息', exact: true });
                 await notice.waitFor();
@@ -513,4 +527,111 @@ describe.skipIf(!url)('exam event hierarchy and standalone teacher messages', ()
                 await browser.close();
             }
         }, 30000);
+    for (const engine of ['chrome', 'webkit'] as const) {
+        it(`UI consistency: combined filters wait for one query and reset together in ${engine}`, async () => {
+            const browser = await (engine === 'chrome' ? chromium.launch({ executablePath: '/usr/bin/google-chrome' }) : webkit.launch());
+            const context = await browser.newContext(), page = await context.newPage();
+            page.setDefaultTimeout(4000);
+            try {
+                await context.request.post(origin + '/api/v2/auth/login', { headers: { origin }, data: { username: admin.username, password: 'synthetic-password-123' } });
+                await page.goto(origin);
+                await page.getByRole('navigation', { name: '管理导航' }).getByRole('button', { name: '用户管理', exact: true }).click();
+                const users = page.getByRole('region', { name: '用户列表', exact: true });
+                await users.getByRole('row').filter({ hasText: 'student_two' }).waitFor();
+                const originalRows = await users.locator('tbody tr').allTextContents();
+                const reads: URL[] = [];
+                page.on('request', request => { const url = new URL(request.url()); if (url.pathname.endsWith('/admin/users/page')) reads.push(url); });
+                await users.getByRole('combobox', { name: '身份', exact: true }).click();
+                await page.getByRole('option', { name: '学生', exact: true }).click();
+                await users.getByRole('combobox', { name: '用户状态', exact: true }).click();
+                await page.getByRole('option', { name: '正常', exact: true }).click();
+                await users.getByRole('searchbox').fill('student_two');
+                await page.waitForTimeout(200);
+                expect(reads).toHaveLength(0);
+                await browserExpect(users.getByRole('status')).toContainText('3 项条件待应用');
+                expect(await users.locator('tbody tr').allTextContents()).toEqual(originalRows);
+                const screens = join(process.cwd(), '.runtime/ui-audit-20261108/screens'); await mkdir(screens, { recursive: true });
+                await page.setViewportSize({ width: 390, height: 900 });
+                await page.screenshot({ path: join(screens, `filters-pending-${engine}.png`), animations: 'disabled' });
+                await page.setViewportSize({ width: 1440, height: 900 });
+                const query = page.waitForResponse(response => response.url().includes('/admin/users/page?') && new URL(response.url()).searchParams.get('q') === 'student_two');
+                await users.getByRole('button', { name: '查询', exact: true }).click(); await query;
+                await browserExpect(users.getByRole('row')).toHaveCount(2);
+                expect(reads).toHaveLength(1);
+                expect(Object.fromEntries(reads[0]?.searchParams ?? [])).toMatchObject({ role: 'student', state: 'active', q: 'student_two', page: '1' });
+                await browserExpect(users.getByRole('status')).toHaveCount(0);
+                const reset = page.waitForResponse(response => response.url().includes('/admin/users/page?') && !new URL(response.url()).searchParams.has('q'));
+                await users.getByRole('button', { name: '重置', exact: true }).click(); await reset;
+                expect(reads).toHaveLength(2);
+                expect(reads[1]?.searchParams.has('role')).toBe(false);
+                expect(reads[1]?.searchParams.has('state')).toBe(false);
+                await browserExpect(users.getByRole('searchbox')).toHaveValue('');
+                await browserExpect.poll(() => users.locator('tbody tr').allTextContents()).toEqual(originalRows);
+            } finally { await context.close(); await browser.close(); }
+        }, 30000);
+        it(`UI consistency: expanded attention leaves final list actions reachable in ${engine}`, async () => {
+            for (let i = 0; i < 3; i++) await failedQuestion('attention_layout_' + engine + '_' + i);
+            const browser = await (engine === 'chrome' ? chromium.launch({ executablePath: '/usr/bin/google-chrome' }) : webkit.launch());
+            const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }), page = await context.newPage();
+            page.setDefaultTimeout(4000);
+            try {
+                await context.request.post(origin + '/api/v2/auth/login', { headers: { origin }, data: { username: admin.username, password: 'synthetic-password-123' } });
+                await page.goto(origin);
+                await page.getByRole('navigation', { name: '管理导航' }).getByRole('button', { name: '用户管理', exact: true }).click();
+                const notice = page.getByRole('complementary', { name: '教师待处理提醒' });
+                await notice.getByRole('button', { name: '打开教师待处理提醒' }).click();
+                await notice.getByRole('button', { name: '查看全部待处理题' }).waitFor();
+                const screens = join(process.cwd(), '.runtime/ui-audit-20261108/screens'); await mkdir(screens, { recursive: true });
+                for (const width of [1440, 390, 320]) {
+                    await page.setViewportSize({ width, height: 900 });
+                    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+                    await page.waitForTimeout(100);
+                    const pager = page.getByRole('navigation', { name: '用户列表分页' });
+                    const footer = await pager.boundingBox(), alert = await notice.boundingBox();
+                    await page.screenshot({ path: join(screens, `attention-${engine}-${width}.png`), animations: 'disabled' });
+                    expect(footer).not.toBeNull(); expect(alert).not.toBeNull();
+                    expect((footer?.y ?? 0) + (footer?.height ?? 0)).toBeLessThanOrEqual((alert?.y ?? 0) - 12);
+                    await pager.getByRole('combobox', { name: '每页条数' }).click();
+                    await page.getByRole('option', { name: '50条 / 页', exact: true }).click();
+                    await browserExpect(notice).toBeVisible();
+                    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+                    if (width === 1440) {
+                        const lastEdit = page.getByRole('region', { name: '用户列表', exact: true }).locator('tbody tr').last().getByRole('button', { name: '编辑', exact: true });
+                        await lastEdit.scrollIntoViewIfNeeded();
+                        const position = await page.evaluate(() => scrollY);
+                        await lastEdit.click();
+                        const edit = page.getByRole('dialog', { name: '编辑用户', exact: true }); await edit.waitFor();
+                        await edit.getByRole('button', { name: '关闭', exact: true }).click();
+                        await browserExpect(notice).toBeVisible();
+                        expect(Math.abs(await page.evaluate(() => scrollY) - position)).toBeLessThanOrEqual(2);
+                    }
+                }
+            } finally { await context.close(); await browser.close(); }
+        }, 30000);
+        it(`UI consistency: remaining admin pages fit both themes and narrow screens in ${engine}`, async () => {
+            const browser = await (engine === 'chrome' ? chromium.launch({ executablePath: '/usr/bin/google-chrome' }) : webkit.launch());
+            const context = await browser.newContext(), page = await context.newPage(), errors: string[] = [];
+            page.setDefaultTimeout(5000); page.on('pageerror', error => errors.push(error.message));
+            const screens = join(process.cwd(), '.runtime/ui-audit-20261108/screens'); await mkdir(screens, { recursive: true });
+            try {
+                await context.request.post(origin + '/api/v2/auth/login', { headers: { origin }, data: { username: admin.username, password: 'synthetic-password-123' } });
+                await page.goto(origin);
+                for (const [name, code] of [['看板首页', 'dashboard'], ['实时跟踪', 'tracking'], ['待处理题', 'issues'], ['用户管理', 'users'], ['考试安排', 'events'], ['角色权限', 'roles']] as const) {
+                    await page.setViewportSize({ width: 1440, height: 1000 });
+                    await page.getByRole('navigation', { name: '管理导航' }).getByRole('button', { name, exact: true }).click();
+                    const main = page.getByRole('main', { name, exact: true }); await main.waitFor();
+                    await browserExpect(main.getByText(/正在读取|正在同步/)).toHaveCount(0);
+                    for (const width of [1440, 390, 320]) for (const theme of ['light', 'dark']) {
+                        await page.setViewportSize({ width, height: 900 });
+                        await page.evaluate(theme => { document.documentElement.dataset.theme = theme; window.scrollTo(0, 0); }, theme);
+                        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+                        await page.screenshot({ path: join(screens, `${code}-${engine}-${width}-${theme}.png`), animations: 'disabled' });
+                    }
+                }
+                expect(errors).toEqual([]);
+            } finally { await context.close(); await browser.close(); }
+        }, 60000);
+
+    }
+
 });
