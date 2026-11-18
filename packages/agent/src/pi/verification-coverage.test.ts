@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { assessVerificationCoverage } from './verification-coverage.js';
 it('does not turn a transcription-only check into a verified answer', () => {
-  expect(assessVerificationCoverage({ schemaVersion: 1, verdict: 'pass', checked: ['transcription'], issues: [] })).toMatchObject({ verdict: 'unknown', issues: [{ code: 'INSUFFICIENT_EVIDENCE' }] });
+  expect(assessVerificationCoverage({ schemaVersion: 1, verdict: 'pass', checked: ['transcription'], issues: [] })).toMatchObject({ verdict: 'unknown', issues: [{ code: 'REVIEW_INCOMPLETE' }] });
 });
 it('requires original transcription plus a substantive answer check and preserves failures', () => {
   for (const checked of [['transcription', 'logic'], ['transcription', 'arithmetic']] as const) expect(assessVerificationCoverage({ schemaVersion: 1, verdict: 'pass', checked: [...checked], issues: [] }).verdict).toBe('pass');

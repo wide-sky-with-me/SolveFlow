@@ -8,7 +8,7 @@ const input: SolverInput = { schemaVersion: 1, role: 'solver', exam: 'general', 
 const candidate = { schemaVersion: 1, kind: 'answer', problem: { text: 'A table gives x = 2.', subject: 'math', uncertainties: [] }, answer: 'x=2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] };
 const source = { schemaVersion: 1, kind: 'act-transcript', subject: 'math', blocks: [], questions: [{ number: 1, text: candidate.problem.text, activeSpan: null, uncertainties: [] }], uncertainties: [] };
 const region = { imageIndex: 1, x: .2, y: .3, width: .4, height: .1 };
-const fail = { schemaVersion: 1, verdict: 'fail', checked: ['transcription'], issues: [{ code: 'TRANSCRIPTION', message: 'Read this source table cell again.', imageRegion: region }] };
+const fail = { schemaVersion: 1, verdict: 'fail', checked: ['transcription'], issues: [{ code: 'TRANSCRIPTION', basis: 'The row marked x shows 2 in the source table.', message: 'Read this source table cell again.', imageRegion: region }] };
 const pass = { schemaVersion: 1, verdict: 'pass', checked: ['transcription', 'arithmetic'], issues: [], actTranscription: { body: 'pass', question: 'pass', options: 'not_applicable', activeSpan: 'not_applicable', tables: 'not_applicable' } };
 function reply(value: unknown) { return new Response(JSON.stringify({ id: 'fixture', object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content: JSON.stringify(value) }, finish_reason: 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 50, total_tokens: 70 } }), { headers: { 'content-type': 'application/json' } }); }
 type Request = { role?: string; task?: string; revision?: unknown; derivedViews?: { source?: string; regions?: unknown[] } };
@@ -67,7 +67,7 @@ describe('bounded visual issue review across exams', () => {
   });
   it.each([undefined, { ...region, imageIndex: 2 }])('keeps unlocated or unavailable-source issues on the existing full-image correction path', async imageRegion => {
     let calls = 0; let reviews = 0; let preparations = 0;
-    const review = { ...fail, issues: [{ code: 'TRANSCRIPTION', message: 'Recheck the original.', ...(imageRegion ? { imageRegion } : {}) }] };
+    const review = { ...fail, issues: [{ code: 'TRANSCRIPTION', basis: 'The row marked x shows 2 in the source table.', message: 'Recheck the original.', ...(imageRegion ? { imageRegion } : {}) }] };
     const outcome = await solveOnDevice(input, settings, { solver: 'fixture', verifier: null }, async (_url, init) => { calls++; return reply(requestData(init).role === 'verifier' ? ++reviews === 1 ? review : pass : candidate); }, new AbortController().signal, () => {}, () => {}, undefined, undefined, undefined, async () => { preparations++; return []; });
     expect(outcome).toMatchObject({ status: 'completed', verified: true }); expect(calls).toBe(4); expect(preparations).toBe(0);
   });

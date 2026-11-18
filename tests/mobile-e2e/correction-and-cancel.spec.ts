@@ -18,7 +18,7 @@ test('correcting one question prefills its statement and keeps an unverified rev
   await page.route('https://fixture-model.invalid/v1/chat/completions', async route => {
     posted.push(lastModelInput(route.request().postDataJSON()));
     const candidate = { ...original.candidate, questions: undefined, problem: { text: '2x+5=7', subject: 'math', uncertainties: [] }, answer: '更正结论 x = 1', steps: [] };
-    await route.fulfill({ contentType: 'text/event-stream', body: modelSse(posted.length === 1 ? candidate : { schemaVersion: 1, verdict: 'unknown', checked: ['transcription'], issues: [{ code: 'INSUFFICIENT_EVIDENCE', message: '需要再次核对条件' }] }, route.request().postDataJSON()) });
+    await route.fulfill({ contentType: 'text/event-stream', body: modelSse(posted.length === 1 ? candidate : { schemaVersion: 1, verdict: 'unknown', checked: ['transcription'], issues: [{ code: 'INSUFFICIENT_EVIDENCE', basis: '原图下方的数值没有拍全。', message: '需要再次核对条件' }] }, route.request().postDataJSON()) });
   });
   await seedLocalSession(page, session, image); await configureLocalModel(page); await page.getByRole('tab', { name: '跳转第2题', exact: true }).click();
   const q1 = page.getByRole('region', { name: '第1题解答', exact: true }); const q2 = page.getByRole('region', { name: '第2题解答', exact: true });

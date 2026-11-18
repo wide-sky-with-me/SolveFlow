@@ -6,7 +6,7 @@ import { Type } from '@earendil-works/pi-ai';
 import { stream } from '@earendil-works/pi-ai/api/openai-completions';
 import { stream as streamResponses } from '@earendil-works/pi-ai/api/openai-responses';
 import { z } from 'zod';
-import { DEVICE_RUN_DURATION_MS, MAX_DEVICE_PHASE_DURATION_MS, MAX_DEVICE_SOLVER_PHASE_MS, MAX_DEVICE_VERIFIER_PHASE_MS, MAX_DEVICE_BRIEF_THINKING_MS, MAX_VERIFIER_PHASE_ATTEMPTS, MAX_MODEL_STREAM_BYTES, MAX_SOLVER_MODEL_ATTEMPTS, MAX_VERIFIER_MODEL_ATTEMPTS, BriefSolverCandidateSchema, GeneratedSolverCandidateSchema, ClarificationCandidateSchema, ActTranscriptSchema, VerificationSchema, normalizeGeneratedCandidate, parseCandidateWithEvidence, parseCandidateForExam, parseVerificationForCandidate, type ActTranscript, type AgentInput, type AnswerCandidate, type PhaseResult, type SolverInput, type PublicAgentEvent } from '@solveflow/contracts/agent';
+import { DEVICE_RUN_DURATION_MS, MAX_DEVICE_PHASE_DURATION_MS, MAX_DEVICE_SOLVER_PHASE_MS, MAX_DEVICE_VERIFIER_PHASE_MS, MAX_DEVICE_BRIEF_THINKING_MS, MAX_VERIFIER_PHASE_ATTEMPTS, MAX_MODEL_STREAM_BYTES, MAX_SOLVER_MODEL_ATTEMPTS, MAX_VERIFIER_MODEL_ATTEMPTS, BriefSolverCandidateSchema, GeneratedSolverCandidateSchema, ClarificationCandidateSchema, ActTranscriptSchema, GeneratedVerificationSchema, normalizeGeneratedCandidate, parseCandidateWithEvidence, parseCandidateForExam, parseGeneratedVerification, type ActTranscript, type AgentInput, type AnswerCandidate, type PhaseResult, type SolverInput, type PublicAgentEvent } from '@solveflow/contracts/agent';
 import { MAX_QUESTION_IMAGE_BYTES, LocalDiagnosticSchema, ExamTypeSchema, type ExamType, type LocalDiagnostic, LocalSettingsSchema, LocalKeySchema, type LocalModelProfile, type LocalSettings } from '@solveflow/contracts/local';
 import { solve, SolvePhaseError, type SolveLifecycle } from '../orchestration/solve.js';
 import { assessVerificationCoverage } from './verification-coverage.js';
@@ -181,7 +181,7 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
   const solverSchema = override?.captureAct ? z.discriminatedUnion('kind', [ActTranscriptSchema, ClarificationCandidateSchema]) : input.answerMode === 'brief' ? BriefSolverCandidateSchema : GeneratedSolverCandidateSchema;
   const agent = new Agent({ initialState: { model, thinkingLevel: thinkingLevelOf(profile), tools, systemPrompt: policies.CONTENT_POLICY + '\n' + (override?.captureAct ? policies.ACT_TRANSCRIBER : input.role === 'solver' ? policies.SYSTEM : policies.VERIFIER)
     + '\n本机仅可使用列出的 read 与 calculate；没有搜索、Python、MCP、文件写入或其他宿主工具。不要声称调用它们。Skill相对参考路径需按其目录补全为 /skills/... 路径。\n'
-    + (input.role === 'solver' && !override?.captureAct ? JSON.stringify(skills) : '') + preloadExamResources(input.exam) + '\nJSON Schema:\n' + JSON.stringify(z.toJSONSchema(input.role === 'solver' ? solverSchema : VerificationSchema)) },
+    + (input.role === 'solver' && !override?.captureAct ? JSON.stringify(skills) : '') + preloadExamResources(input.exam) + '\nJSON Schema:\n' + JSON.stringify(z.toJSONSchema(input.role === 'solver' ? solverSchema : GeneratedVerificationSchema)) },
     toolExecution: 'sequential',
     beforeToolCall: async () => finishOnly ? { block: true, reason: '工具阶段已结束；请依据已有证据完成答案，缺少必要条件则明确澄清。' } : undefined,
     shouldStopAfterTurn: ({ message }) => finishOnly && (message.stopReason === 'toolUse' || message.content.some(part => part.type === 'toolCall')),
@@ -337,7 +337,7 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
         }
         return input.role === 'solver'
           ? { role: 'solver', candidate: parseCandidateWithEvidence(parseCandidateForExam(solverSchema.parse(value), input.exam), input.evidence), events: [] }
-          : { role: 'verifier', verification: assessVerificationCoverage(parseVerificationForCandidate(value, input.candidate), input.candidate, input.exam), events: [] };
+          : { role: 'verifier', verification: assessVerificationCoverage(parseGeneratedVerification(value, input.candidate), input.candidate, input.exam), events: [] };
       } catch (error) {
         const fields = error instanceof z.ZodError ? [...new Set(error.issues.map(issue => issue.path.join('.')).filter(path => /^[a-zA-Z0-9_.\[\]]{0,120}$/.test(path)))].slice(0, 24) : [];
         diagnostic({ event: 'validation', reason: 'schema', outputBytes, fields });
@@ -350,7 +350,7 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
         } else if (input.role === 'solver') {
           await agent.prompt('最终JSON未通过结构校验。请按系统Schema重新输出完整JSON，补齐必需字段，确保每个步骤/图示恰好归属一道题。需要检查的字段：' + fields.join('、') + '。题型约束：' + constraints + '。answer须为完整作答字符串，选择题selectedOptions须为原标签数组；不把正文写成对象，不把解释或编号当标签。仅修复表示，不能为通过校验擅改题意或删除必要作答。单题省略questions，不能填空数组、null或仅一项；同一道题的小问用problem.response.parts和parts逐项完整解答，不能凑成多道题。真正多题才填2–4项，每个步骤和图恰好归属一题。只有这一次格式修复机会。不要增加题目，不要省略原题小问。');
         } else {
-          const detail = errorMsg === 'DIAGRAM_NOT_VERIFIED' ? '原题或候选包含图表，通过校验必须在checked数组中包含"diagram"。' : '必需包含verdict("pass"|"fail"|"unknown")、checked(核验项目数组)和issues(问题数组)；pass时issues必须为空。';
+          const detail = errorMsg === 'DIAGRAM_NOT_VERIFIED' ? '原题或候选包含图表，通过校验必须在checked数组中包含"diagram"。' : '必需包含verdict("pass"|"fail"|"unknown")、checked和issues；每项issue必须给出不同的basis（原图依据或具体缺失位置）与message（影响及纠正或补充要求）；pass时issues为空；完整选择题须填写independentChoices及逐题decisiveEvidence。';
           await agent.prompt(`校验结果未通过结构校验。请按校验Schema重新输出完整JSON对象：${detail}只有这一次格式修复机会。`);
         }
       }

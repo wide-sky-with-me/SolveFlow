@@ -10,7 +10,7 @@ const input: SolverInput = { schemaVersion: 1, role: 'solver', exam: 'act', iden
 const options = [{ label: 'A', text: 'NO CHANGE' }, { label: 'B', text: 'however;' }, { label: 'C', text: 'however,' }];
 const source = { schemaVersion: 1, kind: 'act-transcript', subject: 'english', blocks: [{ kind: 'passage', text: 'First, the archive were quiet.' }, { kind: 'passage', text: 'The next room, however, was crowded.' }], questions: [{ number: 8, sourceNumber: '8', text: 'Which choice is grammatically acceptable?', options, activeSpan: { block: 1, text: 'however', occurrence: 1 }, uncertainties: [] }], uncertainties: [] };
 const candidate = { schemaVersion: 1, kind: 'answer', problem: { text: 'The archive was quiet. **First,** the next room was crowded.', subject: 'english', uncertainties: [], options: [{ label: 'A', text: 'NO CHANGE' }, { label: 'B', text: 'however,' }, { label: 'C', text: 'however;' }] }, selectedOptions: ['A'], answer: 'The transition fits the context.', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] };
-const pass = { schemaVersion: 1, verdict: 'pass', checked: ['transcription', 'logic'], issues: [] };
+const pass = { independentChoices: [{ selectedOptions: ['A'], decisiveEvidence: 'The transition is parenthetical and retains its surrounding commas.' }], schemaVersion: 1, verdict: 'pass', checked: ['transcription', 'logic'], issues: [] };
 const checks = { body: 'pass', question: 'pass', options: 'pass', activeSpan: 'pass', tables: 'not_applicable' };
 function reply(value: unknown) { return new Response(JSON.stringify({ id: 'fixture', object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content: JSON.stringify(value) }, finish_reason: 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 50, total_tokens: 70 } }), { headers: { 'content-type': 'application/json' } }); }
 function requestData(init?: RequestInit): { role?: string; task?: string; candidate?: { problem?: { illustrations?: unknown } } } {
@@ -70,7 +70,7 @@ describe('ACT transcription before solving', () => {
   });
   it('does not accept a bare answer PASS as proof of full ACT transcription', async () => {
     const result = await solveOnDevice({ ...input, verificationMode: 'automatic' }, settings, { solver: 'fixture', verifier: null }, async (_url, init) => reply(capture(init) ? source : requestData(init).role === 'verifier' ? pass : candidate), new AbortController().signal, () => {});
-    expect(result).toMatchObject({ status: 'completed', verified: false, verification: { verdict: 'unknown', issues: [{ code: 'INSUFFICIENT_EVIDENCE' }] } });
+    expect(result).toMatchObject({ status: 'completed', verified: false, verification: { verdict: 'unknown', issues: [{ code: 'REVIEW_INCOMPLETE' }] } });
   });
   it('accepts separately checked ACT source components', async () => {
     const result = await solveOnDevice({ ...input, verificationMode: 'automatic' }, settings, { solver: 'fixture', verifier: null }, async (_url, init) => reply(capture(init) ? source : requestData(init).role === 'verifier' ? { ...pass, actTranscription: checks } : candidate), new AbortController().signal, () => {});
@@ -91,7 +91,7 @@ describe('ACT transcription before solving', () => {
     const result = await solveOnDevice({ ...input, verificationMode: 'automatic' }, settings, { solver: 'fixture', verifier: null }, async (_url, init) => {
       calls++;
       if (capture(init)) { captures++; return reply(source); }
-      if (requestData(init).role === 'verifier') return reply(++reviews === 1 ? { schemaVersion: 1, verdict: 'fail', checked: ['transcription', 'logic'], issues: [{ code: 'LOGIC', message: 'Recheck the selected transition.' }] } : { ...pass, actTranscription: checks });
+      if (requestData(init).role === 'verifier') return reply(++reviews === 1 ? { schemaVersion: 1, verdict: 'fail', checked: ['transcription', 'logic'], issues: [{ code: 'LOGIC', basis: 'The two clauses describe opposing conditions.', message: 'Recheck the selected transition.' }] } : { ...pass, actTranscription: checks });
       return reply(candidate);
     }, new AbortController().signal, () => {});
     expect(result).toMatchObject({ status: 'completed', verified: true }); expect(captures).toBe(1); expect(calls).toBe(5);
@@ -102,7 +102,7 @@ describe('ACT transcription before solving', () => {
     const result = await solveOnDevice({ ...input, verificationMode: 'automatic' }, settings, { solver: 'fixture', verifier: null }, async (_url, init) => {
       calls++;
       if (capture(init)) { captures++; expect(requestData(init)).not.toHaveProperty('candidate'); return reply(captures === 1 ? source : corrected); }
-      if (requestData(init).role === 'verifier') return reply(++reviews === 1 ? { schemaVersion: 1, verdict: 'fail', checked: ['transcription'], issues: [{ code: 'TRANSCRIPTION', message: 'The last visible paragraph was omitted.' }] } : { ...pass, actTranscription: checks });
+      if (requestData(init).role === 'verifier') return reply(++reviews === 1 ? { schemaVersion: 1, verdict: 'fail', checked: ['transcription'], issues: [{ code: 'TRANSCRIPTION', basis: 'The final paragraph supplies the missing contrast.', message: 'The last visible paragraph was omitted.' }] } : { ...pass, actTranscription: checks });
       return reply(candidate);
     }, new AbortController().signal, () => {});
     expect(result).toMatchObject({ status: 'completed', verified: true });

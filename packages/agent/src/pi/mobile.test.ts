@@ -114,7 +114,7 @@ describe('on-device Pi', () => {
   });
   it('forces one revision after FAIL and refuses a policy-violating candidate', async () => {
     let calls = 0;
-    const fail = { schemaVersion: 1, verdict: 'fail', checked: ['transcription'], issues: [{ code: 'ARITHMETIC', message: '请核对计算' }] };
+    const fail = { schemaVersion: 1, verdict: 'fail', checked: ['transcription'], issues: [{ code: 'ARITHMETIC', basis: '验算结果与题图给定值不同。', message: '请核对计算' }] };
     const outcome = await solveOnDevice(input, settings, { solver: 'fixture', verifier: null }, async () => sse([candidate, fail, candidate, pass][calls++]!), new AbortController().signal, () => {});
     expect(outcome).toMatchObject({ status: 'completed', verified: true }); expect(calls).toBe(4);
     calls = 0;
@@ -235,7 +235,7 @@ it('uses the injected native phase timer and preserves verifier timeout semantic
 it('sanitizes unescaped LaTeX backslashes and fences in verifier JSON output', async () => {
   let calls = 0;
   // Markdown fence and raw LaTeX backslashes inside message
-  const fail = { schemaVersion: 1, verdict: 'fail', checked: ['transcription'], issues: [{ code: 'ARITHMETIC', message: '步骤中 \\frac{1}{2} 与 \\sqrt{3} 符号错误' }] };
+  const fail = { schemaVersion: 1, verdict: 'fail', checked: ['transcription'], issues: [{ code: 'ARITHMETIC', basis: '验算结果与题图给定值不同。', message: '步骤中 \\frac{1}{2} 与 \\sqrt{3} 符号错误' }] };
   const rawVerifierText = '```json\n' + JSON.stringify(fail) + '\n```';
   const outcome = await solveOnDevice(input, settings, { solver: 'fixture', verifier: null }, async () => {
     calls++;
@@ -397,6 +397,6 @@ it('supports a complete essay while keeping brief teaching fields empty', async 
 it('does not publish verified when the verifier only transcribed the image', async () => {
   let calls = 0;
   const outcome = await solveOnDevice(input, settings, { solver: 'fixture', verifier: null }, async () => sse(++calls === 1 ? candidate : { ...pass, checked: ['transcription'] }), new AbortController().signal, () => {});
-  expect(outcome).toMatchObject({ status: 'completed', verified: false, verification: { verdict: 'unknown', issues: [{ code: 'INSUFFICIENT_EVIDENCE' }] } });
+  expect(outcome).toMatchObject({ status: 'completed', verified: false, verification: { verdict: 'unknown', issues: [{ code: 'REVIEW_INCOMPLETE' }] } });
   expect(calls).toBe(2);
 });

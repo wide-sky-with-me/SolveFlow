@@ -381,7 +381,7 @@ test('a visual issue rereads the assigned supplement locally and reuses the same
       expect(urls).toHaveLength(3); crops.push(urls[2]!);
     }
     const value = verifier ? ++reviews === 1
-      ? { schemaVersion: 1, verdict: 'fail', checked: ['transcription'], issues: [{ code: 'TRANSCRIPTION', message: 'Recheck the number in the supplement.', imageRegion: { imageIndex: 1, x: .2, y: .2, width: .4, height: .4 } }] }
+      ? { schemaVersion: 1, verdict: 'fail', checked: ['transcription'], issues: [{ code: 'TRANSCRIPTION', basis: 'The marked supplement cell disagrees with the transcribed value.', message: 'Recheck the number in the supplement.', imageRegion: { imageIndex: 1, x: .2, y: .2, width: .4, height: .4 } }] }
       : { schemaVersion: 1, verdict: 'pass', checked: ['transcription', 'arithmetic'], issues: [] }
       : { schemaVersion: 1, kind: 'answer', problem: { text: 'Supplemented x+1=3', subject: 'math', uncertainties: [] }, answer: 'NEW x=2', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] };
     await route.fulfill({ contentType: 'text/event-stream', body: modelSse(value, body) });
