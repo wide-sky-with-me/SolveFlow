@@ -1,3 +1,4 @@
+import { verificationIssueText } from '@solveflow/contracts/agent';
 import { newRequestId } from './request-id.js';
 import { ExamClock, EndExamButton } from './exam-clock.js';
 // Decision: .agents/notes/implemented/architecture/2026-11-03-teacher-question-actions.md
@@ -169,7 +170,7 @@ export function Monitor({ id, initialSlotId, onClose }: { id: string; initialSlo
             {active && <p className="muted" role="status">{statusLabels[detail.slot.status]}…</p>}
             {reviewDirty && <button className="quiet" disabled={busy} onClick={()=>setDraft(null)}>放弃手动草稿</button>}
             {messageDirty && <button className="quiet" disabled={busy} onClick={()=>setMessageDraft(null)}>放弃消息草稿</button>}
-            {detail.outcome?.status === 'completed' && detail.outcome.verification && <details open={!!issue}><summary>AI 核验意见</summary>{detail.outcome.verification.issues.map((i, n) => <p key={n}>{i.message}</p>)}<span className="badge">{detail.outcome.verification.verdict === 'pass' ? '通过' : detail.outcome.verification.verdict === 'fail' ? '未通过' : '无法确认'}</span></details>}
+            {detail.outcome?.status === 'completed' && detail.outcome.verification && <details open={!!issue}><summary>AI 核验意见</summary>{detail.outcome.verification.issues.map((i, n) => <p key={n}>{verificationIssueText(i)}</p>)}<span className="badge">{detail.outcome.verification.verdict === 'pass' ? '通过' : detail.outcome.verification.verdict === 'fail' ? '未通过' : '无法确认'}</span></details>}
             {candidate?.kind === 'answer' && <details><summary>AI 原始答案</summary><RichText text={candidate.answer}/></details>}
             <details><summary>版本与人工处理记录</summary>{detail.humanReviews.map(r => <article className="record-row" key={r.id}><strong>{r.teacherName} · 人工确认 · 第{r.revision}版</strong><RichText text={r.answer}/><p>{r.note}</p><time>{new Date(r.createdAt).toLocaleString()}</time></article>)}{detail.revisions.map(v => <p key={v.revision}>第{v.revision}版 · {new Date(v.createdAt).toLocaleString()}</p>)}</details>
             </div>

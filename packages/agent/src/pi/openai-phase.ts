@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { createAgentSession, ModelRuntime, SessionManager, SettingsManager, type AgentSession } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore, InMemoryModelsStore, type Model } from "@earendil-works/pi-ai";
-import { AgentInputSchema, SolverCandidateSchema, ClarificationCandidateSchema, GeneratedAnswerCandidateSchema, KnowledgeDetailsSchema, VerificationSchema, type AgentInput, type PhaseResult } from "@solveflow/contracts/agent";
+import { AgentInputSchema, SolverCandidateSchema, ClarificationCandidateSchema, GeneratedAnswerCandidateSchema, KnowledgeDetailsSchema, GeneratedVerificationSchema, type AgentInput, type PhaseResult } from "@solveflow/contracts/agent";
 import { createAuthorizedOpenAiStream } from "./authorized-openai-stream.js";
 import { createApprovedResourceLoader } from "./approved-resource-loader.js";
 import { approvedSkills } from "./approved-skills.js";
@@ -66,7 +66,7 @@ export async function runOpenAiPhase(value: AgentInput, budget: RunBudget, signa
     if (Buffer.byteLength(policy) > 32 * 1024) throw new SolvePhaseError("CAPABILITY_DENIED");
     const contentPolicy = await readFile(new URL("../../resources/CONTENT_POLICY.md", import.meta.url), { encoding: "utf8", signal });
     if (Buffer.byteLength(contentPolicy) > 32 * 1024) throw new SolvePhaseError("CAPABILITY_DENIED");
-    const schema = z.toJSONSchema(input.role === "solver" ? settings.learningPresentation ? LegacyLearningSolverSchema : SolverCandidateSchema : VerificationSchema);
+    const schema = z.toJSONSchema(input.role === "solver" ? settings.learningPresentation ? LegacyLearningSolverSchema : SolverCandidateSchema : GeneratedVerificationSchema);
     const visualEvidence = settings.learningPresentation ? await prepareVisualEvidence(input.image, input.role === "verifier" ? input.candidate : undefined, signal, input.materials?.length ?? 0) : undefined;
     budget.assertActive(signal);
     const created = await createAgentSession({ cwd: root, agentDir: root, modelRuntime: runtime, model: settings.model, thinkingLevel: "off",
@@ -78,9 +78,6 @@ export async function runOpenAiPhase(value: AgentInput, budget: RunBudget, signa
     assertSessionCapabilities(session, capabilities);
     consumed = true;
     const result = await runSessionPhase(session, { input, capabilities, budget, signal, visualEvidence, ...(settings.onDiagnostic ? { onDiagnostic: settings.onDiagnostic } : {}) });
-    if (settings.learningPresentation && input.role === "verifier" && result.role === "verifier" && result.verification.verdict === "pass" && !LegacyLearningAnswerSchema.safeParse(input.candidate).success) {
-      return { ...result, verification: { schemaVersion: 1, verdict: "fail", checked: result.verification.checked, issues: [{ code: "INVALID_CANDIDATE", message: "缺少完整的知识点详情或逐题题干。请填写knowledgeDetails的含义、应用；多题每项必须填写problem与knowledgeDetails。" }] } };
-    }
     return result;
   } catch (error) {
     if (signal.aborted) throw new SolvePhaseError("CANCELLED");

@@ -10,7 +10,7 @@ for (const verdict of ['pass', 'fail'] as const) test(`verification is opt-in, p
     if (inputs.length === 1) return route.fulfill({ contentType: 'text/event-stream', body: modelSse(candidate) });
     expect(input).toMatchObject({ role: 'verifier', candidate }); expect(body).not.toHaveProperty('tools');
     await gate;
-    await route.fulfill({ contentType: 'text/event-stream', body: modelSse(verdict === 'pass' ? modelPass : { schemaVersion: 1, verdict: 'fail', checked: ['transcription', 'arithmetic'], issues: [{ code: 'ARITHMETIC', message: '测试校验问题：请核对计算。' }] }) });
+    await route.fulfill({ contentType: 'text/event-stream', body: modelSse(verdict === 'pass' ? modelPass : { schemaVersion: 1, verdict: 'fail', checked: ['transcription', 'arithmetic'], issues: [{ code: 'ARITHMETIC', basis: '把候选值代回原式后左右不相等。', message: '测试校验问题：请核对计算。' }] }) });
   });
   try {
     await page.goto('/'); await configureLocalModel(page); await chooseSyntheticPhoto(page);
@@ -25,7 +25,7 @@ for (const verdict of ['pass', 'fail'] as const) test(`verification is opt-in, p
     expect(inputs).toHaveLength(2);
     release();
     await expect(page.getByRole('button', { name: verdict === 'pass' ? '校验通过' : '发现问题', exact: true })).toBeDisabled();
-    if (verdict === 'fail') await expect(page.getByText('测试校验问题：请核对计算。', { exact: true })).toBeVisible();
+    if (verdict === 'fail') await expect(page.getByText('把候选值代回原式后左右不相等。 测试校验问题：请核对计算。', { exact: true })).toBeVisible();
     await page.reload(); await expect(page.getByTestId('launch-screen')).toHaveCount(0);
     await expect(page.getByRole('button', { name: verdict === 'pass' ? '校验通过' : '发现问题', exact: true })).toBeVisible();
     expect(inputs).toHaveLength(2);

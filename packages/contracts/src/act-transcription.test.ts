@@ -29,7 +29,7 @@ it.each(['body', 'question', 'options', 'activeSpan', 'tables'])('does not accep
   expect(assessVerificationCoverage(review, answer()).verdict).toBe('unknown');
 });
 it('detects contradictory source failures and inappropriate table exemptions', () => {
-  expect(assessVerificationCoverage(VerificationSchema.parse({ ...pass, actTranscription: { ...checks, tables: 'fail' } }), answer())).toMatchObject({ verdict: 'fail', issues: [{ code: 'TRANSCRIPTION' }] });
+  expect(assessVerificationCoverage(VerificationSchema.parse({ ...pass, actTranscription: { ...checks, tables: 'fail' } }), answer())).toMatchObject({ verdict: 'unknown', issues: [{ code: 'REVIEW_INCOMPLETE' }] });
   expect(assessVerificationCoverage(VerificationSchema.parse({ ...pass, actTranscription: { ...checks, tables: 'not_applicable' } }), answer()).verdict).toBe('unknown');
   expect(assessVerificationCoverage(VerificationSchema.parse({ ...pass, actTranscription: checks }), answer()).verdict).toBe('pass');
 });
@@ -44,4 +44,21 @@ it('lets explicit source exam identification override the default ACT context', 
   expect(problem.exam).toBe('sat'); expect(problem).not.toHaveProperty('transcriptionScope');
   const candidate = AnswerCandidateSchema.parse({ ...answer(), problem });
   expect(assessVerificationCoverage(VerificationSchema.parse(pass), candidate, 'act').verdict).toBe('pass');
+});
+
+it('allows an incidental source difference only with a specific observation and verified answer evidence', () => {
+  const report = { ...pass, evidenceStatus: 'sufficient', actTranscription: { ...checks, body: 'fail' },
+    sourceObservations: [{ field: 'body', difference: 'The first sentence ends with a period, not a semicolon.', answerEvidence: 'The requested ratio still follows from row 1, X = 7.' }] };
+  expect(assessVerificationCoverage(VerificationSchema.parse(report), answer()).verdict).toBe('pass');
+  expect(assessVerificationCoverage(VerificationSchema.parse({ ...report, evidenceStatus: 'uncertain' }), answer()).verdict).toBe('unknown');
+  expect(assessVerificationCoverage(VerificationSchema.parse({ ...report, actTranscription: { ...report.actTranscription, tables: 'fail' } }), answer()).verdict).not.toBe('pass');
+});
+it('accepts the exact printed single-question number and distinguishes an internal mismatch from missing material', () => {
+  const candidate = answer();
+  candidate.problem.sourceNumber = '55';
+  const item = { questionNumber: 55, verdict: 'pass', checked: ['transcription','logic'] };
+  const review = { ...pass, actTranscription: checks };
+  expect(assessVerificationCoverage(VerificationSchema.parse({ ...review, coverage: [item] }), candidate).verdict).toBe('pass');
+  const other = assessVerificationCoverage(VerificationSchema.parse({ ...review, coverage: [{ ...item, questionNumber: 56 }] }), candidate);
+  expect(other).toMatchObject({ verdict: 'unknown', issues: [{ code: 'REVIEW_INCOMPLETE' }] });
 });

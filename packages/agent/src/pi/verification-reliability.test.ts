@@ -26,7 +26,7 @@ it.each([
 ])('does not publish multipart PASS with $name on either execution path', async ({ coverage }) => {
   const verification = { ...pass, ...(coverage ? { coverage } : {}) };
   const outcome = await solve(input, async phase => phase.role === 'solver' ? { role: 'solver', candidate, events: [] } : { role: 'verifier', verification, events: [] }, new RunBudget(), new AbortController().signal);
-  expect(outcome).toMatchObject({ status: 'completed', verified: false, verification: { verdict: 'unknown', issues: [{ code: 'INSUFFICIENT_EVIDENCE' }] } });
+  expect(outcome).toMatchObject({ status: 'completed', verified: false, verification: { verdict: 'unknown', issues: [{ code: 'REVIEW_INCOMPLETE' }] } });
   let calls = 0;
   const device = await solveOnDevice(input, settings, { solver: 'fixture', verifier: null }, async () => response(++calls === 1 ? candidate : verification), new AbortController().signal, () => {});
   expect(device).toMatchObject({ status: 'completed', verified: false });
@@ -110,7 +110,7 @@ it('cancels a long-response verification without accepting its late PASS', async
 it('completes a multipart correction after 180s without clipping its verification window', async () => {
   let now = 0; let calls = 0; const timers: number[] = [];
   const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
-  const fail = { ...pass, verdict: 'fail', issues: [{ code: 'ARITHMETIC', message: 'Check part (a).' }] };
+  const fail = { ...pass, verdict: 'fail', issues: [{ code: 'ARITHMETIC', basis: 'The value shown in part (a) fails substitution.', message: 'Check part (a).' }] };
   try {
     const outcome = await solveOnDevice({ ...input, exam: 'ap' }, settings, { solver: 'fixture', verifier: null }, async () => {
       calls++;

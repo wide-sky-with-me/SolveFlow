@@ -52,7 +52,7 @@ describe('exam context and Responses', () => {
   });
   it('keeps unspecified exams on demand and rejects unapproved paths', () => { expect(preloadExamResources()).toBe(''); expect(() => preloadExamResources('../../.env' as ExamType)).toThrow(); });
   it('preserves the active ACT English span and exposes punctuation transcription failures even when the choice is unchanged', async () => {
-    const english = AnswerCandidateSchema.parse({ ...candidate, problem: { text: 'The workers found two owlets. **Wrapped in a warm blanket,** the birds arrived safely.\nWhich choice best describes their care?', subject: 'english', sourceNumber: 'Item 1', options: [{ label: 'A', text: 'NO CHANGE' }, { label: 'B', text: 'Although they arrived,' }], uncertainties: [] }, selectedOptions: ['A'], answer: 'The blanket indicates care during transport.' });
+    const english = AnswerCandidateSchema.parse({ ...candidate, problem: { text: 'The workers found two owlets. **Wrapped in a warm blanket,** the birds arrived safely.\nWhich punctuation preserves the boundary before the introductory modifier?', subject: 'english', sourceNumber: 'Item 1', options: [{ label: 'A', text: 'NO CHANGE' }, { label: 'B', text: 'Although they arrived,' }], uncertainties: [] }, selectedOptions: ['A'], answer: 'NO CHANGE preserves the sentence break and the introductory modifier.' });
     let calls = 0;
     const solved = await solveOnDevice({ ...input, exam: 'act' }, settings, { solver: 'synthetic', verifier: null }, async (_url, init) => {
       if (isCapture(init)) return response(captured(english.problem));
@@ -67,9 +67,9 @@ describe('exam context and Responses', () => {
       calls++;
       const body = JSON.parse(String(init?.body));
       expect(body).not.toHaveProperty('tools');
-      expect(JSON.stringify(body)).toContain('即使所选字母碰巧正确也不能通过');
+      expect(JSON.stringify(body)).toContain('差异若改变决定性前提、所答题或选项');
       expect(JSON.stringify(body)).toContain('data:image/jpeg;base64,AQID');
-      return response({ schemaVersion: 1, verdict: 'fail', checked: ['transcription'], issues: [{ code: 'TRANSCRIPTION', message: 'The original period and capital letter were changed.' }] });
+      return response({ schemaVersion: 1, verdict: 'fail', checked: ['transcription'], issues: [{ code: 'TRANSCRIPTION', basis: 'The tested sentence boundary separates two independent clauses.', message: 'The comma changes the sentence boundary used to justify NO CHANGE; correct the passage before accepting this explanation.' }] });
     }, new AbortController().signal, () => {});
     expect(checked).toMatchObject({ status: 'completed', verified: false, candidate: { selectedOptions: ['A'] }, verification: { verdict: 'fail', issues: [{ code: 'TRANSCRIPTION' }] } });
     expect(calls).toBe(2);
@@ -210,7 +210,7 @@ describe('ACT device behavior', () => {
       expect(wire).toContain(passage.id);
       expect(wire).toContain('I went back for the notebook.');
       if (completedCalls === 2) { expect(body).not.toHaveProperty('tools'); expect(wire).toContain(reading.answer); }
-      return response(completedCalls === 1 ? reading : { schemaVersion: 1, verdict: 'pass', evidenceStatus: 'sufficient', checked: ['transcription', 'logic'], issues: [], actTranscription: actChecks });
+      return response(completedCalls === 1 ? reading : { independentChoices: [{ selectedOptions: ['C'], decisiveEvidence: 'Lines 12–16 name the notebook.' }], schemaVersion: 1, verdict: 'pass', evidenceStatus: 'sufficient', checked: ['transcription', 'logic'], issues: [], actTranscription: actChecks });
     }, new AbortController().signal, () => {});
     expect(completedCalls).toBe(2);
     expect(completed).toMatchObject({ status: 'completed', verified: true, candidate: { selectedOptions: ['C'], answer: reading.answer }, verification: { verdict: 'pass' } });
@@ -236,11 +236,11 @@ describe('ACT device behavior', () => {
       expect(wire).not.toContain('来源：/skills/exams/references/sat.md');
       expect(wire).not.toMatch(/bytes\\*":/);
       if (calls === 2) { expect(body).not.toHaveProperty('tools'); expect(wire).toContain(science.answer); }
-      return actResponse(api, calls === 1 ? science : { schemaVersion: 1, verdict: 'pass', evidenceStatus, checked: ['transcription', 'logic', 'units'], issues: [], actTranscription: actChecks });
+      return actResponse(api, calls === 1 ? science : { independentChoices: [{ selectedOptions: ['J'], decisiveEvidence: 'Only temperature changes as the rate rises from 2 to 4.' }], schemaVersion: 1, verdict: 'pass', evidenceStatus, checked: ['transcription', 'logic', 'units'], issues: [], actTranscription: actChecks });
     }, new AbortController().signal, () => {});
     expect(calls).toBe(2);
     expect(result).toMatchObject({ status: 'completed', verified, candidate: { problem: { module: 'Science', options: science.problem.options }, selectedOptions: ['J'] }, verification: { verdict, evidenceStatus } });
-    if (!verified) expect(result).toMatchObject({ verification: { issues: [expect.objectContaining({ code: 'INSUFFICIENT_EVIDENCE' })] } });
+    if (!verified) expect(result).toMatchObject({ verification: { issues: [expect.objectContaining({ code: 'REVIEW_INCOMPLETE' })] } });
   });
 
   it('loads writing only after an ACT composition read and preserves the complete English body in brief mode', async () => {
@@ -321,7 +321,7 @@ describe.each(courseCases)('$exam $module device resource and output boundaries'
       expect(calls).toBe(4);
       expect(JSON.parse(body)).not.toHaveProperty('tools');
       expect(body).toContain(course.module);
-      return response({ schemaVersion: 1, verdict, checked: ['transcription', 'logic'], issues: verdict === 'unknown' ? [{ code: 'OTHER', message: 'Cannot confirm a decisive condition in the synthetic image.' }] : [], ...(verdict === 'pass' ? { independentChoices: [{ selectedOptions: ['B'], decisiveEvidence: 'The original condition identifies the second visible option.' }] } : {}) });
+      return response({ schemaVersion: 1, verdict, checked: ['transcription', 'logic'], issues: verdict === 'unknown' ? [{ code: 'OTHER', basis: 'The last line of the condition is cropped.', message: 'Cannot confirm a decisive condition in the synthetic image.' }] : [], ...(verdict === 'pass' ? { independentChoices: [{ selectedOptions: ['B'], decisiveEvidence: 'The original condition identifies the second visible option.' }] } : {}) });
     }, new AbortController().signal, () => {});
     expect(calls).toBe(4);
     expect(outcome).toMatchObject({ status: 'completed', verified: verdict === 'pass', candidate: { problem: { module: course.module, sourceNumber: '7', options: courseCandidate.problem.options }, selectedOptions: ['B'] } });

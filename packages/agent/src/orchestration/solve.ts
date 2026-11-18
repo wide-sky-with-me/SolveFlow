@@ -100,7 +100,7 @@ export async function solve(inputValue: unknown, execute: PhaseExecutor, budget:
       emit("verifying");
       let verification;
       try {
-        const checked = await run({ ...original, role: "verifier", candidate });
+        const checked = await run({ ...original, role: "verifier", candidate, ...(request.revision ? { priorIssues: request.revision.issues } : {}) });
         if (checked.role !== "verifier") throw new Error("INVALID_PHASE_ROLE");
         try {
           verification = parseVerificationForCandidate(checked.verification, candidate);

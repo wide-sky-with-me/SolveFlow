@@ -17,7 +17,7 @@ it('reserves a bounded recheck after an initial verifier retry and backup correc
     if (host === 'backup.invalid') { corrections++; return sse(corrected); }
     if (host !== 'verifier.invalid') return sse(answer);
     if (++checks === 1) return new Response('{}', { status: 503 });
-    return sse(checks === 2 ? { ...pass, verdict: 'fail', issues: [{ code: 'ARITHMETIC', message: 'Correct the candidate.' }] } : pass);
+    return sse(checks === 2 ? { ...pass, verdict: 'fail', issues: [{ code: 'ARITHMETIC', basis: 'Substitution gives a different value from the displayed equation.', message: 'Correct the candidate.' }] } : pass);
   }, new AbortController().signal, () => {});
   expect(result).toMatchObject({ status: 'completed', candidate: corrected, verified: true }); expect(checks).toBe(3); expect(corrections).toBe(1);
 });

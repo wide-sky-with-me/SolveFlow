@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { build } from 'esbuild';
 import { chromium, webkit, expect as browserExpect, type Page } from '@playwright/test';
-import { ExamAttemptSchema } from '@solveflow/contracts/managed-exam';
+import { ExamAttemptSchema, ExamDetailSchema, type ExamSlot } from '@solveflow/contracts/managed-exam';
+import { SolveOutcomeSchema } from '@solveflow/contracts/agent';
 
 let assets: {js: string; css: string; html: string};
 const screens = join(process.cwd(), '.runtime/ui-polish-20261108/screens');
@@ -125,6 +126,105 @@ function syntheticAttempt() {
     modules:[{id:moduleId,code:'math',title:'数学',sectionCode:'math',questionCount:2,durationSeconds:null,position:1,state:'in_progress'}],
     slots:[1,2].map(position=>({id:randomUUID(),moduleId,position,ordinal:position,revision:1,status:'completed',completedOnce:true,runId:randomUUID(),errorCode:null,presentation:{answer:'原答案',selectedOptions:null,verified:true,simulated:false,humanConfirmed:false,notAppliedReason:null},images:[]}))});
 }
+async function visibility(page: Page, value: 'hidden'|'visible') {
+  await page.evaluate(value=>{Object.defineProperty(document,'visibilityState',{configurable:true,value});document.dispatchEvent(new Event('visibilitychange'));},value);
+}
+function evidenceOutcome(kind: 'clarification'|'partial'|'review'|'complete'|'refusal'|'wrong'|'coverage') {
+  const problem = {subject:'math',text:'Synthetic question',uncertainties:kind==='partial'?['请补拍下方选项。','请补拍下方选项。']:[],
+    ...(kind==='partial'?{optionsComplete:false}: {})};
+  if(kind==='clarification'||kind==='refusal')return SolveOutcomeSchema.parse({schemaVersion:1,status:'needs_clarification',verified:false,candidate:{
+    schemaVersion:1,kind:'clarification',problem,answer:null,steps:[],knowledgePoints:[],citationIds:[],
+    clarificationQuestions:kind==='refusal'?['本次请求无法处理。']:['请补充表格右侧两列。','请补充表格右侧两列。'],
+    ...(kind==='refusal'?{refusalReason:'policy'}:{})}});
+  if (kind === 'wrong' || kind === 'coverage') return SolveOutcomeSchema.parse({
+    schemaVersion: 1, status: 'completed', verified: false, warning: null,
+    candidate: { schemaVersion: 1, kind: 'answer', problem, answer: '合成结论为4。', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] },
+    verification: kind === 'wrong'
+      ? { schemaVersion: 1, verdict: 'fail', checked: ['arithmetic'], evidenceStatus: 'sufficient', issues: [{ code: 'ARITHMETIC', basis: '原图给出 2+3。', message: '结果应为5，请纠正求和。' }] }
+      : { schemaVersion: 1, verdict: 'unknown', checked: ['logic'], evidenceStatus: 'sufficient', issues: [{ code: 'INSUFFICIENT_EVIDENCE', message: '逐题或逐小问核验与候选的题号、原小问标签不完整对应，尚不能确认全部作答正确。' }] },
+  });
+  return SolveOutcomeSchema.parse({schemaVersion:1,status:'completed',verified:false,warning:null,
+    ...(kind==='review'?{verification:{schemaVersion:1,verdict:'unknown',checked:['transcription'],evidenceStatus:'uncertain',
+      issues:[{code:'INSUFFICIENT_EVIDENCE',message:'图中比例尺数字看不清，请补拍比例尺。'}]}}:{verificationStatus:'not_requested',verification:null}),candidate:{
+    schemaVersion:1,kind:'answer',problem,answer:'合成结论为4。',steps:[],knowledgePoints:[],citationIds:[],clarificationQuestions:[]}});
+}
+function evidenceDetail(slot: ExamSlot, kind: Parameters<typeof evidenceOutcome>[0]) {
+  const outcome=evidenceOutcome(kind);
+  if(outcome.status!=='completed'&&outcome.status!=='needs_clarification')throw new Error('NO_SYNTHETIC_CANDIDATE');
+  return ExamDetailSchema.parse({slot,problem:outcome.candidate.problem,outcome,humanReviews:[],revisions:[]});
+}
+async function evidenceHarness(slots: ExamSlot[]) {
+  return syncHarness(`import{useState,useCallback}from'react';import{createRoot}from'react-dom/client';import{StudentAnswer}from'./src/browser/student-answer.tsx';
+const slots=${JSON.stringify(slots)};function App(){const[index,setIndex]=useState(0),[clicks,setClicks]=useState(0),[syncs,setSyncs]=useState(0);const onSync=useCallback(async()=>{},[]);
+return <><StudentAnswer slot={slots[index]} onSync={onSync} onSupplement={()=>setClicks(v=>v+1)}/><button onClick={()=>setIndex(v=>Math.min(v+1,slots.length-1))}>下一状态</button><button onClick={()=>setSyncs(v=>v+1)}>无关同步</button><output aria-label="补图次数">{clicks}</output><output aria-label="同步次数">{syncs}</output></>};createRoot(document.getElementById('root')).render(<App/>);`);
+}
+describe('student evidence reminders',()=>{
+  for(const engine of ['chrome','webkit'] as const){
+    const launch=()=>engine==='chrome'?chromium.launch({executablePath:'/usr/bin/google-chrome'}):webkit.launch();
+    it(`student evidence: shows concrete missing material and keeps partial answers visible in ${engine}`,async()=>{
+      const first=syntheticAttempt().slots[0];if(!first)throw new Error('NO_SLOT');
+      first.status='needs_clarification';first.presentation=null;
+      const partial={...first,status:'completed' as const,runId:randomUUID(),presentation:{answer:'合成结论为4。',selectedOptions:null,verified:false,simulated:false,humanConfirmed:false,notAppliedReason:null}};
+      const review={...partial,runId:randomUUID()},complete={...partial,runId:randomUUID()},confirmed={...partial,reviewId:randomUUID(),presentation:{...partial.presentation,humanConfirmed:true}};
+      const simulated={...partial,runId:randomUUID(),presentation:{...partial.presentation,answer:'模拟展示结果',simulated:true}};
+      const refusal={...first,runId:randomUUID()};
+      const slots=[first,partial,review,complete,confirmed,simulated,refusal,{...partial,runId:randomUUID()},{...partial,runId:randomUUID()}],kinds=['clarification','partial','review','complete','partial','review','refusal','wrong','coverage'] as const;
+      const bundle=await evidenceHarness(slots);let index=0,reads=0,writes=0;
+      const browser=await launch(),page=await browser.newPage({viewport:{width:390,height:844}});page.setDefaultTimeout(4000);
+      try{
+        await page.route('http://127.0.0.1:3199/**',route=>{
+          const path=new URL(route.request().url()).pathname;
+          if(path.startsWith('/api/v2/slots/')){reads++;if(route.request().method()!=='GET')writes++;return route.fulfill({json:evidenceDetail(slots[index]??first,kinds[index]??'complete')});}
+          return route.fulfill({contentType:path.endsWith('.js')?'text/javascript':'text/html',body:path==='/sync.js'?bundle.js:bundle.html});
+        });
+        await page.goto('http://127.0.0.1:3199');
+        const notice=page.getByRole('region',{name:'题图提示',exact:true});
+        await notice.getByRole('heading',{name:'需要补图',exact:true}).waitFor();
+        expect(await notice.getByText('请补充表格右侧两列。',{exact:true}).count()).toBe(1);
+        expect(await page.locator('.answer-question-details').getAttribute('open')).toBeNull();
+        await notice.getByRole('button',{name:'补图并重新解答',exact:true}).click();await browserExpect(page.getByLabel('补图次数')).toHaveText('1');
+        for(let n=0;n<3;n++)await page.getByRole('button',{name:'无关同步',exact:true}).click();
+        expect(reads).toBe(1);expect(writes).toBe(0);
+        index=1;await page.getByRole('button',{name:'下一状态',exact:true}).click();
+        await notice.getByRole('heading',{name:'选项未拍全',exact:true}).waitFor();
+        expect(await notice.getByText('请补拍下方选项。',{exact:true}).count()).toBe(1);
+        await browserExpect(page.getByText('合成结论为4。',{exact:true})).toBeVisible();
+        index=2;await page.getByRole('button',{name:'下一状态',exact:true}).click();await notice.getByText('图中比例尺数字看不清，请补拍比例尺。',{exact:true}).waitFor();
+        index=3;await page.getByRole('button',{name:'下一状态',exact:true}).click();await browserExpect.poll(()=>reads).toBe(4);await browserExpect(notice).toHaveCount(0);
+        index=4;await page.getByRole('button',{name:'下一状态',exact:true}).click();await browserExpect(page.getByText('老师已确认',{exact:true})).toBeVisible();await browserExpect(notice).toHaveCount(0);
+        index=5;await page.getByRole('button',{name:'下一状态',exact:true}).click();await page.getByText('模拟展示结果',{exact:true}).waitFor();await browserExpect.poll(()=>reads).toBe(5);await browserExpect(notice).toHaveCount(0);
+        index=6;await page.getByRole('button',{name:'下一状态',exact:true}).click();await page.getByText('本次请求无法处理。',{exact:true}).waitFor();await browserExpect(page.getByRole('button',{name:'补图并重新解答',exact:true})).toHaveCount(0);
+        index=7;await page.getByRole('button',{name:'下一状态',exact:true}).click();
+        await notice.getByRole('heading',{name:'答案核验未通过'}).waitFor();
+        await browserExpect(notice).toContainText('原图给出 2+3。 结果应为5，请纠正求和。');
+        await browserExpect(notice.getByRole('button')).toHaveCount(0);
+        index=8;await page.getByRole('button',{name:'下一状态',exact:true}).click();
+        await notice.getByRole('heading',{name:'核验未完成'}).waitFor();
+        await browserExpect(notice.getByRole('button')).toHaveCount(0);
+        expect(writes).toBe(0);
+      }finally{await browser.close();}
+    },20000);
+    it(`student evidence: retries a failed read and fences a late previous question in ${engine}`,async()=>{
+      const state=syntheticAttempt(),first=state.slots[0],second=state.slots[1];if(!first||!second)throw new Error('NO_SLOT');
+      first.status='needs_clarification';first.presentation=null;
+      const bundle=await evidenceHarness([first,second]),held=gate();let reads=0,fail=true;
+      const browser=await launch(),page=await browser.newPage();page.setDefaultTimeout(4000);
+      try{
+        await page.route('http://127.0.0.1:3199/**',async route=>{
+          const path=new URL(route.request().url()).pathname;
+          if(path==='/api/v2/slots/'+first.id){reads++;if(fail)return route.fulfill({status:503,json:{message:'合成题图提示读取失败'}});await held.promise;return route.fulfill({json:evidenceDetail(first,'clarification')});}
+          if(path==='/api/v2/slots/'+second.id)return route.fulfill({json:evidenceDetail(second,'complete')});
+          return route.fulfill({contentType:path.endsWith('.js')?'text/javascript':'text/html',body:path==='/sync.js'?bundle.js:bundle.html});
+        });
+        await page.goto('http://127.0.0.1:3199');await page.getByRole('alert').getByText('合成题图提示读取失败',{exact:true}).waitFor();
+        fail=false;await page.getByRole('button',{name:'重新读取题目',exact:true}).click();await browserExpect.poll(()=>reads).toBe(2);
+        await page.getByRole('button',{name:'下一状态',exact:true}).click();await page.getByRole('heading',{name:'第2题答案',exact:true}).waitFor();
+        held.release();await settle(page);await browserExpect(page.getByText('请补充表格右侧两列。',{exact:true})).toHaveCount(0);
+        await browserExpect(page.getByRole('alert')).toHaveCount(0);
+      }finally{held.release();await browser.close();}
+    },20000);
+  }
+});
 async function visibility(page: Page, value: 'hidden'|'visible') {
   await page.evaluate(value=>{Object.defineProperty(document,'visibilityState',{configurable:true,value});document.dispatchEvent(new Event('visibilitychange'));},value);
 }

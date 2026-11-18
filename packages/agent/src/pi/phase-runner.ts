@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { PhaseDiagnosticSchema, type PhaseDiagnostic } from "../policy/phase-diagnostic.js";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import { AgentInputSchema, PublicAgentEventSchema, normalizeGeneratedCandidate, parseCandidateWithEvidence, parseCandidateForExam, parseVerificationForCandidate, type NormalizedImage, type PhaseResult, type PublicAgentEvent } from "@solveflow/contracts/agent";
+import { AgentInputSchema, PublicAgentEventSchema, normalizeGeneratedCandidate, parseCandidateWithEvidence, parseCandidateForExam, parseGeneratedVerification, type NormalizedImage, type PhaseResult, type PublicAgentEvent } from "@solveflow/contracts/agent";
 import { RunBudget, BudgetExceeded } from "../policy/run-budget.js";
 import { CapabilitySnapshot } from "../policy/capability-snapshot.js";
 import { budgetedPrompt, ModelDispatchDenied } from "./budgeted-prompt.js";
@@ -78,7 +78,7 @@ export async function runSessionPhase(session: AgentSession, options: { visualEv
       }
       try {
         if (input.role === "solver") return { role: "solver", candidate: parseCandidateForExam(parseCandidateWithEvidence(normalizeGeneratedCandidate(value), input.evidence), input.exam), events };
-        return { role: "verifier", verification: parseVerificationForCandidate(value, input.candidate), events };
+        return { role: "verifier", verification: parseGeneratedVerification(value, input.candidate), events };
       } catch (error) {
         const fields = new Set(["schemaVersion", "kind", "problem", "text", "subject", "uncertainties", "answer", "steps", "id", "title", "explanation", "latex", "knowledgePoints", "citationIds", "clarificationQuestions", "refusalReason", "questions", "number", "stepIds", "figureIds", "figures", "xRange", "yRange", "elements", "coefficients", "checked", "verdict", "issues"]);
         diagnose("SCHEMA_INVALID", { issues: error instanceof z.ZodError ? error.issues.slice(0, 8).map(issue => ({ code: issue.code, path: issue.path.map(segment => typeof segment === "number" ? "item" : fields.has(String(segment)) ? String(segment) : "field").join(".") })) : [], semanticCheckFailed: !(error instanceof z.ZodError) });

@@ -71,7 +71,7 @@ test('a manual failed check automatically regenerates with backup and retains th
     const input = lastModelInput(route.request().postDataJSON());
     const verifier = typeof input === 'object' && input !== null && 'role' in input && input.role === 'verifier';
     if (verifier) checks++; else primary++;
-    await route.fulfill({ contentType: 'text/event-stream', body: modelSse(verifier ? checks === 1 ? { ...modelPass, verdict: 'fail', issues: [{ code: 'ARITHMETIC', message: '移项错误' }] } : modelPass : { ...candidate, answer: 'x=3' }, route.request().postDataJSON()) });
+    await route.fulfill({ contentType: 'text/event-stream', body: modelSse(verifier ? checks === 1 ? { ...modelPass, verdict: 'fail', issues: [{ code: 'ARITHMETIC', basis: '原等式两边同时减去 1。', message: '移项错误' }] } : modelPass : { ...candidate, answer: 'x=3' }, route.request().postDataJSON()) });
   });
   await page.route('https://fixture-backup.invalid/v1/chat/completions', async route => { backup++; await route.fulfill({ contentType: 'text/event-stream', body: modelSse(candidate, route.request().postDataJSON()) }); });
   await page.goto('/'); await configureBackup(page); await chooseSyntheticPhoto(page); await page.getByRole('button', { name: '开始解题', exact: true }).click();

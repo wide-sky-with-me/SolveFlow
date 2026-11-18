@@ -142,8 +142,8 @@ export type AnswerCandidate = z.infer<typeof AnswerCandidateSchema>;
 
 export const VerificationCheckSchema = z.enum(["transcription", "logic", "arithmetic", "units", "domain", "citations", "diagram"]);
 export const VerificationIssueSchema = z.strictObject({
-  code: z.enum(["TRANSCRIPTION", "LOGIC", "ARITHMETIC", "UNITS", "DOMAIN", "CITATIONS", "DIAGRAM", "INSUFFICIENT_EVIDENCE", "INVALID_CANDIDATE", "POLICY_VIOLATION", "OTHER"]),
-  stepId: IdentifierSchema.optional(), message: text(500), imageRegion: ImageReviewRegionSchema.optional(),
+  code: z.enum(["TRANSCRIPTION", "LOGIC", "ARITHMETIC", "UNITS", "DOMAIN", "CITATIONS", "DIAGRAM", "INSUFFICIENT_EVIDENCE", "INVALID_CANDIDATE", "REVIEW_INCOMPLETE", "POLICY_VIOLATION", "OTHER"]),
+  stepId: IdentifierSchema.optional(), message: text(500), basis: text(400).optional(), imageRegion: ImageReviewRegionSchema.optional(),
 });
 const issues = z.array(VerificationIssueSchema).max(16);
 const checked = z.array(VerificationCheckSchema).max(7).refine(values => new Set(values).size === values.length, "核验项目不能重复");
@@ -152,17 +152,50 @@ const coverage = z.array(z.strictObject({
   partLabel: text(40).optional(),
   verdict: z.enum(["pass", "fail", "unknown"]), checked,
 })).max(48);
-// Read compatibility for the earlier blind-choice workflow; new reviews do not generate this field.
+// A comparison against the image can be recorded without publishing a second solution.
 const independentChoices = z.array(z.strictObject({
   questionNumber: z.number().int().min(1).max(999).optional(),
   selectedOptions,
   decisiveEvidence: text(400),
 })).max(4);
-export const VerificationSchema = z.strictObject({ schemaVersion: z.literal(1), verdict: z.enum(["pass", "fail", "unknown"]), issues, checked, coverage: coverage.optional(), independentChoices: independentChoices.optional(), evidenceStatus: z.enum(['sufficient', 'uncertain', 'insufficient']).optional(), actTranscription: ActTranscriptionChecksSchema.optional() }).superRefine((value, ctx) => {
+export const VerificationSchema = z.strictObject({ schemaVersion: z.literal(1), verdict: z.enum(["pass", "fail", "unknown"]), issues, checked, coverage: coverage.optional(), independentChoices: independentChoices.optional(), evidenceStatus: z.enum(['sufficient', 'uncertain', 'insufficient']).optional(), actTranscription: ActTranscriptionChecksSchema.optional(),
+  sourceObservations: z.array(z.strictObject({ field: ActTranscriptionChecksSchema.keyof(), difference: text(240), answerEvidence: text(400) })).max(5).optional() }).superRefine((value, ctx) => {
   if (value.verdict === "pass" && (value.issues.length > 0 || value.checked.length === 0)) ctx.addIssue({ code: "custom", message: "通过必须有核验项目且没有问题", path: ["verdict"] });
   if (value.verdict !== "pass" && value.issues.length === 0) ctx.addIssue({ code: "custom", message: "未通过或无法核验必须说明问题", path: ["issues"] });
 });
 export type Verification = z.infer<typeof VerificationSchema>;
+
+/** Persisted v1 reviews remain readable. A new model finding needs both evidence and its effect. */
+export const GeneratedVerificationSchema = VerificationSchema.superRefine((review, ctx) => {
+  if (review.issues.some(issue => issue.code === "POLICY_VIOLATION")) return;
+  review.issues.forEach((issue, index) => {
+    if (!issue.basis || issue.basis.trim() === issue.message.trim()) ctx.addIssue({ code: 'custom', path: ['issues', index, 'basis'], message: '请写明题图中的具体依据或缺失位置，并在message说明对当前答案的影响和应如何处理。' });
+  });
+});
+
+const legacyReviewMessages = new Set([
+  '逐题或逐小问核验与候选的题号、原小问标签不完整对应，尚不能确认全部作答正确。',
+  '至少一道题或一个小问尚未完成原图转录及实质结论核验，不能将整体标为通过。',
+  '本次校验没有同时完成原图转录和答案逻辑或运算检查，尚不能确认答案正确。',
+  'ACT尚未分别核对全部可见正文、设问、选项、当前高亮及表格，答案通过不代表转录完整。',
+  'ACT至少一项可见题面内容尚未核对完整，不能标为通过。',
+  '尚未提供与各选择题题号完整对应的独立选项及决定性原图依据，不能确认候选选择正确。',
+  '独立选项标签未能对应本题原始选项，不能确认候选选择正确。',
+]);
+
+/** Earlier v1 application checks used the photo-evidence code for verifier bookkeeping. */
+export function verificationIssueCode(issue: Verification['issues'][number]) {
+  return issue.code === 'INSUFFICIENT_EVIDENCE' && !issue.basis && legacyReviewMessages.has(issue.message) ? 'REVIEW_INCOMPLETE' : issue.code;
+}
+
+export function missingAnswerOptions(problem?: z.infer<typeof ProblemStatementSchema> | null) {
+  const type = problem?.response?.type;
+  return problem?.optionsComplete === false && (!type || type === 'single-choice' || type === 'multiple-choice');
+}
+
+export function verificationIssueText(issue: Verification['issues'][number]): string {
+  return issue.basis ? [issue.basis, issue.message].join(' ') : issue.message;
+}
 
 const sourceUrl = z.url().max(2048).refine(value => {
   try {
@@ -197,7 +230,7 @@ const inputFields = {
 };
 const revision = z.strictObject({ candidate: AnswerCandidateSchema, issues: issues.min(1) });
 const SolverInputObject = z.strictObject({ ...inputFields, role: z.literal("solver"), verificationTarget: AnswerCandidateSchema.optional(), revision: revision.optional() });
-const VerifierInputObject = z.strictObject({ ...inputFields, role: z.literal("verifier"), candidate: AnswerCandidateSchema });
+const VerifierInputObject = z.strictObject({ ...inputFields, role: z.literal("verifier"), candidate: AnswerCandidateSchema, priorIssues: issues.min(1).optional() });
 function checkInputReferences(value: z.infer<typeof SolverInputObject> | z.infer<typeof VerifierInputObject>, ctx: z.RefinementCtx): void {
   if (value.useBackup && value.focus?.kind !== 'regenerate') ctx.addIssue({ code: 'custom', message: '备用解题必须引用已保存的重新解答上下文', path: ['useBackup'] });
   const materials = value.materials ?? [];
@@ -256,44 +289,66 @@ export function parseVerificationForCandidate(value: unknown, candidateValue: un
   return verification;
 }
 
+/** Validate fresh provider output before saving it or applying application coverage checks. */
+export function parseGeneratedVerification(value: unknown, candidate: AnswerCandidate): Verification {
+  const review = parseVerificationForCandidate(GeneratedVerificationSchema.parse(value), candidate);
+  const choices = (candidate.questions ?? [candidate]).filter(item => item.problem?.optionsComplete !== false && item.problem?.options?.length && item.selectedOptions?.length);
+  if (review.verdict === 'pass' && choices.length && !review.independentChoices?.length) {
+    throw new z.ZodError([{ code: 'custom', path: ['independentChoices'], message: '核验完整选择题须给出从原图确定的选项及决定性依据。' }]);
+  }
+  return review;
+}
+
 /** Applied to newly executed checks; stored v1 PASS records remain readable. */
 // Decision: .agents/notes/implemented/agent/2026-10-05-verification-coverage-and-time.md
 // Decision: .agents/notes/implemented/agent/2026-10-07-exam-reliability-recovery.md
 export function assessVerificationCoverage(verification: Verification, candidate?: AnswerCandidate, exam?: z.infer<typeof ExamTypeSchema>): Verification {
+  if (verification.verdict === 'fail' && verification.issues.length && verification.issues.every(issue =>
+    issue.code === 'INSUFFICIENT_EVIDENCE' || issue.code === 'REVIEW_INCOMPLETE')) {
+    return { ...verification, verdict: 'unknown' };
+  }
   if (verification.verdict !== 'pass') return verification;
   const substantive = (items: Verification['checked']) => items.includes('transcription') && (items.includes('logic') || items.includes('arithmetic'));
-  const unknown = (message: string): Verification => ({ ...verification, verdict: 'unknown', issues: [{ code: 'INSUFFICIENT_EVIDENCE', message }] });
-  if (verification.evidenceStatus && verification.evidenceStatus !== 'sufficient') return unknown('已检查候选答案，但原题依据仍不充分或不可信，请核对警告或补图。');
+  const unknown = (message: string, code: 'INSUFFICIENT_EVIDENCE' | 'REVIEW_INCOMPLETE' = 'REVIEW_INCOMPLETE'): Verification => ({ ...verification, verdict: 'unknown', issues: [{ code, message }] });
+  if (verification.evidenceStatus && verification.evidenceStatus !== 'sufficient') return unknown('核验同时报告通过和证据不足，却未指出哪项条件妨碍判断。请重新核验当前答案。');
   if (!substantive(verification.checked)) return unknown('本次校验没有同时完成原图转录和答案逻辑或运算检查，尚不能确认答案正确。');
   if (!candidate) return verification;
   if ((candidate.questions ?? [candidate]).some(item => (item.problem?.exam ?? exam) === 'act' || item.problem?.transcriptionScope === 'act-visible')) {
     const review = verification.actTranscription;
     if (!review) return unknown('ACT尚未分别核对全部可见正文、设问、选项、当前高亮及表格，答案通过不代表转录完整。');
-    if (Object.values(review).includes('fail')) return { ...verification, verdict: 'fail', issues: [{ code: 'TRANSCRIPTION', message: 'ACT可见题面的正文、设问、选项、高亮或表格存在转录差异，请对照原图修正。' }] };
+    // Decision: .agents/notes/implemented/agent/2026-11-18-answer-verification.md
+    const observed = new Set(verification.evidenceStatus === 'sufficient' ? verification.sourceObservations?.map(item => item.field) : []);
+    const fields = ActTranscriptionChecksSchema.keyof().options;
+    const unresolved = fields.filter(field => !(observed.has(field) && (review[field] === 'fail' || review[field] === 'unknown')));
+    if (unresolved.some(field => review[field] === 'fail')) return unknown('核验记录包含题面转录差异，但没有说明它是否改变当前答案，需要重新核验。');
     const problems = (candidate.questions ?? [candidate]).map(item => item.problem);
-    if (review.body !== 'pass' || review.question !== 'pass' || Object.values(review).includes('unknown')
-      || problems.some(problem => problem?.options?.length) && review.options !== 'pass'
-      || problems.some(problem => problem?.text.includes('**')) && review.activeSpan !== 'pass'
-      || problems.some(problem => /\|.+\|/u.test(problem?.text ?? '')) && review.tables !== 'pass') return unknown('ACT至少一项可见题面内容尚未核对完整，不能标为通过。');
+    if (unresolved.some(field => review[field] === 'unknown') || review.body === 'not_applicable' || review.question === 'not_applicable'
+      || problems.some(problem => problem?.options?.length) && review.options === 'not_applicable'
+      || problems.some(problem => problem?.text.includes('**')) && review.activeSpan === 'not_applicable'
+      || problems.some(problem => /\|.+\|/u.test(problem?.text ?? '')) && review.tables === 'not_applicable') return unknown('核验记录没有完整对应当前题面，需要重新核验答案依据。');
   }
   const key = (questionNumber?: number, partLabel?: string) => JSON.stringify([questionNumber ?? null, partLabel ?? null]);
-  if ((candidate.questions ?? [candidate]).some(answer => answer.problem?.optionsComplete === false)) return unknown('可先采用已给出的计算或推理结论，但选项不完整，尚不能确认原选项对应。');
+  if ((candidate.questions ?? [candidate]).some(answer => missingAnswerOptions(answer.problem))) return unknown('可先采用已给出的计算或推理结论，但选项不完整，尚不能确认原选项对应。', 'INSUFFICIENT_EVIDENCE');
+  const coverageKey = (questionNumber?: number, partLabel?: string) => {
+    const printedSingle = !candidate.questions && questionNumber !== undefined && String(questionNumber) === candidate.problem.sourceNumber;
+    return key(printedSingle ? undefined : questionNumber, partLabel);
+  };
   const choices = (candidate.questions ?? [candidate]).filter(answer => answer.problem?.options?.length && answer.selectedOptions?.length);
-  // Optional legacy comparisons remain checked when supplied; direct reviews need no second solution.
+  // Stored v1 records can omit the comparison. New model choice reviews supply image evidence.
   if (choices.length && verification.independentChoices !== undefined) {
     const independent = verification.independentChoices;
     const choiceKeys = choices.map(answer => key('number' in answer ? answer.number : undefined));
-    const independentKeys = independent.map(item => key(item.questionNumber));
+    const independentKeys = independent.map(item => coverageKey(item.questionNumber));
     if (independent.length !== choices.length || new Set(independentKeys).size !== independentKeys.length || independentKeys.some(item => !choiceKeys.includes(item))) {
       return unknown('尚未提供与各选择题题号完整对应的独立选项及决定性原图依据，不能确认候选选择正确。');
     }
     for (const answer of choices) {
-      const item = independent.find(item => key(item.questionNumber) === key('number' in answer ? answer.number : undefined))!;
+      const item = independent.find(item => coverageKey(item.questionNumber) === key('number' in answer ? answer.number : undefined))!;
       if (item.selectedOptions.some(label => !answer.problem?.options?.some(option => option.label === label))) {
         return unknown('独立选项标签未能对应本题原始选项，不能确认候选选择正确。');
       }
       if (item.selectedOptions.length !== answer.selectedOptions!.length || item.selectedOptions.some(label => !answer.selectedOptions!.includes(label))) {
-        return { ...verification, verdict: 'fail', issues: [{ code: 'LOGIC', message: '依据原图得到的独立选项与候选选择不一致，请重新核对题设范围、决定性依据和选项对应。' }] };
+        return { ...verification, verdict: 'fail', issues: [{ code: 'LOGIC', basis: item.decisiveEvidence, message: `候选选择 ${answer.selectedOptions!.join('、')}，原题依据支持 ${item.selectedOptions.join('、')}，请据此纠正并复验。` }] };
       }
     }
   }
@@ -304,7 +359,7 @@ export function assessVerificationCoverage(verification: Verification, candidate
   });
   if (expected.length === 1 && verification.coverage === undefined) return verification;
   const actual = verification.coverage ?? [];
-  const keys = actual.map(item => key(item.questionNumber, item.partLabel));
+  const keys = actual.map(item => coverageKey(item.questionNumber, item.partLabel));
   if (keys.length !== expected.length || new Set(keys).size !== keys.length || keys.some(item => !expected.includes(item))) {
     return unknown('逐题或逐小问核验与候选的题号、原小问标签不完整对应，尚不能确认全部作答正确。');
   }

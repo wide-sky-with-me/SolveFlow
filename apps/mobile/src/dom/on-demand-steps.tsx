@@ -1,3 +1,4 @@
+import { verificationIssueText } from '@solveflow/contracts/agent';
 import { useReadingDisclosure } from './reading-state';
 import { answerText } from "@solveflow/contracts/agent";
 import { useState } from 'react';
@@ -30,7 +31,7 @@ export function OnDemandSteps({ explanation, disabled, onRequest, onCancel, onFo
     {open && <div>
       {pending ? <div className="steps-wait" role="status"><span className="steps-wait-dot" />正在整理步骤…<button onClick={() => void onCancel()}>取消</button></div>
         : result?.status === 'completed' ? <>
-          {!result.verified && result.verificationStatus !== 'not_requested' && <div className="unverified-note"><p>本次步骤尚未通过完整校验，请核对后使用。</p>{result.verification?.issues.map((issue, index) => <MathText key={index} text={issue.message} />)}</div>}
+          {!result.verified && result.verificationStatus !== 'not_requested' && <div className="unverified-note"><p>本次步骤尚未通过完整校验，请核对后使用。</p>{result.verification?.issues.map((issue, index) => <MathText key={index} text={verificationIssueText(issue)} />)}</div>}
           <button className="verify-button" disabled={disabled || !!explanation?.verificationPending || result.verified || !!result.verification} onClick={() => void onFocus({ kind: 'verification', sourceRunId: explanation!.runId }, '校验步骤')}>{explanation?.verificationPending ? '校验中' : result.verified ? '校验通过' : result.verification ? result.verification.verdict === 'fail' ? '发现问题' : '无法确认' : '校验步骤'}</button>
           <MathText text={answerText(result.candidate)} originalImageUrl={originalImageUrl} />
           <TeachingSteps originalImageUrl={originalImageUrl} steps={result.candidate.steps} disabled={disabled} onAskStep={(step, label) => void onFocus({ kind: 'step', sourceRunId: explanation!.runId, stepId: step.id }, label)} />

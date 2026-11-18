@@ -147,15 +147,16 @@ it('reviews the full brief candidate against the image, then revises a reported 
     const blocks = z.array(z.looseObject({ type: z.string(), text: z.string().optional() })).parse(user?.content);
     const data = z.looseObject({ candidate: z.looseObject({ problem: z.unknown() }) }).parse(JSON.parse(blocks.find(b => b.type === 'text')!.text!));
     expect(data.candidate).toMatchObject(calls === 2 ? choice : corrected);
+    if (calls === 4) expect(data).toMatchObject({ priorIssues: [{ code: 'ARITHMETIC', basis: 'The equation x+1=3 gives x=2.' }] });
     expect(serialized).toContain('data:image/jpeg;base64,AQID'); expect(body.tools).toBeUndefined();
-    return response(calls === 2 ? { ...pass, verdict: 'fail', issues: [{ code: 'ARITHMETIC', message: 'The candidate does not satisfy the original equation.' }] } : pass);
+    return response(calls === 2 ? { ...pass, verdict: 'fail', issues: [{ code: 'ARITHMETIC', basis: 'The equation x+1=3 gives x=2.', message: 'The candidate does not satisfy the original equation.' }] } : { ...pass, independentChoices: [selection('B')] });
   }, new AbortController().signal, () => {});
   expect(outcome).toMatchObject({ status: 'completed', verified: true, candidate: { selectedOptions: ['B'] } }); expect(calls).toBe(4);
 });
-it('accepts a substantive direct choice review without independently solving options', async () => {
+it('withholds verification when a choice review supplies no image-based choice even after format repair', async () => {
   let calls = 0;
   const outcome = await solveOnDevice(input, settings, { solver: 'fixture', verifier: null }, async () => response(++calls === 1 ? choice : pass), new AbortController().signal, () => {});
-  expect(outcome).toMatchObject({ status: 'completed', verified: true, verification: { verdict: 'pass' } }); expect(calls).toBe(2);
+  expect(outcome).toMatchObject({ status: 'completed', verified: false, warning: 'MODEL_OUTPUT_INVALID' }); expect(calls).toBe(3);
 });
 it.each(['pass', 'fail'] as const)('uses the configured backup once after a direct FAIL and leaves a second %s terminal', async lastVerdict => {
   const configured = LocalSettingsSchema.parse({ ...settings, verifier: { ...settings.solver, baseURL: 'https://review.invalid/v1', model: 'reviewer' }, backup: { ...settings.solver, baseURL: 'https://backup.invalid/v1', model: 'stronger' } });
@@ -167,7 +168,7 @@ it.each(['pass', 'fail'] as const)('uses the configured backup once after a dire
     const body = request(init); const serialized = JSON.stringify(body.messages);
     expect(serialized).toContain(requests.length === 2 ? choice.answer : corrected.answer);
     expect(serialized).toContain('data:image/jpeg;base64,AQID'); expect(body.tools).toBeUndefined();
-    return response(requests.length === 2 || lastVerdict === 'fail' ? { ...pass, verdict: 'fail', issues: [{ code: 'ARITHMETIC', message: 'Incorrect answer.' }] } : pass);
+    return response(requests.length === 2 || lastVerdict === 'fail' ? { ...pass, verdict: 'fail', issues: [{ code: 'ARITHMETIC', basis: 'Substituting 1 in x+1 gives 2 rather than 3.', message: 'Incorrect answer.' }] } : { ...pass, independentChoices: [selection('B')] });
   }, new AbortController().signal, () => {});
   expect(requests).toEqual(['https://fixture.invalid/v1/chat/completions', 'https://review.invalid/v1/chat/completions', 'https://backup.invalid/v1/chat/completions', 'https://review.invalid/v1/chat/completions']);
   expect(outcome).toMatchObject({ status: 'completed', verified: lastVerdict === 'pass', candidate: { selectedOptions: ['B'] }, verification: { verdict: lastVerdict } });
