@@ -290,20 +290,12 @@ export function parseVerificationForCandidate(value: unknown, candidateValue: un
   return verification;
 }
 
-function singlePrintedNumber(sourceNumber: string | undefined) {
-  return /^(?:(?:item|question)\s+#?|q\.?\s*|#)?(\d{1,3})\.?$/i.exec(sourceNumber?.trim() ?? '')?.[1];
-}
-
 /** Validate fresh provider output before saving it or applying application coverage checks. */
 export function parseGeneratedVerification(value: unknown, candidate: AnswerCandidate): Verification {
   const review = parseVerificationForCandidate(GeneratedVerificationSchema.parse(value), candidate);
   const choices = (candidate.questions ?? [candidate]).filter(item => item.problem?.optionsComplete !== false && item.problem?.options?.length && item.selectedOptions?.length);
   if (review.verdict === 'pass' && choices.length && !review.independentChoices?.length) {
     throw new z.ZodError([{ code: 'custom', path: ['independentChoices'], message: '核验完整选择题须给出从原图确定的选项及决定性依据。' }]);
-  }
-  if (review.verdict === 'pass' && !candidate.questions && !candidate.parts?.length && !candidate.problem.sourceNumber?.trim()
-    && (review.independentChoices?.some(item => item.questionNumber !== undefined) || review.coverage?.some(item => !item.partLabel && item.questionNumber !== undefined))) {
-    throw new z.ZodError([{ code: 'custom', path: ['independentChoices'], message: '单题候选未记录印刷题号时，请先核实主图设问与选项确属同一题，再在independentChoices与coverage中省略questionNumber；若原图实际为另一题请返回unknown或fail。' }]);
   }
   return review;
 }
@@ -342,29 +334,20 @@ export function assessVerificationCoverage(verification: Verification, candidate
     const missing = unresolved.filter(field => review[field] === 'unknown' || required[field] && review[field] === 'not_applicable').map(field => names[field]);
     if (missing.length) return unknown(`核验尚未确认原图中的${missing.join('、')}，无法判断这些内容是否支持当前答案。请重新核验。`);
   }
-  const key = (questionNumber?: number, partLabel?: string) => JSON.stringify([questionNumber ?? null, partLabel ?? null]);
+  const multiQuestion = Boolean(candidate.questions?.length);
+  const key = (questionNumber?: number, partLabel?: string) => JSON.stringify([multiQuestion ? (questionNumber ?? null) : null, partLabel ?? null]);
   if ((candidate.questions ?? [candidate]).some(answer => missingAnswerOptions(answer.problem))) return unknown('可先采用已给出的计算或推理结论，但选项不完整，尚不能确认原选项对应。', 'INSUFFICIENT_EVIDENCE');
-  // Match a single, explicitly labelled printed item. Ranges and subparts have distinct identities.
-  const printedNumber = !candidate.questions ? singlePrintedNumber(candidate.problem.sourceNumber) : undefined;
-  const coverageKey = (questionNumber?: number, partLabel?: string) => {
-    const printedSingle = printedNumber && questionNumber === Number(printedNumber);
-    return key(printedSingle ? undefined : questionNumber, partLabel);
-  };
   const choices = (candidate.questions ?? [candidate]).filter(answer => answer.problem?.options?.length && answer.selectedOptions?.length);
   // Stored v1 records can omit the comparison. New model choice reviews supply image evidence.
   if (choices.length && verification.independentChoices !== undefined) {
     const independent = verification.independentChoices;
     const choiceKeys = choices.map(answer => key('number' in answer ? answer.number : undefined));
-    const independentKeys = independent.map(item => coverageKey(item.questionNumber));
+    const independentKeys = independent.map(item => key(item.questionNumber));
     if (independent.length !== choices.length || new Set(independentKeys).size !== independentKeys.length || independentKeys.some(item => !choiceKeys.includes(item))) {
-      const reported = independent.length === 1 ? independent[0]?.questionNumber : undefined;
-      if (choices.length === 1 && !candidate.questions && reported !== undefined) {
-        return unknown(printedNumber ? `原题为第${Number(printedNumber)}题，核验记录对应第${reported}题。请重新核验当前题的答案。` : `独立核验对应第${reported}题，但原作答没有可匹配的题号。请核对原图题号后复验。`);
-      }
       return unknown('独立核验的选项未能逐题对应当前作答，请重新核验。');
     }
     for (const answer of choices) {
-      const item = independent.find(item => coverageKey(item.questionNumber) === key('number' in answer ? answer.number : undefined))!;
+      const item = independent.find(item => key(item.questionNumber) === key('number' in answer ? answer.number : undefined))!;
       if (item.selectedOptions.some(label => !answer.problem?.options?.some(option => option.label === label))) {
         return unknown('独立选项标签未能对应本题原始选项，不能确认候选选择正确。');
       }
@@ -380,7 +363,7 @@ export function assessVerificationCoverage(verification: Verification, candidate
   });
   if (expected.length === 1 && verification.coverage === undefined) return verification;
   const actual = verification.coverage ?? [];
-  const keys = actual.map(item => coverageKey(item.questionNumber, item.partLabel));
+  const keys = actual.map(item => key(item.questionNumber, item.partLabel));
   if (keys.length !== expected.length || new Set(keys).size !== keys.length || keys.some(item => !expected.includes(item))) {
     return unknown('逐题或逐小问核验与候选的题号、原小问标签不完整对应，尚不能确认全部作答正确。');
   }

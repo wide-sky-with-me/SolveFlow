@@ -430,7 +430,7 @@ it('uses available time for long-answer verification within the same run deadlin
   expect(timers[1]).toBe(300000);
 });
 
-it('repairs a fresh single-question verification that supplies questionNumber when the saved candidate omitted sourceNumber', async () => {
+it('accepts a single-question verification in one pass even when the verifier supplies questionNumber and the candidate omitted sourceNumber', async () => {
   let calls = 0;
   const saved = AnswerCandidateSchema.parse({
     ...candidate,
@@ -439,13 +439,10 @@ it('repairs a fresh single-question verification that supplies questionNumber wh
     answer: 'Option D matches the context.',
   });
   const actChecks = { body: 'pass', question: 'pass', options: 'pass', activeSpan: 'not_applicable', tables: 'not_applicable' };
-  const result = await solveOnDevice({ ...input, exam: 'act', verificationTarget: saved }, settings, { solver: 'synthetic', verifier: 'synthetic' }, async (_url, init) => {
+  const result = await solveOnDevice({ ...input, exam: 'act', verificationTarget: saved }, settings, { solver: 'synthetic', verifier: 'synthetic' }, async () => {
     calls++;
-    if (calls === 2) expect(String(init?.body)).toContain('省略questionNumber');
-    return response(calls === 1
-      ? { schemaVersion: 1, verdict: 'pass', evidenceStatus: 'sufficient', checked: ['transcription', 'logic'], actTranscription: actChecks, independentChoices: [{ questionNumber: 45, selectedOptions: ['D'], decisiveEvidence: 'Only D satisfies the prompt.' }], coverage: [{ questionNumber: 45, verdict: 'pass', checked: ['transcription', 'logic'] }], issues: [] }
-      : { schemaVersion: 1, verdict: 'pass', evidenceStatus: 'sufficient', checked: ['transcription', 'logic'], actTranscription: actChecks, independentChoices: [{ selectedOptions: ['D'], decisiveEvidence: 'Only D satisfies the prompt.' }], coverage: [{ verdict: 'pass', checked: ['transcription', 'logic'] }], issues: [] });
+    return response({ schemaVersion: 1, verdict: 'pass', evidenceStatus: 'sufficient', checked: ['transcription', 'logic'], actTranscription: actChecks, independentChoices: [{ questionNumber: 45, selectedOptions: ['D'], decisiveEvidence: 'Only D satisfies the prompt.' }], coverage: [{ questionNumber: 45, verdict: 'pass', checked: ['transcription', 'logic'] }], issues: [] });
   }, new AbortController().signal, () => {});
   expect(result).toMatchObject({ status: 'completed', verified: true });
-  expect(calls).toBe(2);
+  expect(calls).toBe(1);
 });
