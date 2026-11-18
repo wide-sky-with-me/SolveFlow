@@ -13,7 +13,7 @@ export function ErrorText({ error }: {
     error: string;
 }) { return error ? <Feedback tone="error" className="error">{error}</Feedback> : null; }
 export function RefreshButton({ busy, disabled = false, onRefresh, secondary = false }: { busy: boolean; disabled?: boolean; onRefresh: () => Promise<unknown>; secondary?: boolean }) {
-    return <button type="button" className={(secondary?'secondary':'quiet')+' refresh-button'} disabled={disabled||busy} aria-busy={busy} onClick={()=>void onRefresh()}><Icon name="history"/>刷新</button>;
+    return <button type="button" className={(secondary?'secondary':'quiet')+' refresh-button'} aria-label="刷新" title="刷新" disabled={disabled||busy} aria-busy={busy} onClick={()=>void onRefresh()}><Icon name="history"/><span>刷新</span></button>;
 }
 export const statusLabels: Record<string, string> = { empty: '待拍摄', queued: '排队中', understanding: '识别中', solving: '解答中', verifying: '校验中', revising: '修正中', completed: '已有答案', needs_clarification: '需要补图', failed: '解答失败', cancelled: '已停止', interrupted: '任务中断' };
 export const activeStatuses = new Set(['queued', 'understanding', 'solving', 'verifying', 'revising']);

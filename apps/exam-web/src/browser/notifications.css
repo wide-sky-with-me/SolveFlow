@@ -79,8 +79,8 @@
 }
 
 .question-notices summary:focus-visible {
-  outline: 3px solid #8bb5ff;
-  outline-offset: 3px;
+  outline: 2px solid currentColor;
+  outline-offset: -4px;
 }
 
 .question-notices summary:hover {
@@ -408,9 +408,12 @@
   margin: 10px;
 }
 
-.teacher-attention:focus-within {
-  outline: 2px solid var(--accent-ink);
-  outline-offset: 3px;
+.teacher-attention button:focus-visible {
+  outline-offset: -4px;
+}
+
+.teacher-attention-heading:focus-visible {
+  outline-color: currentColor;
 }
 
 @media(max-width:640px) {

@@ -306,6 +306,9 @@
     min-width: 0;
     flex-basis: 100%;
   }
+  .list-toolbar:has(>.list-actions)>.list-search {
+    flex-basis: 180px;
+  }
   .list-toolbar>.select-field,.list-toolbar>.remote-select {
     flex: 1 1 120px;
     min-width: 0;
@@ -350,6 +353,26 @@
 
 .paged-panel,.issue-queue {
   overflow: visible;
+}
+
+@media(max-width:640px) {
+  .list-toolbar:has(>.list-actions)>.list-search {
+    flex-basis: 10rem;
+  }
+  .list-toolbar:has(>.list-actions) .refresh-button {
+    width: 44px;
+    min-width: 44px;
+    padding-inline: 0;
+  }
+  .list-toolbar:has(>.list-actions) .refresh-button>span {
+    display: none;
+  }
+  .list-actions>.primary {
+    padding-inline: 10px;
+  }
+  .list-actions>.primary>.icon {
+    display: none;
+  }
 }
 
 .paged-panel .table-wrap {

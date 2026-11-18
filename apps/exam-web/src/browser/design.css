@@ -150,7 +150,7 @@ input[type=checkbox], input[type=radio] {
   align-items: flex-start;
 }
 
-.event-record-actions .icon, .event-list-tools>.primary .icon, .event-toolbar-actions>.primary .icon {
+.event-record-actions .icon, .event-list-tools .primary .icon {
   width: 16px;
   height: 16px;
 }

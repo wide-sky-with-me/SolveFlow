@@ -80,30 +80,30 @@ export function ExamEvents({ onManage, createTemplate, onCreateClose, onSaved }:
     return <section className="exam-events" aria-label="场次与具体考试">
         <ErrorText error={error || events.error || children.error}/>
         {selected ? <>
-            <div className="event-toolbar">
-                <button className="quiet" onClick={() => { setParent(null); setError(''); }}>‹ 全部场次</button>
-                <div className="event-toolbar-actions">
-                    <button className="secondary" onClick={() => setEditor({ item: selected })}>编辑场次</button>
-                </div>
-            </div>
             <div className="card event-summary">
-                <div>
-                    <h2>{selected.title}</h2>
-                    <p className="muted">{EXAM_LABELS[selected.exam]} · {selected.templateTitle}</p>
+                <div className="event-heading">
+                    <button className="quiet" onClick={() => { setParent(null); setError(''); }}>‹ 全部场次</button>
+                    <div>
+                        <h2>{selected.title}</h2>
+                        <p className="muted">{EXAM_LABELS[selected.exam]} · {selected.templateTitle}</p>
+                    </div>
                 </div>
                 <div className="event-counts">
                     <span><strong>{selected.examCount}</strong>具体考试</span>
                     <span><strong>{selected.studentCount}</strong>学生</span>
                     <span><strong>{selected.teacherCount}</strong>老师</span>
+                </div>
+                <div className="event-summary-actions">
                     <button className="quiet" aria-label="查看场次参与人员" onClick={() => setMembers(selected)}>参与人员</button>
+                    <button className="secondary" onClick={() => setEditor({ item: selected })}>编辑场次</button>
                 </div>
             </div>
-            <div className="list-toolbar student-list-tools">
+            <div className="list-toolbar event-list-tools">
                 <ListSearch label="搜索具体考试" value={exams.q} onSearch={exams.setQ}/>
-                <RefreshButton busy={children.refreshing} onRefresh={children.refreshManually}/>
-                <div className="list-actions"><button className="primary" onClick={() => setExamEditor({ item: null })}>
-                    <Icon name="plus"/>新建具体考试
-                </button></div>
+                <div className="list-actions">
+                    <RefreshButton busy={children.refreshing} onRefresh={children.refreshManually}/>
+                    <button className="primary" onClick={() => setExamEditor({ item: null })}><Icon name="plus"/>新建具体考试</button>
+                </div>
             </div>
             {children.loading && !children.data && <p className="empty">正在读取…</p>}
             {children.data?.items.map(item => <article key={item.id} className="card event-record" aria-label={item.title}>

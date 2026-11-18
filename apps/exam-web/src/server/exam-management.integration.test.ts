@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { serve } from '@hono/node-server';
 import { Server } from 'node:http';
-import { chromium, webkit, expect as browserExpect } from '@playwright/test';
+import { chromium, webkit, expect as browserExpect, type Locator } from '@playwright/test';
 import sharp from 'sharp';
 import { connectDatabase, migrate, bootstrap, createUser, createTemplate, createSitting, createAssignment, startAttempt, snapshot, submit, claimJob, publishDraft, finishJob, endExamAttempt, allocationPage, updateAllocation, createExamEvent, examEventDetail, examEventPage, examEventMembers, concreteExamPage, createConcreteExam, updateExamEvent, updateConcreteExam, deleteConcreteExam, deleteExamEvent, sendTeacherMessage, teacherMessages, readTeacherMessage, assignmentPage, updateUser, progressPage, progress, dashboard, dashboardSittingPage, studentChoicePage, sittingPage, sittings, assignments, issueQueue } from '@solveflow/db';
 import { AnswerCandidateSchema, SolveOutcomeSchema } from '@solveflow/contracts/agent';
@@ -22,6 +22,12 @@ function pool() { if (!db)
 let admin: ExamUser, manager: ExamUser, foreign: ExamUser, teacher: ExamUser, teacher2: ExamUser, student: ExamUser, student2: ExamUser, templateId = '', replacementTemplate = '', password = '', root = '', origin = '';
 let storage: LocalExamStorage, service: ReturnType<typeof createExamService>, server: Server;
 function requestId() { return { requestId: randomUUID() }; }
+async function expectSameRow(left: Locator, right: Locator) {
+    const [a, b] = await Promise.all([left.boundingBox(), right.boundingBox()]);
+    if (!a || !b) throw new Error('MISSING_TOOLBAR_CONTROL');
+    expect(Math.abs((a.y + a.height / 2) - (b.y + b.height / 2))).toBeLessThanOrEqual(2);
+    expect(b.x).toBeGreaterThanOrEqual(a.x + a.width);
+}
 describe.skipIf(!url)('exam event hierarchy and standalone teacher messages', () => {
     beforeAll(async () => {
         await migrate(pool());
@@ -358,7 +364,14 @@ describe.skipIf(!url)('exam event hierarchy and standalone teacher messages', ()
             try {
                 expect((await context.request.post(origin + '/api/v2/auth/login', { headers: { origin }, data: { username: manager.username, password: 'synthetic-password-123' } })).status()).toBe(200);
                 await page.goto(origin);
-                await page.getByRole('navigation', { name: '管理导航' }).getByRole('button', { name: '考试安排', exact: true }).click();
+                const navigation = page.getByRole('navigation', { name: '管理导航' });
+                await navigation.getByRole('button', { name: '用户管理' }).click();
+                await expectSameRow(page.getByRole('searchbox', { name: '搜索姓名或用户名' }), page.getByRole('button', { name: '新建用户' }));
+                await navigation.getByRole('button', { name: '考试安排', exact: true }).click();
+                await page.getByRole('tab', { name: '考试模板' }).click();
+                await expectSameRow(page.getByRole('searchbox', { name: '搜索模板名称或标识' }), page.getByRole('button', { name: '选择考试模板' }));
+                await page.getByRole('tab', { name: '场次', exact: true }).click();
+                await expectSameRow(page.getByRole('searchbox', { name: '搜索场次或模板' }), page.getByRole('button', { name: '新建场次' }));
                 await page.getByRole('button', { name: '新建场次', exact: true }).click();
                 const create = page.getByRole('dialog', { name: '新建场次', exact: true });
                 await create.getByLabel('场次名称', { exact: true }).fill(prefix);
@@ -369,7 +382,17 @@ describe.skipIf(!url)('exam event hierarchy and standalone teacher messages', ()
                 await search.fill(prefix);
                 await search.press('Enter');
                 await page.getByRole('article', { name: prefix, exact: true }).getByRole('button', { name: '查看考试', exact: true }).click();
-                await page.getByRole('button', { name: '新建具体考试', exact: true }).click();
+                const createExam = page.getByRole('button', { name: '新建具体考试', exact: true });
+                const examSearch = page.getByRole('searchbox', { name: '搜索具体考试', exact: true });
+                const refresh = page.getByRole('button', { name: '刷新', exact: true });
+                for (const width of [2560, 761, 760, 641, 640, 390, 320]) {
+                    await page.setViewportSize({ width, height: 900 });
+                    await expectSameRow(refresh, createExam);
+                    if (width >= 390) await expectSameRow(examSearch, refresh);
+                    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+                }
+                await page.setViewportSize({ width: 1440, height: 1000 });
+                await createExam.click();
                 const concrete = page.getByRole('dialog', { name: '新建具体考试', exact: true });
                 await concrete.getByLabel('考试名称', { exact: true }).fill(prefix + '正式考试');
                 await concrete.getByRole('combobox', { name: '学生', exact: true }).click();
@@ -403,6 +426,9 @@ describe.skipIf(!url)('exam event hierarchy and standalone teacher messages', ()
                 await row.waitFor();
                 await row.getByRole('button', { name: '人员与错题配置', exact: true }).click();
                 const allocations = page.getByRole('dialog', { name: '人员与错题配置', exact: true });
+                await page.setViewportSize({ width: 640, height: 900 });
+                await expectSameRow(allocations.getByRole('searchbox', { name: '搜索已分配学生' }), allocations.getByRole('button', { name: '添加学生' }));
+                await page.setViewportSize({ width: 1440, height: 1000 });
                 await allocations.getByRole('row').filter({ hasText: 'student_two' }).getByRole('button', { name: '调整', exact: true }).click();
                 const settings = page.getByRole('dialog', { name: '调整学生分配', exact: true });
                 await browserExpect(settings.getByLabel('模块1模拟错题数', { exact: true })).toHaveValue('1');
@@ -579,8 +605,21 @@ describe.skipIf(!url)('exam event hierarchy and standalone teacher messages', ()
                 await page.goto(origin);
                 await page.getByRole('navigation', { name: '管理导航' }).getByRole('button', { name: '用户管理', exact: true }).click();
                 const notice = page.getByRole('complementary', { name: '教师待处理提醒' });
-                await notice.getByRole('button', { name: '打开教师待处理提醒' }).click();
+                const noticeHeading = notice.getByRole('button', { name: '打开教师待处理提醒' });
+                await noticeHeading.click();
                 await notice.getByRole('button', { name: '查看全部待处理题' }).waitFor();
+                await browserExpect(notice).toHaveCSS('outline-style', 'none');
+                await noticeHeading.focus();
+                await page.keyboard.press('Tab');
+                const firstIssue = notice.getByRole('button').nth(1);
+                await browserExpect(firstIssue).toBeFocused();
+                await browserExpect(firstIssue).toHaveCSS('outline-style', 'solid');
+                await page.keyboard.press('Shift+Tab');
+                await browserExpect(noticeHeading).toBeFocused();
+                expect(await noticeHeading.evaluate(node => {
+                    const style = getComputedStyle(node);
+                    return style.outlineStyle === 'solid' && parseFloat(style.outlineOffset) < 0 && style.outlineColor === style.color;
+                })).toBe(true);
                 const screens = join(process.cwd(), '.runtime/ui-audit-20261108/screens'); await mkdir(screens, { recursive: true });
                 for (const width of [1440, 390, 320]) {
                     await page.setViewportSize({ width, height: 900 });
