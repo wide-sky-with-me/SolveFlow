@@ -3,6 +3,8 @@ import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useState, useSyncExternalStore } from 'react';
 import { clientError } from '@solveflow/client/presentation';
 import { Pressable, Text, View, SafeAreaView } from '../theme/primitives';
+import { themeColors } from '../theme/palette';
+import { useTheme } from '../theme/provider';
 import { Button, Notice, colors, s } from '../components/ui';
 import { PendingSaves } from '../components/pending-saves';
 import { BatchTaskCenter } from '../components/batch-task-center';
@@ -27,6 +29,8 @@ import { styles } from './styles';
 import { getRecentSessionWarning, subscribeRecentSessionWarning } from '../local/recent-session-warning';
 
 export function Workspace({ runtime, onReady }: { runtime: Runtime; onReady: () => void }) {
+  const { scheme } = useTheme();
+  const palette = themeColors[scheme];
   const [tasksOpen, setTasksOpen] = useState(false);
   const queueSnapshot = useSyncExternalStore(runtime.batch.subscribe, runtime.batch.getSnapshot, runtime.batch.getSnapshot);
   const taskCount = new Set(queueSnapshot.tasks.map(row => row.batchId)).size;
@@ -50,7 +54,7 @@ export function Workspace({ runtime, onReady }: { runtime: Runtime; onReady: () 
 
   return (
     <SafeAreaView testID="workspace-shell" onTouchEnd={navigation.resetExit} style={styles.shell} edges={['top', 'left', 'right', 'bottom']}>
-      <View testID="workspace-timer-bar" style={{ paddingHorizontal: 8, paddingVertical: 4, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: colors.line }}><StudyStopwatch runtime={runtime} /></View>
+      <View testID="workspace-timer-bar" style={{ paddingHorizontal: 8, paddingVertical: 4, backgroundColor: palette.surface, borderBottomWidth: 1, borderBottomColor: palette.line }}><StudyStopwatch runtime={runtime} /></View>
       {(runtime.settingsWarning || recentSessionWarning) && <View testID="workspace-status" accessibilityRole="alert" accessibilityLiveRegion="polite" style={{ paddingHorizontal: 8, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
         <Text style={[s.subtitle, { flex: 1 }]}>{[runtime.settingsWarning, recentSessionWarning].filter(Boolean).join('\n')}</Text>
         {runtime.settingsWarning && <Button title="重新配置模型" compact secondary disabled={busy || !!activeId || batchBusy || unsavedCount > 0} onPress={() => setSettingsOpen(true)} />}

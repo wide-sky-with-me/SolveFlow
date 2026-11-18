@@ -22,7 +22,9 @@
 .answer-document .final-answer { padding:0; margin:16px 0 20px; }
 .answer-document .final-answer>h3 { margin:0 0 8px; }
 .answer-document .context-button { margin:6px 0; }
-.answer-document .unverified-note { background:var(--sf-warning-bg); padding:10px; border-radius:8px; color:var(--sf-warning); }
+.answer-document .unverified-note { background:var(--sf-warning-bg); border:1px solid transparent; padding:12px 14px; border-radius:12px; color:var(--sf-warning); }
+.answer-document .unverified-note.verification-failed { background:var(--sf-error-bg); border-color:var(--sf-error-border); color:var(--sf-error); }
+.answer-document .unverified-issue { margin:6px 0; }
 .answer-document .problem-layout { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; }
 .answer-document .original-illustrations,.answer-document .original-illustration { min-width:0; max-width:100%; }
 .answer-document .problem-text { min-width:0; }
@@ -119,6 +121,9 @@
 .answer-document .verify-button { min-height:44px; padding:8px 12px; font-size:13px; }
 .answer-document .verify-button:disabled { opacity:1; }
 .answer-document .final-answer .verify-button { background:transparent; border-color:var(--sf-line); font-size:13px; font-weight:500; }
+.answer-document .final-answer .verify-button.is-verified { background:var(--sf-success-bg); border-color:transparent; color:var(--sf-success); font-weight:600; }
+.answer-document .final-answer .verify-button.is-failed { background:var(--sf-error-bg); border-color:var(--sf-error-border); color:var(--sf-error); font-weight:600; }
+.answer-document .final-answer .verify-button.is-pending { background:var(--sf-warning-bg); border-color:transparent; color:var(--sf-warning); font-weight:600; }
 .answer-document .answer-explanation { max-width:76ch; line-height:1.95; }
 .answer-document .answer-explanation .answer-markdown>p { margin:0 0 16px; }
 .answer-document .answer-explanation .answer-markdown>p:last-child { margin-bottom:0; }
@@ -130,8 +135,10 @@
 .answer-document .answer-markdown strong .katex { font-weight:700; }
 
 .answer-document .choice-options { list-style:none; margin:16px 0 4px; padding:0; display:flex; flex-direction:column; gap:9px; }
-.answer-document .choice-options li { display:flex; align-items:flex-start; gap:12px; padding:11px 13px; background:var(--sf-soft); border-radius:12px; min-width:0; }
+.answer-document .choice-options li { display:flex; align-items:flex-start; gap:12px; padding:11px 13px; background:var(--sf-soft); border:1px solid transparent; border-radius:12px; min-width:0; }
+.answer-document .choice-options li.selected { border-color:var(--sf-accent); box-shadow:inset 3px 0 0 var(--sf-accent); }
 .answer-document .choice-label { flex:0 0 25px; font-weight:700; line-height:1.75; color:var(--sf-muted); }
+.answer-document .choice-options li.selected .choice-label { color:var(--sf-accent); }
 .answer-document .choice-text { flex:1; min-width:0; }
 .answer-document .choice-text p:first-child { margin-top:0; }
 .answer-document .choice-text p:last-child { margin-bottom:0; }

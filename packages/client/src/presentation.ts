@@ -1,4 +1,5 @@
 export * from './answer-payload.js';
+export * from './answer-preview.js';
 export * from './history-payload.js';
 export * from './math-delimiters.js';
 export * from './image-crop.js';

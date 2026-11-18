@@ -173,14 +173,14 @@ export const GeneratedVerificationSchema = VerificationSchema.superRefine((revie
   });
 });
 
-const legacyReviewMessages = new Set([
-  '逐题或逐小问核验与候选的题号、原小问标签不完整对应，尚不能确认全部作答正确。',
-  '至少一道题或一个小问尚未完成原图转录及实质结论核验，不能将整体标为通过。',
-  '本次校验没有同时完成原图转录和答案逻辑或运算检查，尚不能确认答案正确。',
-  'ACT尚未分别核对全部可见正文、设问、选项、当前高亮及表格，答案通过不代表转录完整。',
-  'ACT至少一项可见题面内容尚未核对完整，不能标为通过。',
-  '尚未提供与各选择题题号完整对应的独立选项及决定性原图依据，不能确认候选选择正确。',
-  '独立选项标签未能对应本题原始选项，不能确认候选选择正确。',
+const legacyReviewMessages = new Map([
+  ['逐题或逐小问核验与候选的题号、原小问标签不完整对应，尚不能确认全部作答正确。', '核验记录未能与每道题或小问逐项对应，请核对题号和小问后复验。'],
+  ['至少一道题或一个小问尚未完成原图转录及实质结论核验，不能将整体标为通过。', '至少一项作答尚未对照原题条件检查推理或计算，请逐项复验。'],
+  ['本次校验没有同时完成原图转录和答案逻辑或运算检查，尚不能确认答案正确。', '本次核验没有完成原题条件与答案推理或计算的交叉检查，请重新核验。'],
+  ['ACT尚未分别核对全部可见正文、设问、选项、当前高亮及表格，答案通过不代表转录完整。', '核验没有确认原题的设问和选项是否支持当前答案，请重新核验。'],
+  ['ACT至少一项可见题面内容尚未核对完整，不能标为通过。', '核验尚未确认全部作答依据，请对照原图中的设问和材料复验。'],
+  ['尚未提供与各选择题题号完整对应的独立选项及决定性原图依据，不能确认候选选择正确。', '独立核验的记录未能与当前题目对应，请重新核验。'],
+  ['独立选项标签未能对应本题原始选项，不能确认候选选择正确。', '核验给出的选项字母与原题选项不对应，请对照原图复验。'],
 ]);
 
 /** Earlier v1 application checks used the photo-evidence code for verifier bookkeeping. */
@@ -194,6 +194,7 @@ export function missingAnswerOptions(problem?: z.infer<typeof ProblemStatementSc
 }
 
 export function verificationIssueText(issue: Verification['issues'][number]): string {
+  if (!issue.basis && verificationIssueCode(issue) === 'REVIEW_INCOMPLETE') return legacyReviewMessages.get(issue.message) ?? issue.message;
   return issue.basis ? [issue.basis, issue.message].join(' ') : issue.message;
 }
 
@@ -289,12 +290,20 @@ export function parseVerificationForCandidate(value: unknown, candidateValue: un
   return verification;
 }
 
+function singlePrintedNumber(sourceNumber: string | undefined) {
+  return /^(?:(?:item|question)\s+#?|q\.?\s*|#)?(\d{1,3})\.?$/i.exec(sourceNumber?.trim() ?? '')?.[1];
+}
+
 /** Validate fresh provider output before saving it or applying application coverage checks. */
 export function parseGeneratedVerification(value: unknown, candidate: AnswerCandidate): Verification {
   const review = parseVerificationForCandidate(GeneratedVerificationSchema.parse(value), candidate);
   const choices = (candidate.questions ?? [candidate]).filter(item => item.problem?.optionsComplete !== false && item.problem?.options?.length && item.selectedOptions?.length);
   if (review.verdict === 'pass' && choices.length && !review.independentChoices?.length) {
     throw new z.ZodError([{ code: 'custom', path: ['independentChoices'], message: '核验完整选择题须给出从原图确定的选项及决定性依据。' }]);
+  }
+  if (review.verdict === 'pass' && !candidate.questions && !candidate.parts?.length && !candidate.problem.sourceNumber?.trim()
+    && (review.independentChoices?.some(item => item.questionNumber !== undefined) || review.coverage?.some(item => !item.partLabel && item.questionNumber !== undefined))) {
+    throw new z.ZodError([{ code: 'custom', path: ['independentChoices'], message: '单题候选未记录印刷题号时，请先核实主图设问与选项确属同一题，再在independentChoices与coverage中省略questionNumber；若原图实际为另一题请返回unknown或fail。' }]);
   }
   return review;
 }
@@ -320,17 +329,25 @@ export function assessVerificationCoverage(verification: Verification, candidate
     const observed = new Set(verification.evidenceStatus === 'sufficient' ? verification.sourceObservations?.map(item => item.field) : []);
     const fields = ActTranscriptionChecksSchema.keyof().options;
     const unresolved = fields.filter(field => !(observed.has(field) && (review[field] === 'fail' || review[field] === 'unknown')));
-    if (unresolved.some(field => review[field] === 'fail')) return unknown('核验记录包含题面转录差异，但没有说明它是否改变当前答案，需要重新核验。');
+    const names = { body: '正文', question: '设问', options: '选项', activeSpan: '高亮片段', tables: '表格' } as const;
+    const differences = unresolved.filter(field => review[field] === 'fail').map(field => names[field]);
+    if (differences.length) return unknown(`核验发现${differences.join('、')}与原图有出入，但未说明差异是否改变答案。请对照原图复验。`);
     const problems = (candidate.questions ?? [candidate]).map(item => item.problem);
-    if (unresolved.some(field => review[field] === 'unknown') || review.body === 'not_applicable' || review.question === 'not_applicable'
-      || problems.some(problem => problem?.options?.length) && review.options === 'not_applicable'
-      || problems.some(problem => problem?.text.includes('**')) && review.activeSpan === 'not_applicable'
-      || problems.some(problem => /\|.+\|/u.test(problem?.text ?? '')) && review.tables === 'not_applicable') return unknown('核验记录没有完整对应当前题面，需要重新核验答案依据。');
+    const required = {
+      body: true, question: true,
+      options: problems.some(problem => !!problem?.options?.length),
+      activeSpan: problems.some(problem => problem?.text.includes('**')),
+      tables: problems.some(problem => /\|.+\|/u.test(problem?.text ?? '')),
+    };
+    const missing = unresolved.filter(field => review[field] === 'unknown' || required[field] && review[field] === 'not_applicable').map(field => names[field]);
+    if (missing.length) return unknown(`核验尚未确认原图中的${missing.join('、')}，无法判断这些内容是否支持当前答案。请重新核验。`);
   }
   const key = (questionNumber?: number, partLabel?: string) => JSON.stringify([questionNumber ?? null, partLabel ?? null]);
   if ((candidate.questions ?? [candidate]).some(answer => missingAnswerOptions(answer.problem))) return unknown('可先采用已给出的计算或推理结论，但选项不完整，尚不能确认原选项对应。', 'INSUFFICIENT_EVIDENCE');
+  // Match a single, explicitly labelled printed item. Ranges and subparts have distinct identities.
+  const printedNumber = !candidate.questions ? singlePrintedNumber(candidate.problem.sourceNumber) : undefined;
   const coverageKey = (questionNumber?: number, partLabel?: string) => {
-    const printedSingle = !candidate.questions && questionNumber !== undefined && String(questionNumber) === candidate.problem.sourceNumber;
+    const printedSingle = printedNumber && questionNumber === Number(printedNumber);
     return key(printedSingle ? undefined : questionNumber, partLabel);
   };
   const choices = (candidate.questions ?? [candidate]).filter(answer => answer.problem?.options?.length && answer.selectedOptions?.length);
@@ -340,7 +357,11 @@ export function assessVerificationCoverage(verification: Verification, candidate
     const choiceKeys = choices.map(answer => key('number' in answer ? answer.number : undefined));
     const independentKeys = independent.map(item => coverageKey(item.questionNumber));
     if (independent.length !== choices.length || new Set(independentKeys).size !== independentKeys.length || independentKeys.some(item => !choiceKeys.includes(item))) {
-      return unknown('尚未提供与各选择题题号完整对应的独立选项及决定性原图依据，不能确认候选选择正确。');
+      const reported = independent.length === 1 ? independent[0]?.questionNumber : undefined;
+      if (choices.length === 1 && !candidate.questions && reported !== undefined) {
+        return unknown(printedNumber ? `原题为第${Number(printedNumber)}题，核验记录对应第${reported}题。请重新核验当前题的答案。` : `独立核验对应第${reported}题，但原作答没有可匹配的题号。请核对原图题号后复验。`);
+      }
+      return unknown('独立核验的选项未能逐题对应当前作答，请重新核验。');
     }
     for (const answer of choices) {
       const item = independent.find(item => coverageKey(item.questionNumber) === key('number' in answer ? answer.number : undefined))!;

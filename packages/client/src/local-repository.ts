@@ -228,37 +228,118 @@ export class LocalRepository {
     if (resolveTitle && record.batch) { const title = await this.batchTitle(record.batch.id); if (title) record.batch.title = title; }
     return record;
   }
+  private async readManyMap(keys: readonly string[]) {
+    const map = new Map<string, string | null>();
+    if (!keys.length) return { batched: true, map };
+    if (this.documents.getMany) {
+      try {
+        const values = await this.documents.getMany(keys);
+        if (values.length !== keys.length) throw new Error('本地批量读取失败。');
+        keys.forEach((key, index) => map.set(key, values[index] ?? null));
+        return { batched: true, map };
+      } catch (cause) {
+        if (!(cause instanceof LocalDataError) || !keys.includes(cause.key)) throw cause;
+      }
+    }
+    return { batched: false, map };
+  }
   async readMetadata(id: string): Promise<LocalRecordMetadata> {
     try {
     const record = await this.loadRecord(id);
     return { schemaVersion: 1, session: record.session, ...(record.exam ? { exam: record.exam } : {}), ...(record.batch ? { batch: record.batch } : {}), ...(record.activeImageIds ? { activeImageIds: record.activeImageIds } : {}), ...(record.materials ? { materials: record.materials.map(item => ({ id: item.id, bytes: item.bytes, width: item.width, height: item.height })) } : {}) };
     } catch (cause) { if (cause instanceof LocalDataError) this.noteIssue(cause, id); throw cause; }
   }
+  /** Reads question metadata + primary photo in a single batched transaction, skipping supplements. */
+  async readQuestionView(id: string): Promise<{ metadata: LocalRecordMetadata; image: string }> {
+    const parsedId = z.uuid().parse(id);
+    try {
+      const recordKey = `record.${parsedId}`;
+      const imageKey = `image.${parsedId}`;
+      const { batched, map } = await this.readManyMap([recordKey, imageKey]);
+      const getDoc = (key: string) => batched ? Promise.resolve(map.get(key) ?? null) : this.documents.get(key);
+      const rawRecord = await getDoc(recordKey);
+      if (rawRecord === null) throw new Error('本地题目不存在或已删除。');
+      const record = decodeDocument(recordKey, rawRecord, ReadableLocalRecordSchema);
+      if (record.session.id !== parsedId) throw new LocalDataError(recordKey);
+      this.damaged.delete(recordKey);
+      if (record.batch) { const title = await this.batchTitle(record.batch.id); if (title) record.batch.title = title; }
+      const metadata: LocalRecordMetadata = {
+        schemaVersion: 1,
+        session: record.session,
+        ...(record.exam ? { exam: record.exam } : {}),
+        ...(record.batch ? { batch: record.batch } : {}),
+        ...(record.activeImageIds ? { activeImageIds: record.activeImageIds } : {}),
+        ...(record.materials ? { materials: record.materials.map(item => ({ id: item.id, bytes: item.bytes, width: item.width, height: item.height })) } : {}),
+      };
+      if (record.schemaVersion === 1) return { metadata, image: record.image };
+      const rawImage = await getDoc(imageKey);
+      if (rawImage === null) throw new LocalDataError(imageKey);
+      const image = decodeDocument(imageKey, rawImage, StoredLocalImageSchema).image;
+      this.damaged.delete(imageKey);
+      return { metadata, image };
+    } catch (cause) { if (cause instanceof LocalDataError) this.noteIssue(cause, parsedId); throw cause; }
+  }
+  /** Reads run snapshots for batch overview cards without loading any primary or supplement images. */
+  async readBatchRuns(ids: readonly string[]): Promise<Map<string, SessionView['runs']>> {
+    const validIds = z.array(z.uuid()).max(MAX_BATCH_PHOTOS).parse(ids);
+    const keys = validIds.map(id => `record.${id}`);
+    const { batched, map } = await this.readManyMap(keys);
+    const getDoc = (key: string) => batched ? Promise.resolve(map.get(key) ?? null) : this.documents.get(key);
+    const result = new Map<string, SessionView['runs']>();
+    for (const id of validIds) {
+      const key = `record.${id}`;
+      try {
+        const raw = await getDoc(key);
+        if (raw === null) continue;
+        const record = decodeDocument(key, raw, ReadableLocalRecordSchema);
+        if (record.session.id !== id) throw new LocalDataError(key);
+        this.damaged.delete(key);
+        result.set(id, record.session.runs);
+      } catch (cause) {
+        if (cause instanceof LocalDataError) this.noteIssue(cause, id);
+        else throw cause;
+      }
+    }
+    return result;
+  }
   /** Preview only the immutable original; historical supplements are not needed. */
   // Decision: .agents/notes/implemented/architecture/2026-10-29-shared-image-workbenches.md
   async readPrimaryImage(id: string): Promise<{ image: string; width: number; height: number }> {
+    const parsedId = z.uuid().parse(id);
     try {
-      const record = await this.loadRecord(id, false);
+      const recordKey = `record.${parsedId}`;
+      const imageKey = `image.${parsedId}`;
+      const { batched, map } = await this.readManyMap([recordKey, imageKey]);
+      const getDoc = (key: string) => batched ? Promise.resolve(map.get(key) ?? null) : this.documents.get(key);
+      const rawRecord = await getDoc(recordKey);
+      if (rawRecord === null) throw new Error('本地题目不存在或已删除。');
+      const record = decodeDocument(recordKey, rawRecord, ReadableLocalRecordSchema);
+      if (record.session.id !== parsedId) throw new LocalDataError(recordKey);
+      this.damaged.delete(recordKey);
       if (record.schemaVersion === 1) return { image: record.image, width: record.session.upload.width, height: record.session.upload.height };
-      const key = `image.${id}`;
-      const raw = await this.documents.get(key);
-      if (raw === null) throw new LocalDataError(key);
-      const image = decodeDocument(key, raw, StoredLocalImageSchema).image;
-      this.damaged.delete(key);
+      const raw = await getDoc(imageKey);
+      if (raw === null) throw new LocalDataError(imageKey);
+      const image = decodeDocument(imageKey, raw, StoredLocalImageSchema).image;
+      this.damaged.delete(imageKey);
       return { image, width: record.session.upload.width, height: record.session.upload.height };
-    } catch (cause) { if (cause instanceof LocalDataError) this.noteIssue(cause, id); throw cause; }
+    } catch (cause) { if (cause instanceof LocalDataError) this.noteIssue(cause, parsedId); throw cause; }
   }
   async read(id: string): Promise<LocalRecord> {
     try {
     const record = await this.loadRecord(id);
     if (record.schemaVersion === 1) return record;
-    const photo = await this.documents.get(`image.${id}`);
-    if (!photo) throw new LocalDataError(`image.${id}`);
-    const image = decodeDocument(`image.${id}`, photo, StoredLocalImageSchema).image;
-    this.damaged.delete(`image.${id}`);
+    const imageKey = `image.${id}`;
+    const matInfos = record.materials ?? [];
+    const blobKeys = [imageKey, ...matInfos.map(info => materialKey(id, info.id))];
+    const { batched, map } = await this.readManyMap(blobKeys);
+    const getDoc = (key: string) => batched ? Promise.resolve(map.get(key) ?? null) : this.documents.get(key);
+    const photo = await getDoc(imageKey);
+    if (!photo) throw new LocalDataError(imageKey);
+    const image = decodeDocument(imageKey, photo, StoredLocalImageSchema).image;
+    this.damaged.delete(imageKey);
     const materials = [];
-    for (const info of record.materials ?? []) {
-      const key = materialKey(id, info.id); const raw = await this.documents.get(key);
+    for (const info of matInfos) {
+      const key = materialKey(id, info.id); const raw = await getDoc(key);
       if (!raw) throw new LocalDataError(key);
       materials.push({ ...info, image: decodeDocument(key, raw, StoredLocalImageSchema).image });
       this.damaged.delete(key);

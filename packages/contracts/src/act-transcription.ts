@@ -34,8 +34,10 @@ export function actProblem(source: ActTranscript, index = 0): ProblemStatement {
     }
     blocks[span.block] = block.slice(0, start) + '**' + span.text + '**' + block.slice(start + span.text.length);
   }
+  // With no visible printed number, the transcriber uses 1 as its single-item index.
+  const sourceNumber = current.sourceNumber ?? (current.number !== 1 ? String(current.number) : undefined);
   return ProblemStatementSchema.parse({ text: [...blocks, current.text].join('\n\n'), subject: source.subject, exam: source.exam ?? 'act', ...(!source.exam || source.exam === 'act' ? { transcriptionScope: 'act-visible' } : {}),
-    ...(source.module ? { module: source.module } : {}), ...(current.sourceNumber ? { sourceNumber: current.sourceNumber } : {}),
+    ...(source.module ? { module: source.module } : {}), ...(sourceNumber ? { sourceNumber } : {}),
     ...(current.options ? { options: current.options } : {}), ...(current.optionsComplete === undefined ? {} : { optionsComplete: current.optionsComplete }),
     ...(current.response ? { response: current.response } : current.options ? { response: { type: 'single-choice' } } : {}),
     uncertainties: [...new Set([...source.uncertainties, ...current.uncertainties])],

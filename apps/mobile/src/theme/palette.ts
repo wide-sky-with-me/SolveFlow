@@ -1,8 +1,8 @@
 export type ThemeMode = 'system' | 'light' | 'dark';
 export type ThemeScheme = 'light' | 'dark';
 export const themeColors = {
-  light: { background: '#f5f7fb', surface: '#ffffff', ink: '#172338', muted: '#607087', line: '#e3eaf3', accent: '#2867dd' },
-  dark: { background: '#0e1520', surface: '#182232', ink: '#e6edf7', muted: '#a6b5ca', line: '#334156', accent: '#8bb5ff' },
+  light: { background: '#f5f7fb', surface: '#ffffff', ink: '#172338', muted: '#607087', line: '#e3eaf3', accent: '#2867dd', soft: '#edf3ff' },
+  dark: { background: '#0e1520', surface: '#182232', ink: '#e6edf7', muted: '#a6b5ca', line: '#334156', accent: '#8bb5ff', soft: '#243955' },
 };
 // Existing light design tokens map to deliberate dark roles, without filtering photos or changing geometry.
 const backgrounds: Record<string, string> = {

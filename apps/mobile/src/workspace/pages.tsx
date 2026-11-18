@@ -11,10 +11,13 @@ import { RecentRecords } from '../components/recent-records';
 import { HistoryToolbar } from '../components/history-toolbar';
 import { BatchHistory } from '../components/batch-history';
 import { BatchPdfExport, batchPdfAvailable } from '../components/batch-pdf-export';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { HistoryPanel } from '../components/history-panel';
 import { Profile } from '../components/profile';
 import { ExportRecordsEntry } from '../components/export-records';
+import { usePhotoDisplayUri, warmPhotoDisplayUri } from '../photo-display-cache';
+import { themeColors } from '../theme/palette';
+import { useTheme } from '../theme/provider';
 import type { Runtime } from '../runtime';
 import type { WorkspaceState } from './use-workspace-state';
 import type { WorkspaceActions } from './use-workspace-actions';
@@ -33,8 +36,12 @@ export function CurrentQuestionPage({ runtime, state, actions }: PageProps) {
     shareError, hasAnswers, selectedKey, answerReady, sessions, setTab, setHistorySearch,
   } = state;
   const { reset, gallery, rotate, submit, cancel, correct } = actions;
+  const { scheme } = useTheme();
+  const palette = themeColors[scheme];
+  const displaySource = usePhotoDisplayUri(source ?? '');
+  useEffect(() => { warmPhotoDisplayUri(source ?? image); }, [source, image]);
   return (
-    <View style={{ flex: 1, backgroundColor: colors.background, display: appTab === 'questions' && tab === 'solve' ? 'flex' : 'none' }}>
+    <View style={{ flex: 1, backgroundColor: palette.background, display: appTab === 'questions' && tab === 'solve' ? 'flex' : 'none' }}>
       {batchView ? (
         <BatchWorkspace
           key={batchView.id}
@@ -77,9 +84,9 @@ export function CurrentQuestionPage({ runtime, state, actions }: PageProps) {
                     <Pressable accessibilityRole="button" accessibilityLabel="查看题目图片" onPress={() => setViewImage(true)} onLongPress={() => void shareOriginal()}>
                       <Image
                         accessibilityLabel="待解答的题目"
-                        source={{ uri: source }}
+                        source={{ uri: displaySource }}
                         resizeMode="contain"
-                        style={{ width: '100%', height: 280, borderRadius: 10, backgroundColor: '#f7f9fc' }}
+                        style={{ width: '100%', height: 280, borderRadius: 10, backgroundColor: scheme === 'dark' ? '#1e293b' : '#f7f9fc' }}
                       />
                     </Pressable>
                     {!!shareError && <Notice text={shareError} error />}

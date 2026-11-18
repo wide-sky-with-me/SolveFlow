@@ -75,7 +75,8 @@ test('legacy errors stay readable and genuine damage has compact aligned mainten
     const previous = before.find(([originalKey]) => originalKey === key); if (!previous) throw new Error('MISSING_ORIGINAL_SUMMARY');
     const legacy = LocalHistorySummarySchema.parse(JSON.parse(previous[1]));
     expect(legacy.answerState).toBeUndefined();
-    expect(LocalHistorySummarySchema.parse(JSON.parse(raw))).toEqual({ ...legacy, answerState: legacy.batch?.position === 1 ? 'failed' : 'unanswered', answerStateVersion: LOCAL_HISTORY_ANSWER_STATE_VERSION });
+    const expectedState = legacy.batch?.position === 1 ? 'failed' : 'unanswered';
+    expect(LocalHistorySummarySchema.parse(JSON.parse(raw))).toEqual({ ...legacy, answerReady: false, answerState: expectedState, taskState: expectedState, answerStateVersion: LOCAL_HISTORY_ANSWER_STATE_VERSION });
   }
   await expect(notice).toContainText('1 处本地记录需要处理'); expect(modelRequests).toBe(0);
 });

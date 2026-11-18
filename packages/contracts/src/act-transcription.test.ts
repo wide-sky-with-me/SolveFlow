@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { ActTranscriptSchema, actProblem } from './act-transcription.js';
-import { AnswerCandidateSchema, VerificationSchema, assessVerificationCoverage } from './agent.js';
+import { AnswerCandidateSchema, VerificationSchema, assessVerificationCoverage, parseGeneratedVerification } from './agent.js';
 
 const source = { schemaVersion: 1, kind: 'act-transcript', subject: 'science', blocks: [{ kind: 'table', text: '| Row | X | Y |\n| --- | --- | --- |\n| 1 | 7 | N.A. |\n| 2 | 5 | 19 |' }, { kind: 'passage', text: 'Then the group moved; then the group waited.' }], questions: [{ number: 4, text: 'Which expression matches the data?', options: [{ label: 'B', text: '1:7' }, { label: 'D', text: '1:9' }], activeSpan: { block: 1, text: 'then', occurrence: 1 }, uncertainties: [] }], uncertainties: [] };
 const answer = () => AnswerCandidateSchema.parse({ schemaVersion: 1, kind: 'answer', problem: actProblem(ActTranscriptSchema.parse(source)), selectedOptions: ['B'], answer: 'The ratio follows the data.', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] });
@@ -61,4 +61,59 @@ it('accepts the exact printed single-question number and distinguishes an intern
   expect(assessVerificationCoverage(VerificationSchema.parse({ ...review, coverage: [item] }), candidate).verdict).toBe('pass');
   const other = assessVerificationCoverage(VerificationSchema.parse({ ...review, coverage: [{ ...item, questionNumber: 56 }] }), candidate);
   expect(other).toMatchObject({ verdict: 'unknown', issues: [{ code: 'REVIEW_INCOMPLETE' }] });
+});
+
+it('binds a printed ACT Item label to the independently checked choice and retains genuine disagreements', () => {
+  const candidate = answer();
+  candidate.problem.sourceNumber = 'Item 55';
+  const choice = { questionNumber: 55, selectedOptions: ['B'], decisiveEvidence: 'The first table row gives a ratio of 1 to 7.' };
+  const review = { ...pass, evidenceStatus: 'sufficient', actTranscription: checks, independentChoices: [choice],
+    coverage: [{ questionNumber: 55, verdict: 'pass', checked: ['transcription', 'logic'] }] };
+  const assess = (value: unknown) => assessVerificationCoverage(VerificationSchema.parse(value), candidate).verdict;
+  expect(assess(review)).toBe('pass');
+  expect(assess({ ...review, independentChoices: [{ ...choice, selectedOptions: ['D'] }] })).toBe('fail');
+  expect(assess({ ...review, independentChoices: [{ ...choice, questionNumber: 56 }] })).toBe('unknown');
+  for (const label of ['Item #55', '#55', '55.']) {
+    candidate.problem.sourceNumber = label;
+    expect(assess(review)).toBe('pass');
+  }
+  for (const label of ['Items 55–56', '55(b)', 'Module 55']) {
+    candidate.problem.sourceNumber = label;
+    expect(assess(review)).toBe('unknown');
+  }
+});
+
+it('rejects fresh single-question pass verifications that include questionNumber when sourceNumber is missing', () => {
+  const candidate = answer();
+  delete candidate.problem.sourceNumber;
+  const base = {
+    schemaVersion: 1,
+    verdict: 'pass',
+    evidenceStatus: 'sufficient',
+    checked: ['transcription', 'logic'],
+    actTranscription: { body: 'pass', question: 'pass', options: 'pass', activeSpan: 'pass', tables: 'pass' },
+    issues: [],
+  };
+  expect(() => parseGeneratedVerification({
+    ...base,
+    independentChoices: [{ questionNumber: 45, selectedOptions: ['B'], decisiveEvidence: 'Row 1 supports B.' }],
+    coverage: [{ questionNumber: 45, verdict: 'pass', checked: ['transcription', 'logic'] }],
+  }, candidate)).toThrow('省略questionNumber');
+  expect(parseGeneratedVerification({
+    ...base,
+    independentChoices: [{ selectedOptions: ['B'], decisiveEvidence: 'Row 1 supports B.' }],
+    coverage: [{ verdict: 'pass', checked: ['transcription', 'logic'] }],
+  }, candidate).verdict).toBe('pass');
+});
+
+it('retains an explicit ACT transcript item number when the optional printed label is absent, without printing the single-item fallback', () => {
+  const parsed = ActTranscriptSchema.parse(source);
+  expect(actProblem(parsed).sourceNumber).toBe('4');
+  expect(actProblem({ ...parsed, questions: parsed.questions.map(q => ({ ...q, number: 1 })) }).sourceNumber).toBeUndefined();
+});
+
+it('names the specific unchecked or inconsistent source fields and explains what remains to verify', () => {
+  const assess = (overrides: object) => assessVerificationCoverage(VerificationSchema.parse({ ...pass, actTranscription: { ...checks, ...overrides } }), answer());
+  expect(assess({ tables: 'fail' }).issues[0]?.message).toBe('核验发现表格与原图有出入，但未说明差异是否改变答案。请对照原图复验。');
+  expect(assess({ activeSpan: 'unknown', options: 'not_applicable' }).issues[0]?.message).toBe('核验尚未确认原图中的选项、高亮片段，无法判断这些内容是否支持当前答案。请重新核验。');
 });

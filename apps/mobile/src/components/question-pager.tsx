@@ -11,28 +11,38 @@ import { useTheme } from '../theme/provider';
 import { themeColors } from '../theme/palette';
 
 import type { QuestionAnswerState } from '@solveflow/contracts/http';
-import { questionStatusColors, questionStatusLabel } from './question-status';
+import type { QuestionOverviewItem } from '@solveflow/client/presentation';
+import { questionOverviewLabel, questionStatusColors, questionStatusLabel } from './question-status';
 
 type PageTransition = { from: string; to: string; direction: number; phase: 'waiting' | 'moving'; progress: Animated.Value };
 
 type AxisThread = { key: string; number?: number };
 // Readiness and slide updates should not rebuild every tab in a large batch.
 // Only the old/new selected group, a width change or changed threads need work.
-const QuestionTabGroup = memo(function QuestionTabGroup({ group, page, width, selected, numbered, onSelect, states }: {
-  group: readonly AxisThread[]; page: number; width: number; selected: string | null; numbered: boolean; onSelect: (key: string) => void; states?: ReadonlyMap<string, QuestionAnswerState> | undefined;
+const QuestionTabGroup = memo(function QuestionTabGroup({ group, page, width, selected, numbered, onSelect, states, overviews }: {
+  group: readonly AxisThread[]; page: number; width: number; selected: string | null; numbered: boolean; onSelect: (key: string) => void;
+  states?: ReadonlyMap<string, QuestionAnswerState> | undefined;
+  overviews?: ReadonlyMap<string, QuestionOverviewItem> | undefined;
 }) {
   const { scheme } = useTheme();
+  const palette = themeColors[scheme];
   return <View style={[styles.axisPage, { width }]}>
     {group.map((thread, offsetIndex) => {
       const isTabSelected = selected === thread.key;
-      const state = states?.get(thread.key); const tone = state ? questionStatusColors[scheme][state] : null;
+      const overview = overviews?.get(thread.key);
+      const state = overview?.state ?? states?.get(thread.key);
+      const toneKey = overview?.tone ?? state;
+      const tone = toneKey ? questionStatusColors[scheme][toneKey] : null;
       const fallback = `${page * 4 + offsetIndex + 1}`;
+      const baseNum = thread.number === undefined ? (numbered ? '补充' : fallback) : `${thread.number}`;
+      const compactAnswer = overview?.answer && !overview.excerpt && overview.answer.length <= 6 && thread.number !== undefined ? overview.answer : null;
+      const hintParts = [overview ? overview.phaseLabel : state ? questionStatusLabel[state] : '', overview?.answer ? `答案 ${overview.answer}` : ''].filter(Boolean);
       return <Pressable key={thread.key} hitSlop={{ top: 4, bottom: 4 }} accessibilityRole="tab"
         accessibilityLabel={thread.number === undefined ? (numbered ? '补充记录' : `题目 ${fallback}`) : `跳转第${thread.number}题`}
-        accessibilityHint={state ? questionStatusLabel[state] : undefined}
+        accessibilityHint={hintParts.length ? hintParts.join('，') : undefined}
         accessibilityState={{ selected: isTabSelected }} aria-selected={isTabSelected}
-        onPress={() => { Keyboard.dismiss(); onSelect(thread.key); }} style={[styles.tab, tone && { backgroundColor: tone.backgroundColor }, isTabSelected && { borderWidth: 2, borderColor: themeColors[scheme].accent }, !tone && isTabSelected && styles.selected]}>
-        <Text style={[styles.tabText, tone && { color: tone.color }, isTabSelected && { fontWeight: '700' }]}>{thread.number === undefined ? (numbered ? '补充' : fallback) : `${thread.number}`}</Text>
+        onPress={() => { Keyboard.dismiss(); onSelect(thread.key); }} style={[styles.tab, tone && { backgroundColor: tone.backgroundColor }, isTabSelected && { borderWidth: 2, borderColor: palette.accent }, !tone && isTabSelected && { backgroundColor: palette.soft, borderRadius: 10 }]}>
+        <Text numberOfLines={1} style={[styles.tabText, { color: tone?.color ?? palette.muted }, isTabSelected && { fontWeight: '700', color: tone?.color ?? palette.accent }]}>{compactAnswer ? `${baseNum} · ${compactAnswer}` : baseNum}</Text>
       </Pressable>;
     })}
   </View>;
@@ -66,6 +76,7 @@ export function QuestionPager<T extends { key: string; number?: number }>({
   showNavigation = threads.length > 1,
   jumpGridTrigger,
   states,
+  overviews,
 }: {
   retainPages?: boolean;
   scrollPages?: boolean;
@@ -76,9 +87,11 @@ export function QuestionPager<T extends { key: string; number?: number }>({
   render: (thread: T, onSwipe: (direction: number) => Promise<void>) => ReactNode;
   jumpGridTrigger?: number | undefined;
   states?: ReadonlyMap<string, QuestionAnswerState> | undefined;
+  overviews?: ReadonlyMap<string, QuestionOverviewItem> | undefined;
 }) {
   const { scheme } = useTheme();
-  const bg = themeColors[scheme].background;
+  const palette = themeColors[scheme];
+  const bg = palette.background;
   const [gridOpen, setGridOpen] = useState(false);
   const [containerWidth, setContainerWidth] = useState(() => Dimensions.get('window').width || 390);
   const reduced = useReducedMotion();
@@ -194,7 +207,7 @@ export function QuestionPager<T extends { key: string; number?: number }>({
       onLayout={event => setContainerWidth(event.nativeEvent.layout.width || Dimensions.get('window').width || 390)}
     >
       {showNavigation && (
-        <View testID="question-pager-navigation" style={[styles.navigation, { backgroundColor: bg }]}>
+        <View testID="question-pager-navigation" style={[styles.navigation, { backgroundColor: bg, borderBottomColor: palette.line }]}>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="上一道题"
@@ -210,13 +223,13 @@ export function QuestionPager<T extends { key: string; number?: number }>({
             horizontal
             pagingEnabled
             showsHorizontalScrollIndicator={false}
-            style={styles.track}
+            style={[styles.track, { backgroundColor: scheme === 'dark' ? '#1c2738' : '#f5f7fb' }]}
             onLayout={event => setAxisWidth(event.nativeEvent.layout.width)}
             contentContainerStyle={styles.axis}
             accessibilityLabel="题号导航"
           >
             {axisPages.map((group, page) => (
-              <QuestionTabGroup states={states} key={page} group={group} page={page} width={axisWidth}
+              <QuestionTabGroup states={states} overviews={overviews} key={page} group={group} page={page} width={axisWidth}
                 selected={group.some(thread => thread.key === selected) ? selected : null}
                 numbered={numbered.length > 0} onSelect={onSelect} />
             ))}
@@ -228,7 +241,7 @@ export function QuestionPager<T extends { key: string; number?: number }>({
             hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
             style={({ pressed }) => [styles.countButton, { minWidth: countWidth }, pressed && pages.length > 1 && { opacity: 0.6 }]}
           >
-            <Text accessibilityLiveRegion="polite" numberOfLines={1} style={[styles.count, { width: countWidth }]}>{index < 0 ? '记录' : `${index + 1}/${pages.length}`}</Text>
+            <Text accessibilityLiveRegion="polite" numberOfLines={1} style={[styles.count, { width: countWidth, color: palette.muted }]}>{index < 0 ? '记录' : `${index + 1}/${pages.length}`}</Text>
           </Pressable>
           <Pressable
             accessibilityRole="button"
@@ -340,53 +353,101 @@ export function QuestionPager<T extends { key: string; number?: number }>({
           );
         })}
       </View>
-      {gridOpen && (
-        <Modal visible={gridOpen} transparent animationType="fade" onRequestClose={() => setGridOpen(false)}>
-          <Pressable accessibilityLabel="关闭题号面板" style={{ flex: 1, backgroundColor: '#00000066', justifyContent: 'flex-end' }} onPress={() => setGridOpen(false)}>
-            <Pressable style={{ backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, gap: 16, maxHeight: '75%' }} onPress={e => e.stopPropagation()}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <View style={{ gap: 2 }}>
-                  <Text style={s.label}>全部题目</Text>
-                  <Text style={[s.subtitle, { fontSize: 12 }]}>共 {pages.length} 题</Text>
+      {gridOpen && (() => {
+        const overviewItems = pages.map(thread => overviews?.get(thread.key));
+        const answeredCount = overviewItems.filter(item => !!item?.answer).length;
+        const verifiedCount = pages.filter(thread => (overviews?.get(thread.key)?.tone ?? states?.get(thread.key)) === 'verified').length;
+        const pendingCount = pages.filter(thread => (overviews?.get(thread.key)?.tone ?? states?.get(thread.key)) === 'answered').length;
+        const alertCount = pages.filter(thread => (overviews?.get(thread.key)?.tone ?? states?.get(thread.key)) === 'failed').length;
+        const summaryStats = overviews
+          ? [`已有答案 ${answeredCount}`, `通过 ${verifiedCount}`, ...(pendingCount ? [`待核验 ${pendingCount}`] : []), ...(alertCount ? [`待处理 ${alertCount}`] : [])]
+          : [];
+        return (
+          <Modal visible={gridOpen} transparent animationType="fade" onRequestClose={() => setGridOpen(false)}>
+            <Pressable accessibilityLabel="关闭题号面板" style={{ flex: 1, backgroundColor: '#00000066', justifyContent: 'flex-end' }} onPress={() => setGridOpen(false)}>
+              <Pressable style={{ width: '100%', maxWidth: layout.workspaceWidth, alignSelf: 'center', backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, gap: 14, maxHeight: '78%' }} onPress={e => e.stopPropagation()}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                  <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                    <Text style={s.label}>全部题目</Text>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+                      <Text style={[s.subtitle, { fontSize: 12 }]}>共 {pages.length} 题</Text>
+                      {summaryStats.length > 0 && <Text style={[s.subtitle, { fontSize: 12 }]}>{summaryStats.join(' · ')}</Text>}
+                    </View>
+                  </View>
+                  <Button title="关闭" compact secondary onPress={() => setGridOpen(false)} />
                 </View>
-                <Button title="关闭" compact secondary onPress={() => setGridOpen(false)} />
-              </View>
-              {states && <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>{(['verified', 'answered', 'failed', 'unanswered'] as const).map(state => <Text key={state} style={{ fontSize: 12, color: questionStatusColors[scheme][state].color }}>● {questionStatusLabel[state]}</Text>)}</View>}
-              <ScrollView contentContainerStyle={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingVertical: 4 }}>
-                {pages.map((thread, idx) => {
-                  const isSelectedTab = thread.key === activeKey;
-                  const state = states?.get(thread.key); const tone = state ? questionStatusColors[scheme][state] : null;
-                  const displayNum = thread.number ?? idx + 1;
-                  return (
-                    <Pressable
-                      key={thread.key}
-                      accessibilityRole="button"
-                      accessibilityLabel={`快速跳转第${displayNum}题`}
-                      accessibilityHint={state ? questionStatusLabel[state] : undefined}
-                      testID={`question-status-${displayNum}`}
-                      onPress={() => { setGridOpen(false); choose(idx); }}
-                      style={({ pressed }) => [{
-                        width: 52,
-                        height: 48,
-                        borderRadius: 12,
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        backgroundColor: tone?.backgroundColor ?? (pressed ? '#dbe8ff' : '#f5f7fb'),
-                        borderWidth: isSelectedTab ? 2 : 1,
-                        borderColor: isSelectedTab ? themeColors[scheme].accent : '#e7ecf3',
-                      }]}
-                    >
-                      <Text style={{ fontSize: 16, fontWeight: isSelectedTab ? '700' : '500', color: tone?.color ?? colors.ink }}>
-                        {displayNum}
+                {(overviews || states) && (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                    {(overviews
+                      ? (['verified', 'answered', 'processing', 'failed', 'unanswered'] as const)
+                      : (['verified', 'answered', 'failed', 'unanswered'] as const)
+                    ).map(toneKey => (
+                      <Text key={toneKey} style={{ fontSize: 12, color: questionStatusColors[scheme][toneKey].color }}>
+                        ● {overviews ? questionOverviewLabel[toneKey] : questionStatusLabel[toneKey as QuestionAnswerState]}
                       </Text>
-                    </Pressable>
-                  );
-                })}
-              </ScrollView>
+                    ))}
+                  </View>
+                )}
+                <ScrollView contentContainerStyle={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingVertical: 4 }}>
+                  {pages.map((thread, idx) => {
+                    const isSelectedTab = thread.key === activeKey;
+                    const overview = overviews?.get(thread.key);
+                    const state = overview?.state ?? states?.get(thread.key);
+                    const toneKey = overview?.tone ?? state;
+                    const tone = toneKey ? questionStatusColors[scheme][toneKey] : null;
+                    const displayNum = thread.number ?? idx + 1;
+                    const hintParts = [overview ? overview.phaseLabel : state ? questionStatusLabel[state] : '', overview?.answer ? `答案 ${overview.answer}` : ''].filter(Boolean);
+                    return (
+                      <Pressable
+                        key={thread.key}
+                        accessibilityRole="button"
+                        accessibilityLabel={`快速跳转第${displayNum}题`}
+                        accessibilityHint={hintParts.length ? hintParts.join('，') : undefined}
+                        testID={`question-status-${displayNum}`}
+                        onPress={() => { setGridOpen(false); choose(idx); }}
+                        style={({ pressed }) => [{
+                          minWidth: overviews ? 74 : 52,
+                          ...(overviews ? { flexBasis: '22%', flexGrow: 1, maxWidth: 118, minHeight: 70, paddingHorizontal: 6, paddingVertical: 6, gap: 2 } : { width: 52, height: 48 }),
+                          borderRadius: 12,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          backgroundColor: tone?.backgroundColor ?? (pressed ? palette.soft : scheme === 'dark' ? '#243044' : '#f5f7fb'),
+                          borderWidth: isSelectedTab ? 2 : 1,
+                          borderColor: isSelectedTab ? palette.accent : palette.line,
+                        }]}
+                      >
+                        <Text style={{ fontSize: overviews ? 13 : 16, lineHeight: overviews ? 17 : 22, fontWeight: isSelectedTab ? '700' : '600', fontVariant: ['tabular-nums'], color: tone?.color ?? palette.ink }}>
+                          {displayNum}
+                        </Text>
+                        {overviews && overview?.answer ? (
+                          <Text
+                            numberOfLines={overview.excerpt ? 2 : 1}
+                            style={{
+                              width: '100%',
+                              textAlign: 'center',
+                              fontSize: overview.excerpt ? 11 : 14,
+                              lineHeight: overview.excerpt ? 14 : 18,
+                              fontWeight: overview.excerpt ? '400' : '700',
+                              color: tone?.color ?? palette.ink,
+                            }}
+                          >
+                            {overview.answer}
+                          </Text>
+                        ) : null}
+                        {overviews ? (
+                          <Text numberOfLines={1} style={{ fontSize: 11, lineHeight: 14, color: tone?.color ?? palette.muted, opacity: 0.9 }}>
+                            {overview?.phaseLabel ?? '未答'}
+                          </Text>
+                        ) : null}
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </Pressable>
             </Pressable>
-          </Pressable>
-        </Modal>
-      )}
+          </Modal>
+        );
+      })()}
     </View></PageMemory>
   );
 }

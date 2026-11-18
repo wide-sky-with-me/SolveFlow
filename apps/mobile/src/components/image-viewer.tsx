@@ -1,5 +1,6 @@
 import { imageLongPress } from './image-long-press';
 import { useImageShare } from './use-image-share';
+import { usePhotoDisplayUri } from '../photo-display-cache';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { Image, Platform, Pressable, Text, View, type GestureResponderEvent, type ViewStyle } from 'react-native';
 import { MotionModal as Modal } from './motion-modal';
@@ -13,16 +14,20 @@ const viewportStyle: ViewStyle & { touchAction?: 'none' } = {
 };
 type Tap = { x: number; y: number; time: number };
 export function ImageViewer({ uri, size, onClose }: { uri: string; size: ImageSize; onClose: () => void }) {
+  const displayUri = usePhotoDisplayUri(uri);
   const { share, error } = useImageShare(uri);
+  const viewportNode = useRef<View | null>(null);
   const longPress = useMemo(() => imageLongPress(() => { tap.current = null; lastTap.current = null; void share(); }), [share]);
   useEffect(() => () => longPress.cancel(), [longPress]);
   const [viewport, setViewport] = useState<ImageSize>({ width: 0, height: 0 });
   const [transform, setTransform] = useState(INITIAL_IMAGE_TRANSFORM);
   const current = useRef(transform);
+  const geometry = useRef({ fitted: { width: 0, height: 0 }, viewport: { width: 0, height: 0 } });
   const touches = useRef<ImageTouch[]>([]);
   const tap = useRef<Tap | null>(null);
   const lastTap = useRef<Tap | null>(null);
   const fitted = fitImage(size, viewport);
+  geometry.current = { fitted, viewport };
   function update(value: ImageTransform) { current.current = value; setTransform(value); }
   function cancelGesture() { longPress.cancel(); touches.current = []; tap.current = null; lastTap.current = null; }
   useEffect(() => { longPress.cancel(); touches.current = []; tap.current = null; lastTap.current = null; current.current = INITIAL_IMAGE_TRANSFORM; setTransform(INITIAL_IMAGE_TRANSFORM); }, [uri, size.width, size.height, viewport.width, viewport.height]);
@@ -47,11 +52,27 @@ export function ImageViewer({ uri, size, onClose }: { uri: string; size: ImageSi
     update(moveImage(current.current, touches.current, next, fitted, viewport));
     touches.current = next;
   }
-  function zoomTo(scale: number, x = viewport.width / 2, y = viewport.height / 2) {
+  function zoomTo(scale: number, x = geometry.current.viewport.width / 2, y = geometry.current.viewport.height / 2) {
+    const { fitted: currentFitted, viewport: currentViewport } = geometry.current;
+    if (!currentViewport.width || !currentFitted.width) return;
     scale = Math.min(MAX_IMAGE_SCALE, Math.max(MIN_IMAGE_SCALE, scale));
     const ratio = scale / current.current.scale;
-    update(boundImage({ scale, x: (x - viewport.width / 2) * (1 - ratio) + current.current.x * ratio, y: (y - viewport.height / 2) * (1 - ratio) + current.current.y * ratio }, fitted, viewport));
+    update(boundImage({ scale, x: (x - currentViewport.width / 2) * (1 - ratio) + current.current.x * ratio, y: (y - currentViewport.height / 2) * (1 - ratio) + current.current.y * ratio }, currentFitted, currentViewport));
   }
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const raw = viewportNode.current as unknown;
+    if (!raw || typeof raw !== 'object' || !('addEventListener' in raw) || !('getBoundingClientRect' in raw)) return;
+    const element = raw as HTMLElement;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      cancelGesture();
+      const rect = element.getBoundingClientRect();
+      zoomTo(current.current.scale * Math.exp(-event.deltaY * 0.002), event.clientX - rect.left, event.clientY - rect.top);
+    };
+    element.addEventListener('wheel', onWheel, { passive: false });
+    return () => element.removeEventListener('wheel', onWheel);
+  }, []);
   function keyboard(event: KeyboardEvent<HTMLElement>) {
     const { key } = event;
     if (!['+', '=', '-', '0', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(key)) return;
@@ -78,8 +99,8 @@ export function ImageViewer({ uri, size, onClose }: { uri: string; size: ImageSi
   }
   return <Modal animationType="fade" onRequestClose={onClose}>
     <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
-      <View testID="image-zoom-viewport" style={viewportStyle} collapsable={false}
-        accessible accessibilityRole="adjustable" accessibilityLabel="题目图片" accessibilityHint={Platform.OS === 'web' ? '双指缩放，放大后拖动；键盘加减键缩放，方向键平移，0还原；长按分享图片' : '双指缩放，放大后拖动；双击放大或还原，长按分享图片'}
+      <View ref={viewportNode} testID="image-zoom-viewport" style={viewportStyle} collapsable={false}
+        accessible accessibilityRole="adjustable" accessibilityLabel="题目图片" accessibilityHint={Platform.OS === 'web' ? '滚轮或双指缩放，放大后拖动；键盘加减键缩放，方向键平移，0还原；长按分享图片' : '双指缩放，放大后拖动；双击放大或还原，长按分享图片'}
         aria-valuemin={100} aria-valuemax={400} aria-valuenow={Math.round(transform.scale * 100)}
         {...(Platform.OS === 'web' ? { tabIndex: 0, onKeyDown: keyboard } : {})}
         accessibilityValue={{ min: 100, max: 400, now: Math.round(transform.scale * 100), text: `${Math.round(transform.scale * 100)}%` }}
@@ -90,11 +111,12 @@ export function ImageViewer({ uri, size, onClose }: { uri: string; size: ImageSi
         onResponderGrant={grant} onResponderStart={start} onResponderMove={move} onResponderEnd={start}
         onResponderRelease={release} onResponderTerminate={cancelGesture} onResponderTerminationRequest={() => false}>
         <View pointerEvents="none" style={{ position: 'absolute', left: (viewport.width - fitted.width) / 2, top: (viewport.height - fitted.height) / 2, width: fitted.width, height: fitted.height, transform: [{ translateX: transform.x }, { translateY: transform.y }, { scale: transform.scale }] }}>
-          <Image source={{ uri }} accessibilityLabel="原始题图大图" resizeMode="contain" style={{ width: '100%', height: '100%' }} />
+          <Image source={{ uri: displayUri }} accessibilityLabel="原始题图大图" resizeMode="contain" style={{ width: '100%', height: '100%' }} />
         </View>
       </View>
       {!!error && <Text accessibilityRole="alert" style={{ color: '#fff', padding: 12 }}>{error}</Text>}
       <SafeAreaView pointerEvents="box-none" style={{ position: 'absolute', top: 0, left: 0, right: 0, alignItems: 'flex-end', flexDirection: 'row', justifyContent: 'flex-end' }}>
+        {transform.scale > MIN_IMAGE_SCALE && <Pressable accessibilityRole="button" accessibilityLabel="还原图片缩放" onPress={() => { cancelGesture(); update(INITIAL_IMAGE_TRANSFORM); }} style={{ padding: 14, marginVertical: 12, marginLeft: 12, backgroundColor: '#292929', borderRadius: 24 }}><Text style={{ color: '#fff' }}>还原</Text></Pressable>}
         <Pressable accessibilityRole="button" accessibilityLabel="分享题目图片" onPress={() => void share()} style={{ padding: 14, margin: 12, backgroundColor: '#292929', borderRadius: 24 }}><Text style={{ color: '#fff' }}>分享</Text></Pressable>
         <Pressable accessibilityRole="button" accessibilityLabel="关闭大图" onPress={onClose} style={{ margin: 12, width: 48, height: 48, alignItems: 'center', justifyContent: 'center', backgroundColor: '#292929', borderRadius: 24 }}>
           <Text style={{ color: '#fff', fontSize: 30, lineHeight: 34 }}>×</Text>

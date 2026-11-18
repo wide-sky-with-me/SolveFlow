@@ -1,13 +1,13 @@
 # 发布状态与待办
 
-核对：2026-11-11。共享优化与文档整理，远程沿11/09发布记录；本轮未探活或部署。未达生产条件，成绩不跨版本、设备或样本累计。
+核对：2026-11-18。main已合入ACT核验与格式修复、总览答案与五态展示及原图预解码优化；未达生产条件，成绩不跨版本、设备或样本累计。
 
 ## 本机与远程版本
 
 | 环境 | 最近确认的版本与范围 | 证据 |
 | --- | --- | --- |
 | 本机 Web 3100 | 保留10/29图片工作台构建，入口正常；本轮Mac发布未替换本机资源 | [工作台与草稿](postmortem/2026-10-29-ui-workbench-repair.md) |
-| 远程 Mac Web 3131 | main`20261109-main-encoded-205650`，共享修复及静态压缩；两HTTPS入口、模型及32/32保留，跨网络完整交互仍未通过 | [11/09发布](postmortem/2026-11-09-main-mac-progress-release.md) |
+| 远程 Mac Web 3131 | main 11/18 ACT核验、总览预览及原图预解码优化；两HTTPS入口、模型及32/32保留 | [11/09发布](postmortem/2026-11-09-main-mac-progress-release.md) |
 | Android / iOS | 工作区0.1.82/build83；Android隔离模拟器、iOS三项XCTest及真机目标编译已有验收；IPA未签名，真机与发行另验 | [模拟器与修复](postmortem/2026-10-30-android-emulator.md)、[前轮PDF](postmortem/2026-10-30-native-pdf.md) |
 
 本页汇总最近证据，不执行服务探活。启动、构建和更新步骤归[Web指南](cookbook/local-web.md)，历史报告按[问题导航](postmortem/README.md#按问题查报告)查找。
