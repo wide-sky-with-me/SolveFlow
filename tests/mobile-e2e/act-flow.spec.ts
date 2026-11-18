@@ -131,7 +131,7 @@ test('ACT Writing follow-up receives the complete essay and ordered additional p
   const third = await photoFile(page, 'page-3.jpg', ['ACT Writing page 3', 'Perspective 3: competing budget needs.', 'Address the relationships between perspectives.'], '#fff4ee');
   await page.getByRole('button', { name: '同题材料 / 补图', exact: true }).click(); const waiting = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: '从相册补图', exact: true }).click(); const chooser = await waiting; expect(chooser.isMultiple()).toBe(true); await chooser.setFiles([third, second]);
-  await expect(page.getByTestId('material-import-row')).toHaveCount(2); await expect(page.getByTestId('material-import-row').nth(0)).toContainText('page-2.jpg'); await expect(page.getByTestId('material-import-row').nth(1)).toContainText('page-3.jpg');
+  await expect(page.getByTestId('material-import-row')).toHaveCount(2); await expect(page.getByTestId('material-import-row').nth(0).getByRole('img', { name: '补图1缩略图：page-2.jpg', exact: true })).toBeVisible(); await expect(page.getByTestId('material-import-row').nth(1).getByRole('img', { name: '补图2缩略图：page-3.jpg', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '保存补图（2张）', exact: true }).click(); await expect(page.getByRole('button', { name: '查看材料 2', exact: true })).toBeVisible(); expect(bodies).toHaveLength(1);
   const withPages = StoredLocalRecordSchema.parse(JSON.parse(await readDocument(page, `record.${id}`))); expect(withPages.session.runs).toEqual(original.session.runs); expect(withPages.materials).toHaveLength(2);
   const materialIds = withPages.materials!.map(material => material.id); expect(withPages.activeImageIds).toEqual([original.session.upload.id, ...materialIds]);
