@@ -21,7 +21,6 @@ function captureFixture(problem: ProblemStatement) {
   return { schemaVersion: 1, kind: 'act-transcript', subject: problem.subject, ...(problem.module ? { module: problem.module } : {}), blocks: [], uncertainties: [],
     questions: [{ number: 1, text: problem.text, ...(problem.sourceNumber ? { sourceNumber: problem.sourceNumber } : {}), ...(problem.options ? { options: problem.options } : {}), ...(problem.optionsComplete === undefined ? {} : { optionsComplete: problem.optionsComplete }), ...(problem.response ? { response: problem.response } : {}), activeSpan: null, uncertainties: problem.uncertainties }] };
 }
-const actModelPass = { ...modelPass, actTranscription: { body: 'pass', question: 'pass', options: 'pass', activeSpan: 'pass', tables: 'pass' } };
 async function configureAct(page: Page) {
   await page.goto('/'); await page.getByRole('tab', { name: '我的', exact: true }).click(); await page.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('button', { name: 'ACT', exact: true }).click(); await configureLocalModel(page);
@@ -53,23 +52,23 @@ async function readDocument(page: Page, key: string): Promise<string> {
 }
 function sessionId(page: Page) { const id = new URL(page.url()).searchParams.get('session'); if (!id) throw new Error('MISSING_SESSION'); return id; }
 
-test('ACT saves every captured paragraph and original choice punctuation when the answer stage returns a rewritten summary', async ({ page }) => {
+test('ACT brief solve completes in one single pass with derived zoomed views and preserves choices across reload', async ({ page }) => {
   const options = [{ label: 'A', text: 'NO CHANGE' }, { label: 'B', text: 'however;' }, { label: 'C', text: 'however,' }];
-  const source = { schemaVersion: 1, kind: 'act-transcript', subject: 'english', blocks: [{ kind: 'passage', text: 'First, the archive were quiet.' }, { kind: 'passage', text: 'The next room, however, was crowded.' }], questions: [{ number: 8, sourceNumber: '8', text: 'Which choice is grammatically acceptable?', options, activeSpan: { block: 1, text: 'however', occurrence: 1 }, uncertainties: [] }], uncertainties: [] };
-  const altered = { ...base, problem: { text: 'A summary of the archive and its crowded rooms.', subject: 'english', uncertainties: [], options: [{ label: 'A', text: 'NO CHANGE' }, options[2], options[1]] }, selectedOptions: ['A'], answer: 'The transition fits the context.' };
-  let calls = 0;
+  const direct = { ...base, problem: { text: 'The next room, **however**, was crowded.\n\nWhich choice is grammatically acceptable?', subject: 'english', exam: 'act', sourceNumber: '8', uncertainties: [], options }, selectedOptions: ['A'], answer: 'The transition fits the context.' };
+  const bodies: unknown[] = [];
   await page.route('https://fixture-model.invalid/v1/chat/completions', async route => {
-    const body: unknown = route.request().postDataJSON(); const data = lastModelInput(body); calls++;
-    await route.fulfill({ contentType: 'text/event-stream', body: modelSse(object(data) && data.task === 'act-transcription' ? source : altered, body) });
+    const body: unknown = route.request().postDataJSON(); bodies.push(body);
+    await route.fulfill({ contentType: 'text/event-stream', body: modelSse(direct, body) });
   });
   await configureAct(page); await chooseQuestion(page, ['First, the archive were quiet.', 'The next room, however, was crowded.', 'Which choice is grammatically acceptable?', ...options.map(option => `${option.label}. ${option.text}`)]);
   await page.getByRole('button', { name: '开始解题', exact: true }).click();
   const statement = page.getByRole('region', { name: '题目原文', exact: true });
-  await expect(statement).toContainText('First, the archive were quiet.'); await expect(statement).toContainText('The next room, however, was crowded.');
+  await expect(statement).toContainText('The next room, however, was crowded.');
   await expect(statement.locator('.choice-label')).toHaveText(['A', 'B', 'C']); await expect(statement.locator('.choice-text')).toHaveText(options.map(option => option.text));
   const raw = await readDocument(page, `record.${sessionId(page)}`); const record = StoredLocalRecordSchema.parse(JSON.parse(raw));
-  expect(record.session.runs[0]?.outcome).toMatchObject({ candidate: { problem: { transcriptionScope: 'act-visible', text: 'First, the archive were quiet.\n\nThe next room, **however**, was crowded.\n\nWhich choice is grammatically acceptable?', options } } });
-  expect(calls).toBe(2); await page.reload(); await expect(statement).toContainText('First, the archive were quiet.'); expect(calls).toBe(2);
+  expect(record.session.runs[0]?.outcome).toMatchObject({ candidate: { problem: { sourceNumber: '8', options }, selectedOptions: ['A'] } });
+  expect(bodies).toHaveLength(1); expect(requestImages(bodies[0])).toHaveLength(3);
+  await page.reload(); await expect(statement).toContainText('The next room, however, was crowded.'); expect(bodies).toHaveLength(1);
 });
 
 const choices = [
@@ -92,14 +91,14 @@ for (const item of choices) test(`ACT ${item.title} (synthetic UI fixture)`, asy
   await expect(statement.locator('.choice-label')).toHaveText(item.labels); await expect(statement.locator('.choice-text')).toHaveText(item.texts);
   await expect(page.locator('.final-answer .answer-choice')).toHaveText(item.selected); await expect(page.locator('.final-answer')).toContainText(item.answer);
   await expect(page.getByText('未校验', { exact: true })).toBeVisible(); await expect(page.getByTestId('current-exam')).toHaveText('本题考试：ACT');
-  expect(bodies).toHaveLength(1); expectActRequest(bodies[0]); expect(requestImages(bodies[0])).toHaveLength(1);
-  expect(captures).toHaveLength(1); expect(requestImages(captures[0])).toHaveLength(3); expect(requestImages(captures[0]).slice(0, 1)).toEqual(requestImages(bodies[0])); expect(lastModelInput(captures[0])).not.toHaveProperty('candidate');
+  expect(bodies).toHaveLength(1); expectActRequest(bodies[0]); expect(requestImages(bodies[0])).toHaveLength(3);
+  expect(captures).toHaveLength(0);
   const id = sessionId(page); const raw = await readDocument(page, `record.${id}`); const saved = StoredLocalRecordSchema.parse(JSON.parse(raw));
   expect(saved.exam).toBe('act'); expect(saved.session.runs).toHaveLength(1);
   expect(saved.session.runs[0]?.outcome).toMatchObject({ status: 'completed', verified: false, candidate: { problem: { options: candidate.problem.options }, selectedOptions: [item.selected] } });
   await page.reload(); await expect(statement.locator('.choice-label')).toHaveText(item.labels); await expect(statement.locator('.choice-text')).toHaveText(item.texts);
   await expect(page.locator('.final-answer .answer-choice')).toHaveText(item.selected); expect(bodies).toHaveLength(1); expect(await readDocument(page, `record.${id}`)).toBe(raw);
-  expect(captures).toHaveLength(1);
+  expect(captures).toHaveLength(0);
 });
 
 const essayParagraphs = [
@@ -132,12 +131,12 @@ test('ACT Writing follow-up receives the complete essay and ordered additional p
   const third = await photoFile(page, 'page-3.jpg', ['ACT Writing page 3', 'Perspective 3: competing budget needs.', 'Address the relationships between perspectives.'], '#fff4ee');
   await page.getByRole('button', { name: '同题材料 / 补图', exact: true }).click(); const waiting = page.waitForEvent('filechooser');
   await page.getByRole('button', { name: '从相册补图', exact: true }).click(); const chooser = await waiting; expect(chooser.isMultiple()).toBe(true); await chooser.setFiles([third, second]);
-  await expect(page.getByTestId('material-import-row')).toHaveCount(2); await expect(page.getByTestId('material-import-row').nth(0)).toContainText('page-2.jpg'); await expect(page.getByTestId('material-import-row').nth(1)).toContainText('page-3.jpg');
+  await expect(page.getByTestId('material-import-row')).toHaveCount(2); await expect(page.getByTestId('material-import-row').nth(0).getByRole('img', { name: '补图1缩略图：page-2.jpg', exact: true })).toBeVisible(); await expect(page.getByTestId('material-import-row').nth(1).getByRole('img', { name: '补图2缩略图：page-3.jpg', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '保存补图（2张）', exact: true }).click(); await expect(page.getByRole('button', { name: '查看材料 2', exact: true })).toBeVisible(); expect(bodies).toHaveLength(1);
   const withPages = StoredLocalRecordSchema.parse(JSON.parse(await readDocument(page, `record.${id}`))); expect(withPages.session.runs).toEqual(original.session.runs); expect(withPages.materials).toHaveLength(2);
   const materialIds = withPages.materials!.map(material => material.id); expect(withPages.activeImageIds).toEqual([original.session.upload.id, ...materialIds]);
   const expectedImages = [StoredLocalImageSchema.parse(JSON.parse(originalImage)).image, ...await Promise.all(materialIds.map(async materialId => StoredLocalImageSchema.parse(JSON.parse(await readDocument(page, `material.${id}.${materialId}`))).image))];
-  expect(requestImages(bodies[0])).toEqual(expectedImages.slice(0, 1)); expect(expectedImages[1]).not.toBe(expectedImages[2]);
+  expect(requestImages(bodies[0])).toHaveLength(3); expect(requestImages(bodies[0]).slice(0, 1)).toEqual(expectedImages.slice(0, 1)); expect(expectedImages[1]).not.toBe(expectedImages[2]);
   await page.getByRole('button', { name: '返回题目', exact: true }).click(); await page.reload(); await expect(article.locator('p')).toHaveText(essayParagraphs); expect(bodies).toHaveLength(1);
   // Reload drops ordinary Web's in-memory key, but must retain the question and its pages.
   await configureLocalModel(page); await expect(page.getByTestId('current-exam')).toHaveText('本题考试：ACT'); expect(bodies).toHaveLength(1);
@@ -150,7 +149,7 @@ test('ACT Writing follow-up receives the complete essay and ordered additional p
   expect(await readDocument(page, `image.${id}`)).toBe(originalImage);
   await page.reload(); await expect(page.getByRole('article', { name: '写作点评', exact: true }).locator('p')).toHaveText(feedbackText);
   await expect(page.getByTestId('current-exam')).toHaveText('本题考试：ACT'); expect(bodies).toHaveLength(2); expect(await readDocument(page, `record.${id}`)).toBe(reviewedRaw);
-  expect(captures).toHaveLength(1);
+  expect(captures).toHaveLength(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
 });
 
@@ -164,7 +163,7 @@ test('ACT verification of historical R1 keeps its original candidate, context an
     const body: unknown = route.request().postDataJSON(); const input = lastModelInput(body);
     if (object(input) && input.task === 'act-transcription') { captures.push(body); await route.fulfill({ contentType: 'text/event-stream', body: modelSse(captureFixture(input.problemCorrection === correction ? r2.problem : r1.problem), body) }); return; }
     bodies.push(body);
-    const result = object(input) && input.role === 'verifier' ? actModelPass : object(input) && input.problemCorrection === correction ? r2 : r1;
+    const result = object(input) && input.role === 'verifier' ? modelPass : object(input) && input.problemCorrection === correction ? r2 : r1;
     await route.fulfill({ contentType: 'text/event-stream', body: modelSse(result, body) });
   });
   await configureAct(page); await chooseQuestion(page, ['ACT Math synthetic R1', 'Solve x + 1 = 3.']);
@@ -188,7 +187,7 @@ test('ACT verification of historical R1 keeps its original candidate, context an
   expect(corrected.activeImageIds).toHaveLength(1); const replacementId = corrected.activeImageIds?.[0]; if (!replacementId) throw new Error('MISSING_REPLACEMENT');
   expect(replacementId).not.toBe(original.session.upload.id);
   const replacementRaw = await readDocument(page, `material.${id}.${replacementId}`); const replacementImage = StoredLocalImageSchema.parse(JSON.parse(replacementRaw)).image;
-  expect(replacementImage).not.toBe(originalImage); expect(requestImages(bodies[1])).toEqual([replacementImage]);
+  expect(replacementImage).not.toBe(originalImage); expect(requestImages(bodies[1])).toHaveLength(3); expect(requestImages(bodies[1]).slice(0, 1)).toEqual([replacementImage]);
   const savedAnswerBytes = corrected.session.runs.map(run => JSON.stringify(run));
   await thread.getByRole('button', { name: '历史解答', exact: true }).click(); await page.getByRole('radio', { name: '第1次解答', exact: true }).click();
   await expect(thread.locator('.final-answer')).toContainText(r1.answer); await expect(thread.getByText('这是题干更正前的解答，请结合最新更正后的条件判断。', { exact: true })).toBeVisible();
@@ -208,5 +207,5 @@ test('ACT verification of historical R1 keeps its original candidate, context an
   await expect(thread.locator('.final-answer')).toContainText(r2.answer); await expect(thread.getByText('未校验', { exact: true })).toBeVisible(); await expect(thread.locator('.original-photo-preview img')).toHaveAttribute('src', replacementImage);
   await page.reload(); await expect(thread.locator('.final-answer')).toContainText(r2.answer); await expect(page.getByTestId('current-exam')).toHaveText('本题考试：ACT');
   expect(bodies).toHaveLength(3); expect(await readDocument(page, `record.${id}`)).toBe(checkedRaw);
-  expect(captures).toHaveLength(2); expect(requestImages(captures[0]).slice(0, 1)).toEqual([originalImage]); expect(requestImages(captures[1]).slice(0, 1)).toEqual([replacementImage]);
+  expect(captures).toHaveLength(0); expect(requestImages(bodies[0]).slice(0, 1)).toEqual([originalImage]);
 });

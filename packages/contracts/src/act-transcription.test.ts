@@ -33,11 +33,11 @@ it('detects contradictory source failures and inappropriate table exemptions', (
   expect(assessVerificationCoverage(VerificationSchema.parse({ ...pass, actTranscription: { ...checks, tables: 'not_applicable' } }), answer()).verdict).toBe('unknown');
   expect(assessVerificationCoverage(VerificationSchema.parse({ ...pass, actTranscription: checks }), answer()).verdict).toBe('pass');
 });
-it('keeps old stored verification readable but applies the ACT gate on a new review', () => {
+it('allows brief ACT candidates without full-passage transcriptionScope to pass focused review while enforcing actTranscription on act-visible candidates', () => {
   const old = VerificationSchema.parse(pass); expect(old).toEqual(pass);
-  const candidate = AnswerCandidateSchema.parse({ ...answer(), problem: { ...answer().problem, exam: undefined, transcriptionScope: undefined } });
-  expect(assessVerificationCoverage(old, candidate).verdict).toBe('pass');
-  expect(assessVerificationCoverage(old, candidate, 'act').verdict).toBe('unknown');
+  const briefAct = AnswerCandidateSchema.parse({ ...answer(), problem: { ...answer().problem, transcriptionScope: undefined } });
+  expect(assessVerificationCoverage(old, briefAct, 'act').verdict).toBe('pass');
+  expect(assessVerificationCoverage(old, answer(), 'act').verdict).toBe('unknown');
 });
 it('lets explicit source exam identification override the default ACT context', () => {
   const problem = actProblem(ActTranscriptSchema.parse({ ...source, exam: 'sat' }));

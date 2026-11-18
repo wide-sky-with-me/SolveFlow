@@ -29,12 +29,25 @@ describe('bounded visual issue review across exams', () => {
       return [{ bytes: Uint8Array.of(7, 8, 9), mimeType: 'image/jpeg' }];
     });
     expect(outcome).toMatchObject({ status: 'completed', verified: true }); expect(preparations).toBe(1);
-    expect(requests).toHaveLength(exam === 'act' ? 6 : 4);
+    expect(requests).toHaveLength(4);
     const focused = requests.filter(data => data.derivedViews?.source === 'issue-regions');
-    expect(focused).toHaveLength(exam === 'act' ? 3 : 2);
+    expect(focused).toHaveLength(2);
     for (const data of focused) expect(data.derivedViews?.regions?.[0]).toMatchObject({ imageIndex: 1 });
     for (const body of bodies) for (const bytes of ['AQID', 'BAUG']) expect(body).toContain(`data:image/jpeg;base64,${bytes}`);
-    expect(bodies.filter(body => body.includes('data:image/jpeg;base64,BwgJ'))).toHaveLength(exam === 'act' ? 3 : 2);
+    expect(bodies.filter(body => body.includes('data:image/jpeg;base64,BwgJ'))).toHaveLength(2);
+  });
+  it('reuses a source-linked local view across recapture, solve, and final check in detailed ACT mode', async () => {
+    const requests: Request[] = []; let checks = 0; let preparations = 0; const bodies: string[] = [];
+    const outcome = await solveOnDevice({ ...input, exam: 'act', answerMode: 'detailed' }, settings, { solver: 'fixture', verifier: null }, async (_url, init) => {
+      const data = requestData(init); requests.push(data); bodies.push(String(init?.body));
+      return reply(data.task === 'act-transcription' ? source : data.role === 'verifier' ? ++checks === 1 ? fail : pass : candidate);
+    }, new AbortController().signal, () => {}, () => {}, undefined, undefined, undefined, async () => {
+      preparations++; return [{ bytes: Uint8Array.of(7, 8, 9), mimeType: 'image/jpeg' }];
+    });
+    expect(outcome).toMatchObject({ status: 'completed', verified: true }); expect(preparations).toBe(1);
+    expect(requests).toHaveLength(6);
+    expect(requests.filter(data => data.derivedViews?.source === 'issue-regions')).toHaveLength(3);
+    expect(bodies.filter(body => body.includes('data:image/jpeg;base64,BwgJ'))).toHaveLength(3);
   });
   it('keeps UNKNOWN and manual historical verification from starting automatic correction', async () => {
     for (const historical of [false, true]) {

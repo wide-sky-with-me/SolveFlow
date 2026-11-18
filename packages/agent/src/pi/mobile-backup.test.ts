@@ -99,6 +99,31 @@ it('explicit backup regeneration bypasses primary but still verifies', async () 
   expect(urls).toEqual(['https://backup.invalid/v1/chat/completions', 'https://verifier.invalid/v1/chat/completions']);
 });
 
+it('hands over to the configured backup once on upstream HTTP 403 while keeping HTTP 401 non-recoverable, and preserves a completed answer on verifier HTTP 403', async () => {
+  const calls403: string[] = [];
+  const recovered = await solveOnDevice(input, settings, keys, async url => {
+    calls403.push(String(url));
+    if (String(url).includes('primary.invalid')) return new Response('{}', { status: 403 });
+    return sse(String(url).includes('backup.invalid') ? answer : pass);
+  }, new AbortController().signal, () => {});
+  expect(recovered).toMatchObject({ status: 'completed', verified: true, candidate: { answer: 'x=2' } });
+  expect(calls403).toEqual(['https://primary.invalid/v1/chat/completions', 'https://backup.invalid/v1/chat/completions', 'https://verifier.invalid/v1/chat/completions']);
+
+  const calls401: string[] = [];
+  const rejected = await solveOnDevice(input, settings, keys, async url => {
+    calls401.push(String(url));
+    return new Response('{}', { status: 401 });
+  }, new AbortController().signal, () => {});
+  expect(rejected).toMatchObject({ status: 'failed', error: { code: 'CAPABILITY_DENIED' } });
+  expect(calls401).toEqual(['https://primary.invalid/v1/chat/completions']);
+
+  const verifier403 = await solveOnDevice({ ...input, verificationMode: 'automatic' }, settings, keys, async url => {
+    if (String(url).includes('verifier.invalid')) return new Response('{}', { status: 403 });
+    return sse(answer);
+  }, new AbortController().signal, () => {});
+  expect(verifier403).toMatchObject({ status: 'completed', verified: false, candidate: { answer: 'x=2' }, warning: 'CAPABILITY_DENIED' });
+});
+
 it('reserves a bounded primary window so a stalled solve can hand over with an independent backup deadline', async () => {
   const windows: number[] = []; let phases = 0;
   const result = await solveOnDevice(input, settings, keys, async (url, init) => {
