@@ -77,6 +77,7 @@ export async function publishDraft(pool: pg.Pool, job: ExamJob, candidate: z.inf
         if (!valid)
             return false;
         await c.query('INSERT INTO exam_app.answer_drafts(slot_id,student_id,run_id,answer_text,selected_options) VALUES($1,$2,$3,$4,$5) ON CONFLICT(slot_id,student_id) DO UPDATE SET run_id=excluded.run_id,answer_text=excluded.answer_text,selected_options=excluded.selected_options,created_at=now()', [job.slotId, job.studentId, job.id, candidate.answer, candidate.selectedOptions ? JSON.stringify(candidate.selectedOptions) : null]);
+        await event(c, job.attemptId, 'run.draft');
         return true;
     });
 }

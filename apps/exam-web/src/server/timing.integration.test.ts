@@ -8,7 +8,8 @@ import { serve } from '@hono/node-server';
 import { chromium, webkit, expect as browserExpect } from '@playwright/test';
 import { build } from 'esbuild';
 import sharp from 'sharp';
-import { assignmentPage, dashboard, progressPage, bootstrap, claimJob, connectDatabase, createAssignment, createSitting, createTemplate, createUser, endExamAttempt, finishJob, heartbeatJob, expireExams, migrate, navigateAttempt, progress, snapshot, startAttempt, submit, teacherConfirm, updateUser } from '@solveflow/db';
+import { WebSocket } from 'ws';
+import { assignmentPage, dashboard, progressPage, bootstrap, claimJob, connectDatabase, createAssignment, createSession, createSitting, createTemplate, createUser, endExamAttempt, enterModule, finishJob, heartbeatJob, expireExams, migrate, navigateAttempt, progress, publishDraft, snapshot, startAttempt, submit, teacherConfirm, updateUser } from '@solveflow/db';
 import { ExamAttemptSchema, type ExamUser } from '@solveflow/contracts/managed-exam';
 import { SolveOutcomeSchema } from '@solveflow/contracts/agent';
 import { createExamService, hashPassword } from './service.js';
@@ -117,7 +118,7 @@ describe.skipIf(!url)('exam timing and ending', () => {
     await new Promise<void>(resolve => server.once('listening', () => resolve()));
     if (!(server instanceof Server)) throw new Error('HTTP_REQUIRED');
     const address = server.address(); if (!address || typeof address === 'string') throw new Error('NO_PORT'); origin = 'http://127.0.0.1:' + address.port;
-    service = createExamService({ pool: pool(), storage, origin, publicDir: root, clientAddress: () => randomUUID() }); closeRealtime = realtime(server, pool(), origin, service.session); expiryTimer = setInterval(() => { void expireExams(pool()).catch(() => {}); }, 100);
+    service = createExamService({ pool: pool(), storage, origin, publicDir: root, clientAddress: () => randomUUID() }); closeRealtime = realtime(server, pool(), origin, service.session, [], onAttempt => { const stop = database!.listen(['exam_changes'], (_ch, payload) => onAttempt(payload), new AbortController().signal); return () => { void stop(); }; }); expiryTimer = setInterval(() => { void expireExams(pool()).catch(() => {}); }, 100);
   }, 30000);
   afterAll(async () => { clearInterval(expiryTimer); closeRealtime?.(); if (server instanceof Server) server.closeAllConnections(); if (server) await new Promise<void>(resolve => server.close(() => resolve())); await database?.close(); if (root) await rm(root, { recursive: true, force: true }); });
   it('starts an unlimited exam once and shares authoritative elapsed time with the teacher', async () => {
@@ -129,6 +130,64 @@ describe.skipIf(!url)('exam timing and ending', () => {
     expect((await snapshot(pool(), exam.student, exam.attempt.id)).timing.startedAt).toBe(a.timing.startedAt);
     expect((await progress(pool(), teacher)).find(item => item.attemptId === exam.attempt.id)?.timing.startedAt).toBe(a.timing.startedAt);
     await endExamAttempt(pool(), exam.student, exam.attempt.id);
+  });
+  it('pushes job enqueue and provisional draft events immediately via PostgreSQL LISTEN/NOTIFY without waiting for fallback polling', async () => {
+    const exam = await studentExam(true, 'notify_fast');
+    const current = await snapshot(pool(), exam.student, exam.attempt.id);
+    const mod = current.modules[0]; if (!mod) throw new Error('NO_MODULE');
+    await enterModule(pool(), exam.student, mod.id);
+    const session = await createSession(pool(), exam.student, 1);
+
+    const jobController = new AbortController();
+    let jobWokeResolve: (() => void) | undefined;
+    const jobWoke = new Promise<void>(resolve => { jobWokeResolve = resolve; });
+    const stopJobListen = database!.listen(['exam_jobs'], () => { jobWokeResolve?.(); }, jobController.signal);
+
+    const ws = new WebSocket(origin.replace('http://', 'ws://') + '/ws', { headers: { origin, cookie: 'solveflow_exam=' + session.token } });
+    try {
+      await new Promise<void>((resolve, reject) => { ws.once('open', () => resolve()); ws.once('error', reject); });
+      // Wait briefly so the dedicated LISTEN exam_jobs client finishes connecting.
+      await new Promise(resolve => setTimeout(resolve, 80));
+      const beforeSubmitSeq = (await snapshot(pool(), exam.student, exam.attempt.id)).lastSeq;
+      ws.send(JSON.stringify({ type: 'subscribe', attemptId: exam.attempt.id, afterSeq: beforeSubmitSeq }));
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const uploaded = await upload(pool(), storage, exam.student, exam.first.id, randomUUID(), image);
+      const submitStarted = performance.now();
+      await submit(pool(), exam.student, exam.first.id, { requestId: randomUUID(), expectedRevision: 0, kind: 'initial', assetIds: [uploaded.id] });
+      await jobWoke;
+      expect(performance.now() - submitStarted).toBeLessThan(600);
+
+      let targetJob = await claimJob(pool());
+      while (targetJob && targetJob.attemptId !== exam.attempt.id) targetJob = await claimJob(pool());
+      if (!targetJob) throw new Error('MISSING_CLAIMED_JOB');
+
+      const afterClaimSeq = (await snapshot(pool(), exam.student, exam.attempt.id)).lastSeq;
+      const draftPushed = new Promise<number>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('DRAFT_PUSH_TIMEOUT')), 700);
+        ws.on('message', raw => {
+          const msg = JSON.parse(String(raw)) as { type?: string; attemptId?: string; lastSeq?: number };
+          if (msg.type === 'changed' && msg.attemptId === exam.attempt.id && (msg.lastSeq ?? 0) > afterClaimSeq) {
+            clearTimeout(timer);
+            resolve(msg.lastSeq!);
+          }
+        });
+      });
+
+      const draftStarted = performance.now();
+      const draftCandidate = answer();
+      if (!('candidate' in draftCandidate) || draftCandidate.candidate.kind !== 'answer') throw new Error('INVALID_FIXTURE');
+      expect(await publishDraft(pool(), targetJob, draftCandidate.candidate)).toBe(true);
+      const pushedSeq = await draftPushed;
+      expect(performance.now() - draftStarted).toBeLessThan(600);
+      expect(pushedSeq).toBeGreaterThan(afterClaimSeq);
+      await finishJob(pool(), targetJob, draftCandidate, null);
+    } finally {
+      ws.close();
+      jobController.abort();
+      await stopJobListen();
+      await endExamAttempt(pool(), exam.student, exam.attempt.id);
+    }
   });
   it('dashboard timing agrees with entered, ended and unstarted student tracking', async () => {
     const running=await studentExam(true,'board_running'),waiting=await assignedExam(false,'board_waiting');

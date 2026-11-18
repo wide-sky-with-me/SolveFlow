@@ -66,6 +66,9 @@ export async function event(c: pg.PoolClient, attemptId: string, type: string) {
     await c.query('INSERT INTO exam_app.attempt_streams(attempt_id) VALUES($1) ON CONFLICT DO NOTHING', [attemptId]);
     const seq = await one(c, z.coerce.number().int().positive(), 'UPDATE exam_app.attempt_streams SET last_seq=last_seq+1 WHERE attempt_id=$1 RETURNING last_seq AS value', [attemptId]);
     await c.query(`INSERT INTO exam_app.attempt_events(attempt_id,seq,aggregate_version,event_type,payload) VALUES($1,$2,$2,$3,'{}')`, [attemptId, seq, type]);
+    await c.query(`SELECT pg_notify('exam_changes',$1)`, [attemptId]);
+    if (type === 'slot.submitted' || type === 'student.run-requested' || type === 'teacher.run-requested')
+        await c.query(`SELECT pg_notify('exam_jobs','1')`);
 }
 export async function audit(c: Queryable, actorId: string, action: string, targetId: string, targetType = 'assignment') {
     await c.query('INSERT INTO exam_app.audit_logs(id,actor_id,action,target_type,target_id,correlation_id) VALUES($1,$2,$3,$4,$5,$6)', [randomUUID(), actorId, action, targetType, targetId, randomUUID()]);

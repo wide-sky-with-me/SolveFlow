@@ -9,7 +9,7 @@ import { loadExamConfig } from './config.js';
 import { createExamService, hashPassword } from './service.js';
 import { LocalExamStorage, PrivateS3Storage } from './storage.js';
 import { connectCache, publishOutbox, realtime } from './realtime.js';
-import { modelSolver, workerLoop } from './worker.js';
+import { createWakeup, modelSolver, workerLoop } from './worker.js';
 import { buildCatalogTemplate } from '@solveflow/contracts/exam-catalog';
 import { collectGarbage } from './maintenance.js';
 import { PracticeJobs } from './practice.js';
@@ -81,7 +81,11 @@ async function main() {
                     if (cache)
                         void cache.presence(session.user.id).catch(() => { });
                     return session;
-                }, config.httpTrialAliases);
+                }, config.httpTrialAliases, onAttempt => {
+                    const stopDb = database.listen(['exam_changes'], (_ch, payload) => onAttempt(payload), controller.signal);
+                    const stopCache = cache?.subscribe(onAttempt);
+                    return () => { stopCache?.(); void stopDb(); };
+                });
                 cleanup = () => { service.close(); closeRealtime(); server.closeAllConnections(); server.close(); };
                 console.info(JSON.stringify({ event: 'exam.api.ready', port }));
                 tasks.push(new Promise<void>(resolve => controller.signal.addEventListener('abort', () => resolve(), { once: true })));
@@ -89,7 +93,9 @@ async function main() {
             if (role === 'worker' || role === 'all' && config.liveCalls) {
                 if (!config.liveCalls || !config.models && !modelServices)
                     throw new Error('LIVE_MODELS_NOT_ENABLED');
-                tasks.push(workerLoop(database.pool, modelSolver(database.pool, storage, async job => {if(modelServices)return modelServices.resolve(job.modelService);if(!config.models)throw new Error('MODELS_REQUIRED');return config.models;}, { solver: config.solverConcurrency, verifier: config.verifierConcurrency, daily: config.dailyCallsPerStudent },modelServices?.network), controller.signal, Math.min(32, config.solverConcurrency + config.verifierConcurrency)));
+                const wakeup = createWakeup();
+                database.listen(['exam_jobs'], () => wakeup.notify(), controller.signal);
+                tasks.push(workerLoop(database.pool, modelSolver(database.pool, storage, async job => {if(modelServices)return modelServices.resolve(job.modelService);if(!config.models)throw new Error('MODELS_REQUIRED');return config.models;}, { solver: config.solverConcurrency, verifier: config.verifierConcurrency, daily: config.dailyCallsPerStudent },modelServices?.network), controller.signal, Math.min(32, config.solverConcurrency + config.verifierConcurrency), wakeup.wait));
             }
             if (role === 'events' || role === 'all')
                 tasks.push((async () => {

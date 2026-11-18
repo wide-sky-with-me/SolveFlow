@@ -162,12 +162,44 @@ export async function processJob(pool: Pool, solve: ExamSolver, signal: AbortSig
     }
     return true;
 }
-export async function workerLoop(pool: Pool, solve: ExamSolver, signal: AbortSignal, concurrency: number) {
+export function createWakeup() {
+    const waiters = new Set<() => void>();
+    let pending = false;
+    return {
+        notify() {
+            if (!waiters.size) {
+                pending = true;
+                return;
+            }
+            pending = false;
+            for (const wake of [...waiters]) {
+                waiters.delete(wake);
+                wake();
+            }
+        },
+        wait(ms: number, signal: AbortSignal) {
+            if (signal.aborted)
+                return Promise.reject(signal.reason ?? new Error('ABORTED'));
+            if (pending) {
+                pending = false;
+                return Promise.resolve();
+            }
+            return new Promise<void>((resolve, reject) => {
+                const done = () => { clearTimeout(timer); signal.removeEventListener('abort', onAbort); waiters.delete(done); resolve(); };
+                const onAbort = () => { clearTimeout(timer); waiters.delete(done); reject(signal.reason ?? new Error('ABORTED')); };
+                const timer = setTimeout(done, ms);
+                waiters.add(done);
+                signal.addEventListener('abort', onAbort, { once: true });
+            });
+        },
+    };
+}
+export async function workerLoop(pool: Pool, solve: ExamSolver, signal: AbortSignal, concurrency: number, waitIdle?: (ms: number, signal: AbortSignal) => Promise<void>) {
     const workers = Array.from({ length: concurrency }, async () => { while (!signal.aborted) {
         try {
             const worked = await processJob(pool, solve, signal);
             if (!worked)
-                await delay(500, undefined, { signal });
+                await (waitIdle ? waitIdle(500, signal) : delay(500, undefined, { signal }));
         }
         catch {
             if (!signal.aborted) {

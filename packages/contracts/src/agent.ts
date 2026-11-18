@@ -303,7 +303,7 @@ export function parseGeneratedVerification(value: unknown, candidate: AnswerCand
 /** Applied to newly executed checks; stored v1 PASS records remain readable. */
 // Decision: .agents/notes/implemented/agent/2026-10-05-verification-coverage-and-time.md
 // Decision: .agents/notes/implemented/agent/2026-10-07-exam-reliability-recovery.md
-export function assessVerificationCoverage(verification: Verification, candidate?: AnswerCandidate, exam?: z.infer<typeof ExamTypeSchema>): Verification {
+export function assessVerificationCoverage(verification: Verification, candidate?: AnswerCandidate, _exam?: z.infer<typeof ExamTypeSchema>): Verification {
   if (verification.verdict === 'fail' && verification.issues.length && verification.issues.every(issue =>
     issue.code === 'INSUFFICIENT_EVIDENCE' || issue.code === 'REVIEW_INCOMPLETE')) {
     return { ...verification, verdict: 'unknown' };
@@ -314,7 +314,7 @@ export function assessVerificationCoverage(verification: Verification, candidate
   if (verification.evidenceStatus && verification.evidenceStatus !== 'sufficient') return unknown('核验同时报告通过和证据不足，却未指出哪项条件妨碍判断。请重新核验当前答案。');
   if (!substantive(verification.checked)) return unknown('本次校验没有同时完成原图转录和答案逻辑或运算检查，尚不能确认答案正确。');
   if (!candidate) return verification;
-  if ((candidate.questions ?? [candidate]).some(item => (item.problem?.exam ?? exam) === 'act' || item.problem?.transcriptionScope === 'act-visible')) {
+  if ((candidate.questions ?? [candidate]).some(item => item.problem?.transcriptionScope === 'act-visible')) {
     const review = verification.actTranscription;
     if (!review) return unknown('ACT尚未分别核对全部可见正文、设问、选项、当前高亮及表格，答案通过不代表转录完整。');
     // Decision: .agents/notes/implemented/agent/2026-11-18-answer-verification.md

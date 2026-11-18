@@ -1,5 +1,6 @@
 // Decision: .agents/notes/implemented/architecture/2026-10-09-batch-dispatch-and-verification.md
 // Decision: .agents/notes/implemented/architecture/2026-10-08-answer-checkpoint-queues.md
+// Decision: .agents/notes/implemented/agent/2026-11-18-brief-act-and-403-takeover.md
 import { AgentErrorCodeSchema, PhaseResultSchema, SolveOutcomeSchema, SolverInputSchema, makeSafeAgentError, policyRefusal,
   parseCandidateWithEvidence, parseCandidateForExam, parseVerificationForCandidate, assessVerificationCoverage, type AgentInput, type SolverInput,
   type SolveOutcome, type AnswerCandidate, type Verification, type PublicAgentEvent, type AgentErrorCode } from "@solveflow/contracts/agent";
@@ -11,7 +12,10 @@ export type SolveLifecycle = { candidate: (candidate: AnswerCandidate) => Promis
 const recoverable = new Set<AgentErrorCode>(['MODEL_TIMEOUT', 'MODEL_OUTPUT_INVALID', 'MODEL_UNAVAILABLE', 'MODEL_RATE_LIMITED']);
 const recoverableVerification = new Set<AgentErrorCode>([...recoverable, 'VERIFIER_LIMIT']);
 export class SolvePhaseError extends Error {
-  constructor(readonly code: AgentErrorCode) { super(code); }
+  constructor(readonly code: AgentErrorCode, readonly options?: { providerStatus?: number }) { super(code); }
+}
+function isProviderForbidden(error: unknown): boolean {
+  return error instanceof SolvePhaseError && error.code === 'CAPABILITY_DENIED' && error.options?.providerStatus === 403;
 }
 export function publicFailure(error: unknown): AgentErrorCode {
   const code = error instanceof Error && "code" in error ? error.code : undefined;
@@ -77,7 +81,7 @@ export async function solve(inputValue: unknown, execute: PhaseExecutor, budget:
       const useRecovery = !!recovery && !recoveryUsed && (revision === 1 || recovery.prefer);
       try { output = await run(request, useRecovery); }
       catch (error) {
-        if (!recovery || recoveryUsed || signal.aborted || !recoverable.has(publicFailure(error))) throw error;
+        if (!recovery || recoveryUsed || signal.aborted || (!recoverable.has(publicFailure(error)) && !isProviderForbidden(error))) throw error;
         output = await run(request, true);
       }
       if (output.role !== "solver") throw new Error("INVALID_PHASE_ROLE");
@@ -114,7 +118,7 @@ export async function solve(inputValue: unknown, execute: PhaseExecutor, budget:
         // Decision: .agents/notes/implemented/agent/2026-10-08-verifier-transport-degradation.md
         // Losing the independent check does not discard an already valid answer.
         // Authorization, cancellation and solver/spend budgets still stop the run.
-        if (!recoverableVerification.has(code)) throw error;
+        if (!recoverableVerification.has(code) && !isProviderForbidden(error)) throw error;
         budget.assertActive(signal);
         return SolveOutcomeSchema.parse({ schemaVersion: 1, status: "completed", candidate, verified: false, verification: null, warning: code });
       }
@@ -129,7 +133,7 @@ export async function solve(inputValue: unknown, execute: PhaseExecutor, budget:
     throw new Error("UNREACHABLE_STAGE");
   } catch (error) {
     const code = signal.aborted ? "CANCELLED" : publicFailure(error);
-    if (availableAnswer && recoverable.has(code)) {
+    if (availableAnswer && (recoverable.has(code) || isProviderForbidden(error))) {
       budget.assertActive(signal);
       return SolveOutcomeSchema.parse({ schemaVersion: 1, status: 'completed', candidate: availableAnswer, verified: false, verification: availableVerification, warning: code });
     }

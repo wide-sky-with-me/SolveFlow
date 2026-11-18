@@ -68,7 +68,7 @@ export function modelTransport(profile: LocalModelProfile, transport: LocalFetch
       const code = uploadTimeout ? 'MODEL_UPLOAD_TIMEOUT' : response.status === 401 || response.status === 403 ? 'CAPABILITY_DENIED'
         : response.status === 402 ? 'SPEND_LIMIT' : response.status === 429 ? 'MODEL_RATE_LIMITED'
         : response.status >= 400 && response.status < 500 && response.status !== 404 ? 'MODEL_REQUEST_REJECTED' : 'MODEL_UNAVAILABLE';
-      const error = new SolvePhaseError(code); observe?.(response.status, error, uploadTimeout ? 'upload_timeout' : undefined); await response.body?.cancel(); throw error;
+      const error = new SolvePhaseError(code, { providerStatus: response.status }); observe?.(response.status, error, uploadTimeout ? 'upload_timeout' : undefined); await response.body?.cancel(); throw error;
     }
     const format = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() === 'text/event-stream' ? 'sse' : 'json';
     observe?.(response.status, undefined, undefined, format);

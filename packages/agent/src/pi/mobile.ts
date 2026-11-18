@@ -1,6 +1,7 @@
 // Decision: .agents/notes/implemented/architecture/2026-10-09-batch-dispatch-and-verification.md
 // Decision: .agents/notes/implemented/agent/2026-10-09-direct-answer-review.md
 // Decision: .agents/notes/implemented/agent/2026-10-08-exam-flow-evidence-and-budgets.md
+// Decision: .agents/notes/implemented/agent/2026-11-18-brief-act-and-403-takeover.md
 import { Agent, type AgentTool } from '@earendil-works/pi-agent-core';
 import { Type } from '@earendil-works/pi-ai';
 import { stream } from '@earendil-works/pi-ai/api/openai-completions';
@@ -404,10 +405,12 @@ export async function solveOnDevice(input: SolverInput, settingsValue: LocalSett
     }
     const focused = reviewViews?.views.length ? { views: reviewViews.views, reviewRegions: reviewViews.regions } : undefined;
     if (value.role === 'verifier') return normal(await phase(value, budget, phaseSignal, settings, keys, fetch, onDiagnostic, schedule, { ...override, ...(focused ?? (value.exam === 'act' ? { views: await views(phaseSignal) } : {})) }));
-    if (value.exam !== 'act' || value.focus && value.focus.kind !== 'regenerate') {
+    if (value.exam !== 'act' || value.answerMode === 'brief' || value.focus && value.focus.kind !== 'regenerate') {
+      const actVisual = value.exam === 'act' && (!value.focus || value.focus.kind === 'regenerate') ? (focused ?? { views: await views(phaseSignal) }) : focused;
+      const preparedVisual = preparedReview || Boolean(actVisual?.views.length && !focused);
       const remaining = phaseMs - (performance.now() - started);
-      if (preparedReview && remaining <= 0) throw new SolvePhaseError('MODEL_TIMEOUT');
-      return normal(await phase(value, budget, phaseSignal, settings, keys, fetch, onDiagnostic, schedule, { ...override, ...focused, ...(preparedReview ? { maxSolverMs: remaining } : {}) }));
+      if (preparedVisual && remaining <= 0) throw new SolvePhaseError('MODEL_TIMEOUT');
+      return normal(await phase(value, budget, phaseSignal, settings, keys, fetch, onDiagnostic, schedule, { ...override, ...actVisual, ...(preparedVisual ? { maxSolverMs: remaining } : {}) }));
     }
     if (value.revision?.issues.some(issue => issue.code === 'TRANSCRIPTION') && !transcriptionRevision) { actSource = undefined; transcriptionRevision = true; }
     if (!actSource) {

@@ -6,7 +6,7 @@ import { bindActSource } from './act-source.js';
 import { ActTranscriptSchema } from '@solveflow/contracts/agent';
 
 const settings = LocalSettingsSchema.parse({ schemaVersion: 1, solver: { provider: 'fixture', baseURL: 'https://fixture.invalid/v1', api: 'openai-completions', model: 'fixture', streaming: false, contextWindow: 32768, maxTokens: 8192, maxTokensField: 'max_tokens' }, verifier: null });
-const input: SolverInput = { schemaVersion: 1, role: 'solver', exam: 'act', identity: { ownerId: 'local', sessionId: 'session', runId: 'run' }, message: '', image: { bytes: Uint8Array.of(1, 2, 3), mimeType: 'image/jpeg' }, evidence: [], answerMode: 'brief', verificationMode: 'manual' };
+const input: SolverInput = { schemaVersion: 1, role: 'solver', exam: 'act', identity: { ownerId: 'local', sessionId: 'session', runId: 'run' }, message: '', image: { bytes: Uint8Array.of(1, 2, 3), mimeType: 'image/jpeg' }, evidence: [], answerMode: 'detailed', verificationMode: 'manual' };
 const options = [{ label: 'A', text: 'NO CHANGE' }, { label: 'B', text: 'however;' }, { label: 'C', text: 'however,' }];
 const source = { schemaVersion: 1, kind: 'act-transcript', subject: 'english', blocks: [{ kind: 'passage', text: 'First, the archive were quiet.' }, { kind: 'passage', text: 'The next room, however, was crowded.' }], questions: [{ number: 8, sourceNumber: '8', text: 'Which choice is grammatically acceptable?', options, activeSpan: { block: 1, text: 'however', occurrence: 1 }, uncertainties: [] }], uncertainties: [] };
 const candidate = { schemaVersion: 1, kind: 'answer', problem: { text: 'The archive was quiet. **First,** the next room was crowded.', subject: 'english', uncertainties: [], options: [{ label: 'A', text: 'NO CHANGE' }, { label: 'B', text: 'however,' }, { label: 'C', text: 'however;' }] }, selectedOptions: ['A'], answer: 'The transition fits the context.', steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: [] };
@@ -161,6 +161,21 @@ describe('ACT transcription before solving', () => {
       preparations++; return [{ mimeType: 'image/jpeg', bytes: Uint8Array.of(4, 5, 6) }, { mimeType: 'image/jpeg', bytes: Uint8Array.of(7, 8, 9) }];
     });
     expect(result).toMatchObject({ status: 'completed', verified: true }); expect(counts).toEqual([3, 1, 3]); expect(preparations).toBe(1);
+  });
+  it('skips full-passage capture in brief mode, passes cached zoomed views directly to the single solver pass, and verifies in one focused pass', async () => {
+    let preparations = 0; const counts: number[] = []; const tasks: (string | undefined)[] = [];
+    const result = await solveOnDevice({ ...input, answerMode: 'brief', verificationMode: 'automatic' }, settings, { solver: 'fixture', verifier: null }, async (_url, init) => {
+      const data = requestData(init); tasks.push(data.task);
+      const body = JSON.parse(String(init?.body)); const user = body.messages.find((message: { role: string }) => message.role === 'user');
+      counts.push(user.content.filter((part: { type: string }) => part.type === 'image_url').length);
+      return reply(data.role === 'verifier' ? pass : candidate);
+    }, new AbortController().signal, () => {}, () => {}, undefined, undefined, async () => {
+      preparations++; return [{ mimeType: 'image/jpeg', bytes: Uint8Array.of(4, 5, 6) }, { mimeType: 'image/jpeg', bytes: Uint8Array.of(7, 8, 9) }];
+    });
+    expect(result).toMatchObject({ status: 'completed', verified: true, candidate: { selectedOptions: ['A'] } });
+    expect(tasks).toEqual([undefined, undefined]);
+    expect(counts).toEqual([3, 3]);
+    expect(preparations).toBe(1);
   });
   it('does not send a request when cancelled while preparing optional visual aids', async () => {
     const controller = new AbortController(); let calls = 0;
