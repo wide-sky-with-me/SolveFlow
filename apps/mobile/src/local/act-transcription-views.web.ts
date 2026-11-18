@@ -21,11 +21,11 @@ export async function prepareActTranscriptionViews(input: SolverInput, signal: A
     const views: SolverInput['image'][] = [];
     for (const left of [0, .35]) {
       signal.throwIfAborted();
-      const width = Math.max(1, Math.ceil(image.naturalWidth * .65)); const scale = Math.min(2, 2048 / Math.max(width, image.naturalHeight));
+      const width = Math.max(1, Math.ceil(image.naturalWidth * .65)); const scale = Math.min(2, 1600 / Math.max(width, image.naturalHeight));
       canvas.width = Math.max(1, Math.round(width * scale)); canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
       const context = canvas.getContext('2d'); if (!context) throw new Error('ACT辅助题图画布不可用。');
       context.drawImage(image, image.naturalWidth * left, 0, width, image.naturalHeight, 0, 0, canvas.width, canvas.height);
-      const data = canvas.toDataURL('image/jpeg', .96); const binary = atob(data.slice(data.indexOf(',') + 1));
+      const data = canvas.toDataURL('image/jpeg', .85); const binary = atob(data.slice(data.indexOf(',') + 1));
       views.push({ mimeType: 'image/jpeg', bytes: Uint8Array.from(binary, value => value.charCodeAt(0)) });
       await new Promise<void>(resolve => setTimeout(resolve, 0));
     }
