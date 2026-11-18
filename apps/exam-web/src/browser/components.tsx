@@ -19,24 +19,30 @@ export const statusLabels: Record<string, string> = { empty: '待拍摄', queued
 export const activeStatuses = new Set(['queued', 'understanding', 'solving', 'verifying', 'revising']);
 
 export const alertLabels: Record<ExamAttempt['alerts'][number]['reason'], string> = { verification_failed: '核验未通过', verification_unknown: '无法确认', verification_unavailable: '核验未完成', answer_failed: '解答失败', image_incomplete: '题图不完整', interrupted: '任务中断', response_mismatch: '作答与模块不符' };
-export function QuestionNotices({ label, title, tone, children, emphasis = false }: { label: string; title: string; tone: 'error' | 'success' | 'warning' | 'info'; children: ReactNode; emphasis?: boolean }) {
-    return <section className={`question-notices feedback-tone-${tone} ${tone === 'error' ? 'verification-alerts' : 'resolved-answers'}${emphasis ? ' student-notice' : ''}`} aria-label={label}>
+export function awaitingVerification(reason: ExamAttempt['alerts'][number]['reason']) {
+    return reason === 'verification_unknown' || reason === 'verification_unavailable';
+}
+function attentionTone(alerts: ExamAttempt['alerts']) {
+    return alerts.every(alert => awaitingVerification(alert.reason)) ? 'warning' : 'error';
+}
+export function QuestionNotices({ label, title, tone, children, emphasis = false, pending = false }: { label: string; title: string; tone: 'error' | 'success' | 'warning' | 'info'; children: ReactNode; emphasis?: boolean; pending?: boolean }) {
+    return <section className={`question-notices feedback-tone-${tone} ${pending || tone === 'error' ? 'verification-alerts' : 'resolved-answers'}${emphasis ? ' student-notice' : ''}`} aria-label={label}>
         <details><summary><span className="feedback-icon"><Icon name={tone === 'info' ? 'info' : tone === 'error' || tone === 'warning' ? 'alert' : 'check'}/></span><strong aria-live="polite" aria-atomic="true">{title}</strong><Icon name="chevron-down" className="notice-chevron"/></summary><div className="alert-links">{children}</div></details>
     </section>;
 }
 export function VerificationAlerts({ attempt, onSelect, disabled = false, emphasis = false }: { attempt: ExamAttempt; onSelect: (slot: ExamSlot) => void; disabled?: boolean; emphasis?: boolean }) {
     if (!attempt.alerts.length) return null;
-    return <QuestionNotices label="待处理核验问题" title={`待处理 · ${attempt.alerts.length} 题`} tone="error" emphasis={emphasis}>{attempt.alerts.map(alert => <button key={alert.id} disabled={disabled} onClick={() => { const slot = attempt.slots.find(s => s.id === alert.slotId); if (slot) onSelect(slot); }}><span className="notice-question">{alert.moduleTitle} · 第{alert.position}题<span>{alertLabels[alert.reason]}</span></span><Icon name="chevron-right"/></button>)}</QuestionNotices>;
+    return <QuestionNotices pending label="待处理核验问题" title={`待处理 · ${attempt.alerts.length} 题`} tone={attentionTone(attempt.alerts)} emphasis={emphasis}>{attempt.alerts.map(alert => <button key={alert.id} className={'notice-issue feedback-tone-' + (awaitingVerification(alert.reason) ? 'warning' : 'error')} disabled={disabled} onClick={() => { const slot = attempt.slots.find(s => s.id === alert.slotId); if (slot) onSelect(slot); }}><span className="notice-question">{alert.moduleTitle} · 第{alert.position}题<span>{alertLabels[alert.reason]}</span></span><Icon name="chevron-right"/></button>)}</QuestionNotices>;
 }
 
 export function AttemptOverview({ attempt, compact = false }: { attempt: ExamAttempt; compact?: boolean }) {
     const counts = [
-        ['已有答案', attempt.slots.filter(s => s.presentation).length],
+        ['已有答案', attempt.slots.filter(s => s.presentation || s.draft).length],
         ['处理中', attempt.slots.filter(s => activeStatuses.has(s.status)).length],
         ['待处理', attempt.alerts.length],
         ['未拍', attempt.slots.filter(s => !s.revision).length],
     ] as const;
-    return <section className={'card attempt-overview'+(compact?' compact':'')} aria-label="题目状态总览"><div className="section-head"><h2>题目总览</h2><span className="muted">共 {attempt.slots.length} 题</span></div><dl>{counts.map(([label, count]) => <div key={label} className={label === '待处理' && count ? 'attention-count' : ''}><dt>{label}</dt><dd>{count}</dd></div>)}</dl></section>;
+    return <section className={'card attempt-overview'+(compact?' compact':'')} aria-label="题目状态总览"><div className="section-head"><h2>题目总览</h2><span className="muted">共 {attempt.slots.length} 题</span></div><dl>{counts.map(([label, count]) => <div key={label} className={label === '待处理' && count ? 'attention-count feedback-tone-' + attentionTone(attempt.alerts) : ''}><dt>{label}</dt><dd>{count}</dd></div>)}</dl></section>;
 }
 
 export function ResolutionLinks({ resolutions, onSelect, disabled = false }: { resolutions: ExamResolution[]; onSelect: (notice: ExamResolution) => void; disabled?: boolean }) {

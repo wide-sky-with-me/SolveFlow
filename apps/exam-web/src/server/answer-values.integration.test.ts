@@ -90,7 +90,9 @@ describe.skipIf(!url)('non-choice answer highlights and overview',()=>{
       await browserExpect(overview.getByRole('button',{name:'第1题',exact:true}).locator('.section-answer-value')).toHaveText('29');
       await browserExpect(overview.getByRole('button',{name:'第2题',exact:true}).locator('.section-answer-value')).toHaveText('chlorophyll');
       await browserExpect(overview.getByRole('button',{name:'第5题',exact:true}).locator('.section-answer-value')).toHaveText('41');
-      await browserExpect(overview.getByRole('button',{name:'第6题',exact:true}).locator('.section-answer-value')).toHaveText('查看答案');
+      const excerpt=overview.getByRole('button',{name:'第6题',exact:true}).locator('.section-answer-value');
+      await browserExpect(excerpt).toContainText('这是一段需要完整阅读的论述。');
+      expect(await excerpt.evaluate(el=>{const s=getComputedStyle(el);return {whiteSpace:s.whiteSpace,clamp:s.webkitLineClamp,weight:s.fontWeight};})).toEqual({whiteSpace:'normal',clamp:'2',weight:'400'});
       expect(await overview.getByRole('button',{name:'第1题',exact:true}).getAttribute('aria-current')).toBe('step');
       expect(await overview.getByRole('link').count()).toBe(0);
       const described = await overview.getByRole('button',{name:'第1题',exact:true}).getAttribute('aria-describedby');expect(described).toContain('-answer ');

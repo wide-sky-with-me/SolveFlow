@@ -1023,7 +1023,7 @@ dialog .dialog-head {
 }
 
 .attempt-overview .attention-count dd {
-  color: #b3261e;
+  color: var(--feedback-ink);
 }
 
 .queue-filters {
@@ -1079,16 +1079,6 @@ dialog .dialog-head {
 .queue-pages>span {
   font-size: 14px;
   color: var(--muted);
-}
-
-:root[data-theme="dark"] .attempt-overview .attention-count dd {
-  color: #ffaaa2;
-}
-
-@media(prefers-color-scheme:dark) {
-  :root:not([data-theme="light"]) .attempt-overview .attention-count dd {
-    color: #ffaaa2;
-  }
 }
 
 @media(max-width:640px) {

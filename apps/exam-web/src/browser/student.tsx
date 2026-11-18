@@ -9,6 +9,8 @@ import { StudentAnswer } from './student-answer.js';
 import { slotClass, slotState } from './slot-state.js';
 import { SectionAnswers } from './section-answers.js';
 import './student-flow.css';
+import { mediaPath } from './image-cache.js';
+import { EnsureImageSession, useImageCache } from './image-session.js';
 import { ImageViewer } from './image-viewer.js';
 import { QuestionContent, QuestionImages } from './question-content.js';
 // Decision: .agents/notes/implemented/architecture/2026-11-03-browser-intent-lifecycle.md
@@ -40,22 +42,39 @@ type Draft = {
         assetId: string | null;
     }[];
 };
-export function StudentAttempt({ id, onExit, focus }: {
+function detailVersion(slot: ExamSlot | undefined) {
+    return slot ? JSON.stringify([slot.id, slot.revision, slot.runId, slot.reviewId, slot.status, slot.draft?.createdAt, slot.presentation?.verified, slot.presentation?.simulated]) : null;
+}
+
+export function StudentAttempt(props: {
     id: string;
     onExit: () => void;
     focus?: {slotId:string;version:number};
 }) {
+    return <EnsureImageSession><StudentAttemptBody {...props}/></EnsureImageSession>;
+}
+
+function StudentAttemptBody({ id, onExit, focus }: {
+    id: string;
+    onExit: () => void;
+    focus?: {slotId:string;version:number};
+}) {
+    const imageCache = useImageCache();
     const { attempt, error: syncError, online, refresh } = useAttempt(id);
     const focusedMessage = useRef(0);
     const [messageRetry,setMessageRetry]=useState<{slotId:string;version:number}|null>(null);
     const [selected, setSelected] = useState<string | null>(null), [viewModule, setViewModule] = useState<string | null>(null), [error, setError] = useState(''), [busy, setBusy] = useState(false), [draft, setDraft] = useState<Draft | null>(null), [detail, setDetail] = useState<z.infer<typeof ExamDetailSchema> | null>(null), [preview, setPreview] = useState<string | null>(null), [navOpen, setNavOpen] = useState(false), [navModule, setNavModule] = useState<string | null>(null), [navBusy, setNavBusy] = useState(false);
     const [draftError, setDraftError] = useState('');
     const savingRequest = useRef<AbortController | null>(null);
+    const savedRevisions = useRef(new Map<string, number>());
     const rerunRequest = useRef<AbortController | null>(null), rerunKey = useRef<{key:string;id:string}|null>(null);
     const navigationVersion = useRef(-1), navigationRetry = useRef<{ key: string; id: string } | null>(null);
     const openingResolution = useRef(false);
     const imageImport = useRef<AbortController | null>(null);
     const detailRequest = useRef<AbortController | null>(null);
+    const detailLoadedAtSeq = useRef(-1), lastDetailRetry = useRef(0), attemptSeqRef = useRef(0);
+    attemptSeqRef.current = attempt?.lastSeq ?? 0;
+    const [detailSyncError, setDetailSyncError] = useState(''), [detailRetry, setDetailRetry] = useState(0);
     const [importing, setImporting] = useState(false), [pickingImage, setPickingImage] = useState(false);
     const taskError = useRef<{ slotId: string; runId: string; message: string } | null>(null);
     const input = useRef<HTMLInputElement>(null), target = useRef<{
@@ -84,6 +103,9 @@ export function StudentAttempt({ id, onExit, focus }: {
     useEffect(() => {
         if (!attempt)
             return;
+        for (const [slotId, revision] of savedRevisions.current) {
+            if (attempt.slots.some(s => s.id === slotId && s.revision >= revision)) savedRevisions.current.delete(slotId);
+        }
         const reported = taskError.current;
         if (reported) {
             const current = attempt.slots.find(s => s.id === reported.slotId);
@@ -128,7 +150,7 @@ export function StudentAttempt({ id, onExit, focus }: {
         }
     }, [attempt, selected, busy, navBusy, navOpen, draft, preview, detail]);
     useEffect(() => {
-        if (!attempt || !selected || attempt.viewedSlotId === selected || busy || navBusy || navOpen || draft || preview || detail || attempt.timing.endedAt || attempt.timing.remainingSeconds === 0 || ['closed', 'cancelled'].includes(attempt.state)) return;
+        if (!attempt || !selected || attempt.navigationVersion < navigationVersion.current || attempt.viewedSlotId === selected || busy || navBusy || navOpen || draft || preview || detail || attempt.timing.endedAt || attempt.timing.remainingSeconds === 0 || ['closed', 'cancelled'].includes(attempt.state)) return;
         const timer = setTimeout(() => { void navigate({ action: 'select_slot', slotId: selected }); }, 200);
         return () => clearTimeout(timer);
     }, [selected, attempt?.viewedSlotId, attempt?.navigationVersion, attempt?.timing.endedAt, attempt?.timing.remainingSeconds, attempt?.state, busy, navBusy, navOpen, draft, preview, detail]);
@@ -140,19 +162,48 @@ export function StudentAttempt({ id, onExit, focus }: {
         void locateMessage(focus);
     },[focus?.version,attempt?.id,busy,navBusy,navOpen,draft,preview,detail]);
     const openDetailId = detail?.slot.id;
+    const observed = openDetailId ? attempt?.slots.find(s => s.id === openDetailId) : undefined;
+    const observedVersion = detailVersion(observed), loadedVersion = detailVersion(detail?.slot);
+    const olderSnapshot = !!observed && !!detail && observed.revision < detail.slot.revision;
     useEffect(() => {
-        if (!openDetailId) return;
+        const retried = detailRetry !== lastDetailRetry.current;
+        lastDetailRetry.current = detailRetry;
+        setDetailSyncError('');
+        if (!openDetailId || !observedVersion || observedVersion === loadedVersion || olderSnapshot) return;
+        if (!retried && detailLoadedAtSeq.current >= 0 && (attempt?.lastSeq ?? 0) <= detailLoadedAtSeq.current) return;
         const controller = new AbortController();
         void api('/slots/' + openDetailId, ExamDetailSchema, { signal: controller.signal }).then(value => {
-            if (!controller.signal.aborted) setDetail(current => current?.slot.id === openDetailId ? value : current);
-        }).catch(e => { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : '同步失败。'); });
+            if (controller.signal.aborted) return;
+            detailLoadedAtSeq.current = attemptSeqRef.current;
+            setDetail(current => current?.slot.id === openDetailId && value.slot.revision >= current.slot.revision ? value : current);
+        }).catch(e => { if (!controller.signal.aborted) setDetailSyncError(e instanceof Error ? e.message : '请重新读取本题详情。'); });
         return () => controller.abort();
-    }, [openDetailId, attempt?.lastSeq]);
+    }, [openDetailId, observedVersion, loadedVersion, olderSnapshot, detailRetry, attempt?.lastSeq]);
+    const currentModuleObj = attempt?.modules.find(m => m.id === viewModule);
+    const currentSectionSlots = attempt ? attempt.slots.filter(item => item.moduleId === currentModuleObj?.id).sort((a, b) => a.position - b.position) : [];
+    const currentSectionIndex = currentSectionSlots.findIndex(item => item.id === selected);
+    const neighborNextId = currentSectionIndex >= 0 ? currentSectionSlots[currentSectionIndex + 1]?.id : undefined;
+    const neighborPrevId = currentSectionIndex > 0 ? currentSectionSlots[currentSectionIndex - 1]?.id : undefined;
+    useEffect(() => {
+        if (!attempt || busy || navBusy || importing || draft) return;
+        const neighbors = [neighborNextId, neighborPrevId].map(slotId => slotId ? attempt.slots.find(item => item.id === slotId) : undefined).filter((item): item is ExamSlot => !!item && item.images.length > 0);
+        if (!neighbors.length) return;
+        const timer = setTimeout(() => {
+            for (const neighbor of neighbors) {
+                const primary = neighbor.images.find(img => img.role === 'primary') ?? neighbor.images[0];
+                if (!primary) continue;
+                imageCache.prefetch(mediaPath(primary.id, 'thumbnail'));
+                imageCache.prefetch(mediaPath(primary.id, 'model'));
+            }
+        }, 120);
+        return () => clearTimeout(timer);
+    }, [attempt?.id, selected, neighborNextId, neighborPrevId, busy, navBusy, importing, draft, imageCache]);
     if (!attempt)
         return <section className="card"><ErrorText error={syncError}/><p>正在同步考试…</p><button onClick={onExit}>返回</button></section>;
     const slot = attempt.slots.find(s => s.id === selected), module = attempt.modules.find(m => m.id === viewModule);
     const closed = !!attempt.timing.endedAt || attempt.timing.remainingSeconds === 0 || ['closed', 'cancelled'].includes(attempt.state);
     const active = slot && activeStatuses.has(slot.status);
+    const awaitingSaved = !!slot && (savedRevisions.current.get(slot.id) ?? 0) > slot.revision;
     const skipped = attempt.slots.filter(s => slotState(s).tone === 'skipped');
     const sectionSlots = attempt.slots.filter(item => item.moduleId === module?.id).sort((a, b) => a.position - b.position);
     const sectionIndex = sectionSlots.findIndex(item => item.id === slot?.id);
@@ -170,10 +221,11 @@ export function StudentAttempt({ id, onExit, focus }: {
         setNavBusy(true); setError('');
         try {
             const result = await api('/attempts/' + attempt.id + '/navigation', ExamNavigationResultSchema, post({ ...action, expectedVersion, requestId: navigationRetry.current.id }));
+            if (result.navigationVersion < navigationVersion.current) return false;
             navigationVersion.current = result.navigationVersion;
             const target = attempt.slots.find(s => s.id === result.slotId);
             if (target) { setSelected(target.id); setViewModule(target.moduleId); }
-            setNavOpen(false); await refresh();
+            setNavOpen(false); void refresh();
             return true;
         } catch (e) { setError(e instanceof Error ? e.message : '跳转失败。'); await refresh(); return false; }
         finally { setNavBusy(false); }
@@ -212,7 +264,7 @@ export function StudentAttempt({ id, onExit, focus }: {
         finally { setBusy(false); openingResolution.current = false; }
     }
     function choose(kind: Draft['kind'], camera = false) {
-        if (!slot || busy || navBusy)
+        if (!slot || busy || navBusy || awaitingSaved)
             return;
         target.current = { slot, kind };
         if (input.current) {
@@ -264,10 +316,11 @@ export function StudentAttempt({ id, onExit, focus }: {
         const controller = imageImport.current; imageImport.current = null;
         controller?.abort(); setBusy(false); setImporting(false);
     }
-    async function acceptSaved(value: Draft, runId: string) {
+    function acceptSaved(value: Draft, runId: string) {
+        savedRevisions.current.set(value.slot.id, value.slot.revision + 1);
         pending.current = { runId, slotId: value.slot.id, revision: value.slot.revision + 1 };
         for (const item of value.files) URL.revokeObjectURL(item.url);
-        setDraft(null); setDraftError(''); await refresh();
+        setDraft(null); setDraftError(''); void refresh();
     }
     async function saveDraft() {
         if (!draft || busy || closed || savingRequest.current) return;
@@ -278,7 +331,7 @@ export function StudentAttempt({ id, onExit, focus }: {
         try {
             if (submitted) {
                 const saved = await receipt();
-                if (saved.runId) { await acceptSaved(value, saved.runId); return; }
+                if (saved.runId) { acceptSaved(value, saved.runId); return; }
             }
             const assets: string[] = [];
             for (const item of value.files) {
@@ -293,7 +346,7 @@ export function StudentAttempt({ id, onExit, focus }: {
             // Once sent, keep exactly these files and this key until the receipt is known.
             submitted = true; submitting = true; setDraft(current => current?.requestId === value.requestId ? { ...current, submitted: true } : current);
             const result = await api('/slots/' + value.slot.id + '/submissions', z.strictObject({ runId: z.uuid() }), { ...post({ requestId: value.requestId, expectedRevision: value.slot.revision, kind: value.kind, assetIds: assets }), signal: controller.signal });
-            await acceptSaved(value, result.runId);
+            acceptSaved(value, result.runId);
         } catch (error) {
             if (controller.signal.aborted) return;
             // Only a rejected submission can unlock its draft; a failed receipt read says nothing about acceptance.
@@ -302,7 +355,7 @@ export function StudentAttempt({ id, onExit, focus }: {
                 if (submitting) {
                     try {
                         const saved = await receipt();
-                        if (saved.runId) { await acceptSaved(value, saved.runId); return; }
+                        if (saved.runId) { acceptSaved(value, saved.runId); return; }
                     } catch { if (controller.signal.aborted) return; }
                 }
                 setDraftError('保存结果暂未确认，图片已保留。请同步并重试。');
@@ -322,6 +375,7 @@ export function StudentAttempt({ id, onExit, focus }: {
         try {
             const latest = await api('/slots/' + slotId, ExamDetailSchema, { signal: controller.signal });
             if (controller.signal.aborted || detailRequest.current !== controller) return null;
+            detailLoadedAtSeq.current = attemptSeqRef.current;
             setDetail(latest);
             return latest;
         }
@@ -354,8 +408,10 @@ export function StudentAttempt({ id, onExit, focus }: {
     function closeDetail() {
         detailRequest.current?.abort();
         detailRequest.current = null;
+        detailLoadedAtSeq.current = -1;
         setDetail(null);
     }
+    const syncNotice = syncError ? <Feedback tone="warning"><strong>考试状态暂未同步</strong><p>{syncError}</p><button type="button" className="quiet" onClick={() => void refresh()}>重试同步</button></Feedback> : null;
     return <>
     <StudentExamStatus id={id} title={attempt.title} timing={attempt.timing} onDeadline={refresh}/>
     {!online && <div className="student-connection"><span className="badge amber" role="status">正在重连</span></div>}
@@ -364,20 +420,22 @@ export function StudentAttempt({ id, onExit, focus }: {
     <ResolvedAnswers resolutions={attempt.resolutions} disabled={busy || navBusy} onSelect={notice => void viewResolution(notice)}/>
     <AnswerRevisions notices={attempt.answerRevisions} disabled={busy || navBusy} onSelect={notice => void viewAnswerRevision(notice)}/>
     <ResolutionReminder resolutions={attempt.resolutions} ready={!busy && !navBusy && !pickingImage && !importing && !draft && !preview && !detail && !navOpen} onSelect={notice => void viewResolution(notice)}/>
-    <ErrorText error={!draft && !navOpen && !detail && !preview ? error || syncError : ''}/>{messageRetry&&!draft&&!navOpen&&!detail&&!preview&&<button className="secondary" disabled={busy||navBusy} onClick={()=>void locateMessage(messageRetry)}>重新定位消息题目</button>}{closed && <Feedback>考试已结束</Feedback>}
+    {!draft && !navOpen && !detail && !preview && <>{syncNotice}<ErrorText error={error}/></>}{messageRetry&&!draft&&!navOpen&&!detail&&!preview&&<button className="secondary" disabled={busy||navBusy} onClick={()=>void locateMessage(messageRetry)}>重新定位消息题目</button>}{closed && <Feedback>考试已结束</Feedback>}
     <nav className="module-steps" aria-label="考试模块">{attempt.modules.map(m => <button key={m.id} title={m.title} className={m.id === viewModule ? 'selected' : ''} aria-pressed={m.id === viewModule} disabled={busy || navBusy} onClick={() => void navigate({ action: 'select_module', moduleId: m.id })}><span className="module-title">{m.title}</span></button>)}</nav>
     {module && <section className="card student-question"><div className="section-head"><h2>{module.title}</h2><div className="toolbar"><button className="quiet question-jump" aria-label="总览" onClick={() => { setNavModule(module.id); setNavOpen(true); }} disabled={busy || navBusy}><Icon name="grid"/>总览</button></div></div>
       {slot && <div className={"capture-box" + (slot.presentation ? " with-answer" : "")}><div className="section-head"><h2>第{slot.position}题</h2>{!active && slotState(slot).tone !== 'empty' && <span className={'badge ' + slotClass(slot)}>{slotState(slot).label}</span>}</div>
         <QuestionImages images={slot.images} onOpen={setPreview}/>
-        {!closed && <><button className="primary camera-entry" disabled={busy || navBusy} onClick={() => choose(slot.revision ? 'retake' : 'initial', true)}><Icon name="camera"/>{slot.revision ? '重拍本题' : '拍摄第' + slot.position + '题'}</button><div className="inline-actions"><button className="quiet" disabled={busy || navBusy} onClick={() => choose(slot.revision ? 'retake' : 'initial')}>从相册选择</button>{slot.revision > 0 && <><button className="quiet" disabled={busy || navBusy} onClick={() => choose('supplement')}>补图</button><button className="quiet" disabled={busy || navBusy || active} onClick={() => void reanswer() }><Icon name="reset"/>重新解答</button></>}</div></>}
+        {!closed && <><button className="primary camera-entry" disabled={awaitingSaved || busy || navBusy} onClick={() => choose(slot.revision ? 'retake' : 'initial', true)}><Icon name="camera"/>{slot.revision ? '重拍本题' : '拍摄第' + slot.position + '题'}</button><div className="inline-actions"><button className="quiet" disabled={awaitingSaved || busy || navBusy} onClick={() => choose(slot.revision ? 'retake' : 'initial')}>从相册选择</button>{slot.revision > 0 && <><button className="quiet" disabled={awaitingSaved || busy || navBusy} onClick={() => choose('supplement')}>补图</button><button className="quiet" disabled={awaitingSaved || busy || navBusy || active} onClick={() => void reanswer() }><Icon name="reset"/>重新解答</button></>}</div></>}
+        {awaitingSaved && <span role="status">题图已保存，正在同步题目。</span>}
+        {slot.status === 'failed' && slot.errorCode === 'CAPABILITY_DENIED' && <ErrorText error="模型服务拒绝了本次调用。请联系管理员检查模型访问权限。"/>}
         {slot.errorCode === 'QUOTA_EXCEEDED' && <ErrorText error="今日调用额度已用完。"/>}
       {slot && <nav className="question-paging" aria-label="逐题导航"><button className="secondary" disabled={busy || navBusy || !previousSlot} onClick={() => { if (previousSlot) void navigate({ action: 'select_slot', slotId: previousSlot.id }); }}><Icon name="chevron-right" className="previous-chevron"/>上一题</button>{active && slot.runId && !closed && <button className="quiet stop-answer" disabled={busy || navBusy} onClick={() => { void api('/runs/' + slot.runId + '/cancel', z.object({ ok: z.boolean() }), { method: 'POST' }).then(() => refresh()).catch(e => setError(e instanceof Error ? e.message : '停止失败。')); }}>停止作答</button>}{atSectionEnd && nextModule && !closed ? <button className="primary" disabled={busy || navBusy} onClick={() => void navigate({ action: 'select_module', moduleId: nextModule.id })}><span className="next-module-label" title={nextModule.title}>进入{nextModule.title}</span><Icon name="chevron-right"/></button> : <button className="primary" disabled={busy || navBusy || !nextSlot} onClick={() => { if (nextSlot) void navigate({ action: 'select_slot', slotId: nextSlot.id }); }}>下一题<Icon name="chevron-right"/></button>}</nav>}
       </div>}
-      {slot && <StudentAnswer key={slot.id} slot={slot} onSync={refresh} onSupplement={() => choose('supplement')} supplementDisabled={closed || busy || navBusy}/>}
+      {slot && <StudentAnswer key={slot.id} slot={slot} onSync={refresh} onSupplement={() => choose('supplement')} supplementDisabled={closed || awaitingSaved || busy || navBusy}/>}
 
       {skipped.length > 0 && <button className="quiet skipped-link" onClick={() => { setNavModule(skipped[0]?.moduleId ?? module.id); setNavOpen(true); }}>已跳过 {skipped.length} 题</button>}
     </section>}
-    {navOpen && <Dialog title="题目总览" className="student-overview" onClose={() => { if (!navBusy) setNavOpen(false); }}><nav className="module-steps" aria-label="导航模块">{attempt.modules.map(m => <button key={m.id} title={m.title} className={m.id === navModule ? 'selected' : ''} onClick={() => setNavModule(m.id)} disabled={navBusy}><span className="module-title">{m.title}</span></button>)}</nav><SectionAnswers slots={attempt.slots.filter(s => s.moduleId === navModule).sort((a,b)=>a.position-b.position)} selectedId={selected} alerts={new Set(attempt.alerts.map(a=>a.slotId))} disabled={navBusy} onSelect={s=>void navigate({action:'select_slot',slotId:s.id})}/><ErrorText error={error || syncError}/></Dialog>}
+    {navOpen && <Dialog title="题目总览" className="student-overview" onClose={() => { if (!navBusy) setNavOpen(false); }}><nav className="module-steps" aria-label="导航模块">{attempt.modules.map(m => <button key={m.id} title={m.title} className={m.id === navModule ? 'selected' : ''} onClick={() => setNavModule(m.id)} disabled={navBusy}><span className="module-title">{m.title}</span></button>)}</nav><SectionAnswers slots={attempt.slots.filter(s => s.moduleId === navModule).sort((a,b)=>a.position-b.position)} selectedId={selected} alerts={new Map(attempt.alerts.map(a=>[a.slotId,a.reason]))} disabled={navBusy} onSelect={s=>void navigate({action:'select_slot',slotId:s.id})}/>{syncNotice}<ErrorText error={error}/></Dialog>}
     <input ref={input} type="file" accept={IMAGE_INPUT_ACCEPT} hidden onChange={e => {
             setPickingImage(false);
             if (closed) { e.target.value = ''; return; }
@@ -391,8 +449,8 @@ export function StudentAttempt({ id, onExit, focus }: {
             void prepareDraft(chosen, files);
         }}/>
     {importing && <Dialog title="正在处理图片…" onClose={cancelImport}><div className="dialog-footer"><button onClick={cancelImport}>取消</button></div></Dialog>}
-    {draft && <Dialog title={'第' + draft.slot.position + '题 · ' + (draft.kind === 'supplement' ? '补图' : '题图')} onClose={clearDraft}><div className="draft-images">{draft.files.map((item, i) => <div className="draft-image" key={item.id}><img src={item.url} alt={'待保存题图' + (i + 1)}/><button className="corner-delete" disabled={busy || draft.submitted} aria-label={'移除第' + (i + 1) + '张'} onClick={() => { URL.revokeObjectURL(item.url); setDraft({ ...draft, files: draft.files.filter(v => v.id !== item.id) }); }}>×</button></div>)}</div><ErrorText error={draftError || syncError}/>{closed&&<Feedback>考试已结束，无法提交题图。</Feedback>}<div className="dialog-footer"><button onClick={clearDraft} disabled={busy}>{draft.submitted ? '返回题目' : '取消'}</button><button className="primary" disabled={busy || closed || !draft.files.length} onClick={() => void saveDraft()}>{busy ? '正在保存…' : draft.submitted ? '同步并重试' : '保存并解答'}</button></div></Dialog>}
+    {draft && <Dialog title={'第' + draft.slot.position + '题 · ' + (draft.kind === 'supplement' ? '补图' : '题图')} onClose={clearDraft}><div className="draft-images">{draft.files.map((item, i) => <div className="draft-image" key={item.id}><img src={item.url} alt={'待保存题图' + (i + 1)}/><button className="corner-delete" disabled={busy || draft.submitted} aria-label={'移除第' + (i + 1) + '张'} onClick={() => { URL.revokeObjectURL(item.url); setDraft({ ...draft, files: draft.files.filter(v => v.id !== item.id) }); }}>×</button></div>)}</div>{syncNotice}<ErrorText error={draftError}/>{closed&&<Feedback>考试已结束，无法提交题图。</Feedback>}<div className="dialog-footer"><button onClick={clearDraft} disabled={busy}>{draft.submitted ? '返回题目' : '取消'}</button><button className="primary" disabled={busy || closed || !draft.files.length} onClick={() => void saveDraft()}>{busy ? '正在保存…' : draft.submitted ? '同步并重试' : '保存并解答'}</button></div></Dialog>}
     {preview && <ImageViewer key={preview} src={preview} onClose={() => setPreview(null)}/>}
-    {detail && <Dialog title={'第' + detail.slot.position + '题'} className="student-question-detail" onClose={closeDetail}><ErrorText error={error || syncError}/>{detail.slot.presentation && !detail.slot.presentation.simulated && <span className={'badge ' + (detail.slot.presentation.verified ? 'green' : '')}>{detail.slot.presentation.humanConfirmed ? '老师已确认' : detail.slot.presentation.verified ? 'AI 已核验' : '待核验'}</span>}<QuestionImages images={detail.slot.images} onOpen={setPreview}/>{detail.problem && <QuestionContent problem={detail.problem} selectedOptions={detail.slot.presentation?.selectedOptions??[]}/>}<h3>答案</h3><RichText text={detail.slot.presentation?.answer ?? '暂未出答案。'}/><details><summary>题图版本</summary>{detail.revisions.map(v => <p key={v.revision}>第{v.revision}版 · {v.reason === 'initial' ? '首次拍摄' : v.reason === 'retake' ? '重拍' : '补图'}</p>)}</details></Dialog>}
+    {detail && <Dialog title={'第' + detail.slot.position + '题'} className="student-question-detail" onClose={closeDetail}>{syncNotice}{detailSyncError && <Feedback tone="warning"><strong>本题详情暂未同步</strong><p>{detailSyncError}</p><button className="quiet" onClick={() => setDetailRetry(n => n + 1)}>重试同步</button></Feedback>}<ErrorText error={error}/>{detail.slot.presentation && !detail.slot.presentation.simulated && <span className={'badge ' + (detail.slot.presentation.verified ? 'green' : '')}>{detail.slot.presentation.humanConfirmed ? '老师已确认' : detail.slot.presentation.verified ? 'AI 已核验' : '待核验'}</span>}<QuestionImages images={detail.slot.images} onOpen={setPreview}/>{detail.problem && <QuestionContent problem={detail.problem} selectedOptions={detail.slot.presentation?.selectedOptions??[]}/>}<h3>答案</h3><RichText text={detail.slot.presentation?.answer ?? '暂未出答案。'}/><details><summary>题图版本</summary>{detail.revisions.map(v => <p key={v.revision}>第{v.revision}版 · {v.reason === 'initial' ? '首次拍摄' : v.reason === 'retake' ? '重拍' : '补图'}</p>)}</details></Dialog>}
   </>;
 }

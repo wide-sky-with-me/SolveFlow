@@ -28,7 +28,7 @@
 
 两端及临时拍题共用[文本适配](../../apps/exam-web/src/browser/rich-text.tsx)，沿[共享规范化](../../packages/contracts/src/math-text.ts)转换模型的行内/块公式定界符，识别带已知TeX运算符的简单算式；金额和代码保持文字。不修补缺数字或损坏公式，不改数据库原文。KaTeX继续禁用可信命令，Markdown不渲染原始HTML/远程图；取舍见[决策](../../.agents/notes/implemented/rendering/2026-11-05-managed-student-presentation.md)。
 
-未解码时显示加载状态并禁用缩放，检查complete及自然尺寸补收加载事件。弹窗预览/原图由[会话内存缓存](../../apps/exam-web/src/browser/image-cache.ts)复用Blob，不持久保存；原生缩略图不使用它。限8项、2张原图、16MiB编码数据、4个并行下载，查看中不淘汰。关闭取消未完成下载，退出或换身份释放URL和请求。复用先HEAD授权；[服务端](../../apps/exam-web/src/server/images.ts)核对文件及分配权限，只读元数据，不下载对象。后端[读取](managed-exam-media.md)仍逐次鉴权。取舍见[决策](../../.agents/notes/implemented/rendering/2026-11-04-progressive-image-viewer.md)，实测见[延迟排查](../postmortem/2026-11-06-teacher-image-latency.md)。
+未解码时显示加载并禁用缩放，检查complete及自然尺寸补收事件。缩略图、预览和原图共用[会话内存缓存](../../apps/exam-web/src/browser/image-cache.ts)复用Blob并异步预解码，不落盘；当前及相邻已答题最多2路后台预热model与缩略图，不预拉source。限96项、4张原图、64MiB、10路前台下载，查看中不淘汰。关闭取消未完下载，退出或换身份释放URL与请求。复用先HEAD鉴权，[服务端](../../apps/exam-web/src/server/images.ts)只读元数据；[媒体读取](managed-exam-media.md)仍逐次鉴权。见[决策](../../.agents/notes/implemented/rendering/2026-11-04-progressive-image-viewer.md)与[排查](../postmortem/2026-11-06-teacher-image-latency.md)。
 
 教师导航在工具栏下展开，可收起；按模块列题号与状态，长列表区域内滚动。选题不移动学生游标；其他题或位置更新不重读当前详情，当前题变化才同步，保留草稿。草稿未取消/保存时禁用切题；操作记录仍用弹窗，查看它或原图不清除草稿。计时居中放在详情标题栏。
 

@@ -562,7 +562,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
         const calls: string[] = [];
         const transport: typeof fetch = async (_url, init) => {
             calls.push(z.object({ model: z.string() }).parse(JSON.parse(String(init?.body))).model);
-            const value = { schemaVersion: 1, verdict: 'pass', checked: ['transcription', 'logic'], issues: [] };
+            const value = { schemaVersion: 1, verdict: 'pass', checked: ['transcription', 'logic'], evidenceStatus:'sufficient', independentChoices:[{selectedOptions:['B'],decisiveEvidence:'2 + 2 equals 4, which is option B.'}], issues: [] };
             const item = { type: 'message', id: 'msg_fixture', role: 'assistant', content: [{ type: 'output_text', text: JSON.stringify(value), annotations: [] }] };
             const frames = [{ type: 'response.created', response: { id: 'resp_fixture' } }, { type: 'response.output_item.added', output_index: 0, item: { ...item, content: [] } }, { type: 'response.output_item.done', output_index: 0, item }, { type: 'response.completed', response: { id: 'resp_fixture', status: 'completed', output: [item], usage: { input_tokens: 100, output_tokens: 100, total_tokens: 200 } } }];
             return new Response(frames.map(f => 'data: ' + JSON.stringify(f) + '\n\n').join(''), { headers: { 'content-type': 'text/event-stream' } });
@@ -1424,8 +1424,12 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             const incomplete = await claimJob(pool()); if (!incomplete || incomplete.slotId !== second.id) throw new Error('WRONG_JOB');
             await finishJob(pool(), incomplete, SolveOutcomeSchema.parse({ schemaVersion: 1, status: 'needs_clarification', verified: false, candidate: { schemaVersion: 1, kind: 'clarification', problem: { text: 'Using Table 1, find the maximum value.', subject: 'math', uncertainties: ['missing table'] }, answer: null, steps: [], knowledgePoints: [], citationIds: [], clarificationQuestions: ['请补充表格。'] } }), null);
             await pupil.locator('.capture-box .badge').filter({ hasText: '需要补图' }).waitFor({ timeout: 8000 });
+            await pupil.getByRole('region', { name: '题图提示', exact: true }).getByText('请补充表格。', { exact: true }).waitFor();
             expect(await pupil.getByRole('region', { name: '待处理核验问题' }).count()).toBe(1);
             expect(await pupil.getByRole('button', { name: '补图', exact: true }).isEnabled()).toBe(true);
+            const chooseMissing = pupil.waitForEvent('filechooser');
+            await pupil.getByRole('button', { name: '补图并重新解答', exact: true }).click();
+            await (await chooseMissing).setFiles([]);
             expect(await pupil.getByRole('alert').count()).toBe(0);
             await pupil.screenshot({ path: join(screens, 'student-clarification-clean.png'), animations: 'disabled' });
             expect(pageErrors).toEqual([]);
@@ -2279,7 +2283,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
         const bundle = await browserHarness(`import './src/browser/exam-clock.css';import{createRoot}from'react-dom/client';import{${role==='student'?'StudentAttempt':'Monitor'}}from'./src/browser/${role==='student'?'student':'monitor'}.tsx';createRoot(document.getElementById('root')).render(${role==='student'?`<main className="student-content"><StudentAttempt id="${base.id}"/></main>`:`<Monitor id="${base.id}" initialSlotId="${slot.id}" onClose={()=>{}}/>`});`);
         bundle.html='<!doctype html>'+bundle.html;
         const browser = await(engine==='chrome'?chromium.launch({executablePath:'/usr/bin/google-chrome'}):webkit.launch());
-        let writes=0, sources=0, failSource=false, releaseSource=()=>{}, sourceStarted=()=>{};
+        let writes=0, sources=0, models=0, failSource=false, releaseSource=()=>{}, sourceStarted=()=>{};
         const sourceGate=new Promise<void>(resolve=>releaseSource=resolve), firstSource=new Promise<void>(resolve=>sourceStarted=resolve);
         try { const page=await browser.newPage({viewport:{width:1280,height:960}}), errors:string[]=[];page.setDefaultTimeout(3000);page.on('pageerror',error=>errors.push(error.message));
             await page.addInitScript(`window.WebSocket=class{static OPEN=1;readyState=0;send(){}close(){}};`);
@@ -2288,7 +2292,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
                 if(route.request().method()!=='GET'){writes++;return route.fulfill({status:500});}
                 if(path.endsWith('/snapshot'))return route.fulfill({json:current});
                 if(path.includes('/slots/'))return route.fulfill({json:{slot,problem:result.candidate.problem,outcome:result,humanReviews:[],revisions:[]}});
-                if(path.includes('/media/')){if(url.searchParams.get('view')==='source'){sources++;if(sources===1){sourceStarted();await sourceGate;}if(failSource)return route.fulfill({status:503});}return route.fulfill({contentType:'image/png',body:picture});}
+                if(path.includes('/media/')){if(url.searchParams.get('view')==='model')models++;if(url.searchParams.get('view')==='source'){sources++;if(sources===1){sourceStarted();await sourceGate;}if(failSource)return route.fulfill({status:503});}return route.fulfill({contentType:'image/png',body:picture});}
                 return route.fulfill({contentType:path.endsWith('.js')?'text/javascript':path.endsWith('.css')?'text/css':'text/html',body:path==='/harness.js'?bundle.js:path==='/harness.css'?bundle.css:bundle.html});
             });
             await page.goto('http://127.0.0.1:3199/');
@@ -2297,10 +2301,12 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
                 await page.getByRole('button',{name:'操作记录',exact:true}).click();const history=page.getByRole('dialog',{name:'操作记录',exact:true});await history.getByText('切换到 阅读与写作一 · 第1题',{exact:true}).waitFor();await history.getByRole('button',{name:'关闭',exact:true}).click();expect(await page.getByRole('button',{name:'操作记录',exact:true}).evaluate(el=>el===document.activeElement)).toBe(true);
             } else { await page.getByRole('heading',{name:'第1题答案',exact:true}).waitFor(); await page.locator('.current-answer summary').filter({hasText:'题目详情'}).click(); }
             const detail=role==='teacher'?page.getByRole('dialog').first():page.locator('.student-question');
-            await detail.getByRole('region',{name:'识别题目'}).waitFor();expect(await detail.getByRole('region',{name:'识别题目'}).locator('.option').count()).toBe(4);await detail.getByRole('button',{name:'查看原图',exact:true}).click();
+            await detail.getByRole('region',{name:'识别题目'}).waitFor();expect(await detail.getByRole('region',{name:'识别题目'}).locator('.option').count()).toBe(4);
+            await expect.poll(()=>models).toBe(2);
+            await detail.getByRole('button',{name:'查看原图',exact:true}).click();
             const viewer=page.getByRole('dialog',{name:'题图',exact:true}), viewport=viewer.getByLabel('题目原图查看区域'), zoom=viewer.getByLabel('图片缩放比例');
             const displayed=viewer.locator('[data-display-image=true]');
-            await expect.poll(()=>viewer.getByRole('button',{name:'重置图片',exact:true}).isEnabled()).toBe(true);expect(sources).toBe(0);expect(await displayed.evaluate(image=>image instanceof HTMLImageElement ? image.naturalWidth : 0)).toBe(1600);
+            await expect.poll(()=>viewer.getByRole('button',{name:'重置图片',exact:true}).isEnabled()).toBe(true);expect(sources).toBe(0);expect(models).toBe(2);expect(await displayed.evaluate(image=>image instanceof HTMLImageElement ? image.naturalWidth : 0)).toBe(1600);
             const imageBefore=await displayed.boundingBox(), viewportBefore=await viewport.boundingBox();if(!imageBefore||!viewportBefore)throw new Error('MISSING_IMAGE_GEOMETRY');
             await enlargePicture(viewer);await expect.poll(()=>zoom.textContent()).toBe('125%');
             await firstSource;await viewer.getByRole('status',{name:'正在加载高清原图',exact:true}).waitFor();expect(await displayed.getAttribute('alt')).toBe('题目清晰预览');expect(await viewer.getByRole('button',{name:'重置图片',exact:true}).isEnabled()).toBe(true);
@@ -2443,7 +2449,7 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
             await reminder.getByRole('button', { name: '查看全部待处理题' }).click(); expect(await page.getByLabel('处理题位').textContent()).toBe('all');
             await reminder.getByRole('button', { name: /合成学生/ }).click(); expect(await page.getByLabel('处理题位').textContent()).toBe(base.id+':'+first.id); expect(await reminder.count()).toBe(0);
             await page.getByRole('button', { name: '切换处理窗口' }).click(); await reminder.waitFor();
-            fail = true; await page.clock.fastForward(5000); await reminder.getByText('合成网络失败', { exact: true }).waitFor(); expect(await reminder.getByRole('button', { name: /合成学生/ }).count()).toBe(1);
+            fail = true; await page.clock.fastForward(5000); await reminder.getByRole('status').filter({hasText:'待处理通知暂未同步'}).getByText('合成网络失败', { exact: true }).waitFor(); expect(await reminder.getByRole('button', { name: /合成学生/ }).count()).toBe(1);
             fail = false; total = 1; await page.clock.fastForward(5000); await expect.poll(() => reminder.getByRole('button', { name: '查看全部待处理题' }).count()).toBe(0);
             await reminder.getByRole('button', { name: '打开教师待处理提醒' }).click(); expect(await reminder.count()).toBe(0);
             await page.getByRole('button', { name: '切换处理窗口' }).click(); total = 0; await page.clock.fastForward(5000); await expect.poll(() => reminder.count()).toBe(0); expect(writes).toBe(0);
@@ -2655,7 +2661,10 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
     },20000);
 
     for (const engine of ['chrome', 'webkit'] as const) it(`boundary: student warnings and teacher resolutions demand attention without interrupting drafts in ${engine}`, async () => {
-        const base = ExamAttemptSchema.parse(await snapshot(pool(), student, attemptId));
+        const child = await createUser(pool(), admin, {username:'notice_capture_'+engine,displayName:'通知回归学生',password:'synthetic-password-123',roles:['student']}, password);
+        const sitting = await createSitting(pool(), admin, {templateId,title:'通知与拍照验收',opensAt:new Date(Date.now()-60000).toISOString(),closesAt:null});
+        const assigned = await createAssignment(pool(), admin, {sittingId:sitting.id,studentId:child.id});
+        const base = await snapshot(pool(), child, (await startAttempt(pool(), child, assigned.id)).id);
         const [first, second, third] = base.slots;
         if (!first || !second || !third) throw new Error('MISSING_SLOTS');
         let current = structuredClone(base), reads = 0, failDetail = false;
@@ -2998,6 +3007,146 @@ describe.skipIf(!url)('managed exams isolated transactions and HTTP', () => {
     });
 
     for (const engine of ['chrome', 'webkit'] as const) {
+        it(`console: ACT review: shows the available answer and separates review gaps from errors in ${engine}`, async () => {
+            const f = await studentFlowFixture(engine);
+            const [unknown, verifying, failed] = f.current.slots;
+            if (!unknown || !verifying || !failed) throw new Error('MISSING_REVIEW_SLOTS');
+            flowAnswer(unknown, 'B'); if (unknown.presentation) unknown.presentation.verified = false;
+            verifying.status = 'verifying'; verifying.draft = { answer:'Draft C', selectedOptions:['C'], createdAt:new Date().toISOString() };
+            flowAnswer(failed, 'D'); failed.status = 'failed';
+            f.current.alerts = [{id:randomUUID(),slotId:unknown.id,moduleId:unknown.moduleId,moduleTitle:'English',position:unknown.position,revision:1,reason:'verification_unknown',openedAt:new Date().toISOString()}];
+            try {
+                await f.page.goto('http://127.0.0.1:3199/');
+                await f.page.getByRole('button',{name:'总览',exact:true}).click();
+                const grid=f.page.getByRole('region',{name:'本节答案总览'});
+                const cell=(p:number)=>grid.getByRole('button',{name:`第${p}题`,exact:true});
+                for (const [position, option] of [[unknown.position,'B'],[verifying.position,'C'],[failed.position,'D']] as const)
+                    expect(await cell(position).locator('.section-answer-value').allTextContents()).toEqual([option]);
+                expect(await cell(unknown.position).getAttribute('class')).toContain('feedback-tone-warning');
+                expect(await cell(failed.position).getAttribute('class')).toContain('feedback-tone-error');
+                expect(await f.page.getByRole('region',{name:'待处理核验问题'}).getAttribute('class')).toContain('feedback-tone-warning');
+            } finally { await f.browser.close(); }
+        });
+        it(`console: ACT review: saving unlocks Next while the accepted photo is awaiting synchronization in ${engine}`, async () => {
+            const f=await studentFlowFixture(engine);
+            let release=()=>{},readStarted=()=>{};
+            const held=new Promise<void>(resolve=>{release=resolve;}), reading=new Promise<void>(resolve=>{readStarted=resolve;});
+            try {
+                await f.page.goto('http://127.0.0.1:3199/');
+                await f.page.getByRole('heading',{name:'第1题答案',exact:true}).waitFor();
+                const picker=f.page.waitForEvent('filechooser');
+                await f.page.getByRole('button',{name:'从相册选择'}).click();
+                await (await picker).setFiles({name:'synthetic.png',mimeType:'image/png',buffer:image});
+                const save=f.page.getByRole('button',{name:'保存并解答',exact:true});await save.waitFor();
+                await f.page.route('**/slots/*/images',route=>route.fulfill({json:{id:randomUUID()}}));
+                await f.page.route('**/submissions',route=>route.fulfill({json:{runId:randomUUID()}}));
+                await f.page.route('**/snapshot',async route=>{readStarted();await held;await route.fulfill({json:f.current});});
+                await save.click();await reading;
+                expect(await f.page.getByRole('button',{name:'拍摄第1题',exact:true}).isDisabled()).toBe(true);
+                const next=f.page.getByRole('button',{name:'下一题',exact:true});
+                expect(await next.isEnabled()).toBe(true);await next.click();
+                await f.page.getByRole('button',{name:'拍摄第2题',exact:true}).waitFor();
+                expect(await f.page.getByRole('button',{name:'拍摄第2题',exact:true}).isEnabled()).toBe(true);
+            } finally {release();await f.browser.close();}
+        });
+        it(`console: ACT review: snapshot failure preserves answers and is announced separately from a question error in ${engine}`, async () => {
+            const f=await studentFlowFixture(engine), first=f.current.slots[0];
+            if(!first)throw new Error('MISSING_SLOT');
+            flowAnswer(first,'B');
+            try {
+                await f.page.goto('http://127.0.0.1:3199/');await f.page.locator('.current-answer .answer-options').waitFor();
+                await f.page.route('**/snapshot',route=>route.fulfill({status:503,json:{message:'同步服务暂不可用'}}));
+                await f.sync();
+                const stale=f.page.getByRole('status').filter({hasText:'考试状态暂未同步'});
+                await stale.waitFor();expect(await f.page.locator('.current-answer .answer-options').innerText()).toContain('B');
+                expect(await f.page.getByRole('alert').filter({hasText:'同步服务暂不可用'}).count()).toBe(0);
+                await f.page.unroute('**/snapshot');await stale.getByRole('button',{name:'重试同步'}).click();
+                await stale.waitFor({state:'hidden'});
+            } finally {await f.browser.close();}
+        });
+        it(`console: ACT review: another question's update does not reload an open resolution in ${engine}`, async () => {
+            const f = await studentFlowFixture(engine), slot = f.current.slots[0];
+            if (!slot) throw new Error('MISSING_RESOLUTION_SLOT');
+            flowAnswer(slot, 'B');
+            f.current.resolutions = [{ id: randomUUID(), slotId: slot.id, moduleId: slot.moduleId, moduleTitle: 'English', position: slot.position, revision: slot.revision, resolution: 'ai_pass', resolvedAt: new Date().toISOString() }];
+            let reads = 0;
+            const original = f.control.detail;
+            f.control.detail = async value => { reads++; return original(value); };
+            try {
+                await f.page.route('**/resolutions/*/read', route => { f.current.resolutions = []; return route.fulfill({json:{ok:true}}); });
+                await f.page.goto('http://127.0.0.1:3199/');
+                const reminder = f.page.getByRole('dialog', {name:'答案已更新',exact:true});
+                await reminder.locator('.alert-links button').click();
+                const dialog = f.page.getByRole('dialog',{name:'第1题',exact:true});
+                await dialog.getByRole('heading',{name:'答案',exact:true}).waitFor();
+                await expect.poll(() => f.current.resolutions.length).toBe(0);
+                const before = reads;
+                f.control.detail = async () => { reads++; return {status:503,body:{message:'详情服务暂不可用'}}; };
+                const snapshot = f.page.waitForResponse(r => r.url().endsWith('/snapshot'));
+                await f.sync(); await snapshot;
+                await f.page.evaluate(() => new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+                expect(reads).toBe(before);
+                slot.reviewId = randomUUID();
+                await f.sync();
+                const stale = dialog.getByRole('status').filter({hasText:'本题详情暂未同步'}); await stale.waitFor();
+                expect(await dialog.getByText('B',{exact:true}).count()).toBeGreaterThan(0);
+                f.control.detail = original;
+                await stale.getByRole('button',{name:'重试同步'}).click();
+                await stale.waitFor({state:'hidden'});
+            } finally { await f.browser.close(); }
+        });
+        it(`console: ACT review: a late navigation acknowledgement cannot override a newer confirmed position in ${engine}`, async () => {
+            const f = await studentFlowFixture(engine), [first, second, third] = f.current.slots;
+            if (!first || !second || !third) throw new Error('MISSING_NAVIGATION_SLOTS');
+            let release = () => {}, started = () => {};
+            const holding = new Promise<void>(r => {release = r;}), waiting = new Promise<void>(r => {started = r;});
+            let finishRead = () => {};
+            const readHeld = new Promise<void>(r => {finishRead = r;});
+            try {
+                await f.page.goto('http://127.0.0.1:3199/');
+                await f.page.getByRole('heading',{name:'第1题答案',exact:true}).waitFor();
+                await f.page.route('**/navigation', async r => {
+                    started(); await holding; await r.fulfill({json:{id:f.current.id,slotId:second.id,navigationVersion:1}});
+                });
+                await f.page.getByRole('button',{name:'下一题',exact:true}).click(); await waiting;
+                f.current.navigationVersion = 2; f.current.viewedSlotId = third.id; await f.sync();
+                await f.page.getByRole('heading',{name:'第3题答案',exact:true}).waitFor();
+                await f.page.route('**/snapshot', async r => {
+                    await readHeld;
+                    await r.fulfill({json:f.current});
+                });
+                await f.page.evaluate(() => {
+                    const seen = document.createElement('output'); seen.id = 'navigation-flash'; document.body.append(seen);
+                    new MutationObserver(records => {
+                        for (const record of records) for (const node of record.addedNodes) {
+                            if (node instanceof HTMLElement && node.matches('.current-answer')) seen.textContent += node.querySelector('h3')?.textContent;
+                        }
+                    }).observe(document.body,{childList:true,subtree:true});
+                });
+                const ack = f.page.waitForResponse(r => r.url().endsWith('/navigation'));
+                release(); await ack;
+                await expect.poll(() => f.page.getByRole('button',{name:'上一题',exact:true}).isEnabled()).toBe(true);
+                await f.page.evaluate(() => new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+                expect(await f.page.locator('#navigation-flash').textContent()).not.toContain('第2题答案');
+                expect(await f.page.locator('.current-answer h3').innerText()).toBe('第3题答案');
+            } finally { release(); finishRead(); await f.browser.close(); }
+        });
+        it(`console: ACT review: a confirmed navigation releases controls before snapshot refresh in ${engine}`, async () => {
+            const f=await studentFlowFixture(engine);
+            let release=()=>{},started=()=>{};
+            const held=new Promise<void>(resolve=>{release=resolve;}), pendingRead=new Promise<void>(resolve=>{started=resolve;});
+            try {
+                await f.page.goto('http://127.0.0.1:3199/');
+                await f.page.getByRole('heading',{name:'第1题答案',exact:true}).waitFor();
+                await f.page.route('**/snapshot',async route=>{started();await held;await route.fulfill({json:f.current});});
+                const next=f.page.getByRole('button',{name:'下一题',exact:true});
+                await next.click(); await pendingRead;
+                await f.page.getByRole('heading',{name:'第2题答案',exact:true}).waitFor();
+                expect(await next.isEnabled()).toBe(true);
+                await next.click(); await f.page.getByRole('heading',{name:'第3题答案',exact:true}).waitFor();
+                expect(f.writes.filter(path=>path.endsWith('/navigation'))).toHaveLength(2);
+            } finally { release(); await f.browser.close(); }
+        });
         it(`console: student status palette: overview separates verification from answers and highlights only the selected question in ${engine}`, async () => {
             const f = await studentFlowFixture(engine), [first, second, third] = f.current.slots, module = f.current.modules[0];
             if (!first || !second || !third || !module) throw new Error('MISSING_STATUS_PALETTE_SLOTS');

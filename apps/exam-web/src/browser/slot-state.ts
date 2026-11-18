@@ -1,7 +1,7 @@
 // Decision: .agents/notes/implemented/rendering/2026-11-05-managed-student-presentation.md
 import './slot-state.css';
-import type { ExamSlot } from '@solveflow/contracts/managed-exam';
-import { activeStatuses, statusLabels } from './components.js';
+import type { ExamAlert, ExamSlot } from '@solveflow/contracts/managed-exam';
+import { activeStatuses, awaitingVerification, statusLabels } from './components.js';
 
 /** Current task and presentation take precedence over historical completion/skip markers. */
 export function slotState(slot: ExamSlot) {
@@ -28,10 +28,12 @@ function overview(state: OverviewState['state'], detail: string = overviewLabels
 export const overviewLegend = [overview('unanswered'), overview('answering'), overview('checking'), overview('passed'), overview('error')];
 
 /** An old answer must not hide a running retry or its current failure. */
-export function overviewState(slot: ExamSlot, flagged = false): OverviewState {
+export function overviewState(slot: ExamSlot, reason?: ExamAlert['reason']): OverviewState {
     if (slot.status === 'verifying') return overview('checking', '校验中');
     if (activeStatuses.has(slot.status)) return overview('answering', statusLabels[slot.status]);
-    if (flagged || ['failed', 'needs_clarification', 'interrupted'].includes(slot.status)) return overview('error', flagged ? '待处理' : statusLabels[slot.status]);
+    if (['failed', 'needs_clarification', 'interrupted'].includes(slot.status)) return overview('error', statusLabels[slot.status]);
+    if (reason && awaitingVerification(reason)) return { ...overview('checking', '核验尚未确认当前答案'), label: '待核验' };
+    if (reason) return overview('error', '待处理');
     if (slot.presentation?.verified && !slot.presentation.simulated) return overview('passed', 'AI 已核验');
     if (slot.presentation?.humanConfirmed) return overview('passed', '老师已确认');
     // “校验” also includes a published answer awaiting review; it does not imply a live request.

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { assessVerificationCoverage, GeneratedVerificationSchema, VerificationSchema, verificationIssueCode } from './agent.js';
+import { assessVerificationCoverage, GeneratedVerificationSchema, VerificationSchema, verificationIssueCode, verificationIssueText } from './agent.js';
 
 const pass = { schemaVersion: 1, verdict: 'pass', checked: ['transcription', 'logic'], issues: [] };
 const item = { questionNumber: 1, partLabel: '(a)', verdict: 'pass', checked: ['transcription', 'arithmetic'] };
@@ -36,4 +36,10 @@ it('keeps a concrete request for missing information out of wrong-answer correct
   const review = VerificationSchema.parse({ ...pass, verdict: 'fail', issues: [{ code: 'INSUFFICIENT_EVIDENCE',
     basis: 'The photograph shows Passage B, while the question asks about Passage A.', message: 'Please supply the opening of Passage A to identify the first publication.' }] });
   expect(assessVerificationCoverage(review)).toEqual({ ...review, verdict: 'unknown' });
+});
+
+it('explains an old verification bookkeeping error without claiming the student supplied an incomplete photo', () => {
+  const issue = { code:'REVIEW_INCOMPLETE' as const, message:'ACT尚未分别核对全部可见正文、设问、选项、当前高亮及表格，答案通过不代表转录完整。' };
+  expect(verificationIssueText(issue)).toBe('核验没有确认原题的设问和选项是否支持当前答案，请重新核验。');
+  expect(verificationIssueText({code:'TRANSCRIPTION',basis:'图中为负号。',message:'按正号计算改变了答案。'})).toBe('图中为负号。 按正号计算改变了答案。');
 });

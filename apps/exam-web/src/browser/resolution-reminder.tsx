@@ -28,7 +28,7 @@ export function ResolutionReminder({ resolutions, ready, onSelect }: {
     }
     const teachers = pending.filter(notice => notice.resolution === 'human_confirmed').length;
     return <Dialog title="答案已更新" className="resolution-reminder" onClose={acknowledge}>
-        <div className="resolution-heading feedback-tone-success"><span className="resolution-mark"><Icon name="check"/></span><div><h3>{pending.length} 道题已解决</h3><p>{teachers === pending.length ? '老师已处理' : teachers ? '老师处理与 AI 核验已完成' : 'AI 重新核验通过'}</p></div></div>
+        <div className="resolution-heading feedback-tone-success"><span className="resolution-mark"><Icon name="check"/></span><div><h3>{pending.length} 道题已解决</h3><p>{teachers === pending.length ? '老师已处理' : teachers ? '老师处理与 AI 核验已完成' : 'AI 已核验当前答案'}</p></div></div>
         <div className="question-notices feedback-tone-success resolution-choices"><div className="alert-links"><ResolutionLinks resolutions={pending} onSelect={notice => { acknowledge(); onSelect(notice); }}/></div></div>
         <div className="dialog-footer"><button onClick={acknowledge}>稍后查看</button></div>
     </Dialog>;

@@ -6,6 +6,7 @@ import { build } from 'esbuild';
 import { chromium, webkit, expect as browserExpect, type Page } from '@playwright/test';
 import { ExamAttemptSchema, ExamDetailSchema, type ExamSlot } from '@solveflow/contracts/managed-exam';
 import { SolveOutcomeSchema } from '@solveflow/contracts/agent';
+import sharp from 'sharp';
 
 let assets: {js: string; css: string; html: string};
 const screens = join(process.cwd(), '.runtime/ui-polish-20261108/screens');
@@ -111,7 +112,8 @@ async function syncHarness(contents: string) {
   const result = await build({stdin:{contents,resolveDir:join(process.cwd(),'apps/exam-web'),loader:'tsx'},outfile:'sync.js',write:false,bundle:true,jsx:'automatic',format:'esm',platform:'browser',alias:{katex:join(process.cwd(),'packages/web-ui/node_modules/katex')},loader:{'.woff2':'dataurl','.woff':'dataurl','.ttf':'dataurl','.svg':'dataurl'},define:{'process.env.NODE_ENV':'"production"'}});
   const js = result.outputFiles.find(file => file.path.endsWith('.js'))?.text;
   if (!js) throw new Error('MISSING_SYNC_ASSET');
-  return { js, html: '<meta name="viewport" content="width=device-width,initial-scale=1"><div id="root"></div><script type="module" src="/sync.js"></script>' };
+  const css = result.outputFiles.find(file => file.path.endsWith('.css'))?.text ?? '';
+  return { js, html: '<meta name="viewport" content="width=device-width,initial-scale=1"><style>'+css+'</style><div id="root"></div><script type="module" src="/sync.js"></script>' };
 }
 const fakeSocket = `window.WebSocket=class {
   static OPEN=1;readyState=0;
@@ -125,9 +127,6 @@ function syntheticAttempt() {
   return ExamAttemptSchema.parse({id,assignmentId:randomUUID(),studentId:randomUUID(),studentName:'同步回归学生',title:'同步回归',exam:'sat',state:'in_progress',opensAt:new Date().toISOString(),closesAt:null,nextSlotId:null,lastSeq:1,simulation:false,
     modules:[{id:moduleId,code:'math',title:'数学',sectionCode:'math',questionCount:2,durationSeconds:null,position:1,state:'in_progress'}],
     slots:[1,2].map(position=>({id:randomUUID(),moduleId,position,ordinal:position,revision:1,status:'completed',completedOnce:true,runId:randomUUID(),errorCode:null,presentation:{answer:'原答案',selectedOptions:null,verified:true,simulated:false,humanConfirmed:false,notAppliedReason:null},images:[]}))});
-}
-async function visibility(page: Page, value: 'hidden'|'visible') {
-  await page.evaluate(value=>{Object.defineProperty(document,'visibilityState',{configurable:true,value});document.dispatchEvent(new Event('visibilitychange'));},value);
 }
 function evidenceOutcome(kind: 'clarification'|'partial'|'review'|'complete'|'refusal'|'wrong'|'coverage') {
   const problem = {subject:'math',text:'Synthetic question',uncertainties:kind==='partial'?['请补拍下方选项。','请补拍下方选项。']:[],
@@ -231,6 +230,126 @@ async function visibility(page: Page, value: 'hidden'|'visible') {
 async function changed(page: Page, id: string, seq: number) {
   await page.evaluate(detail=>window.dispatchEvent(new CustomEvent('sync-test-change',{detail})),{id,seq});
 }
+const auditStyles = `import './src/browser/styles.css';import './src/browser/review.css';import './src/browser/console.css';import './src/browser/notifications.css';import './src/browser/student-flow.css';import './src/browser/paging.css';import './src/browser/practice.css';import './src/browser/design.css';`;
+async function auditPage(page: Page, contents: string, apiRoute?: (path: string, method: string) => unknown) {
+  const bundle = await syncHarness(contents + auditStyles);
+  page.setDefaultTimeout(4000);
+  await page.addInitScript(fakeSocket);
+  await page.route('http://127.0.0.1:3199/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.startsWith('/api/')) return route.fulfill({json:apiRoute?.(path,route.request().method()) ?? {message:'Unexpected synthetic request'},status:apiRoute?200:500});
+    return route.fulfill({contentType:path.endsWith('.js')?'text/javascript':'text/html',body:path==='/sync.js'?bundle.js:bundle.html});
+  });
+  await page.goto('http://127.0.0.1:3199');
+}
+describe('UI audit: evidence, feedback and input recovery',()=>{
+  for(const engine of ['chrome','webkit'] as const){
+    const launch=()=>engine==='chrome'?chromium.launch({executablePath:'/usr/bin/google-chrome'}):webkit.launch();
+    const practiceEntry=`import{createRoot}from'react-dom/client';import{StudentPractice}from'./src/browser/practice.tsx';createRoot(document.getElementById('root')).render(<main className="student-content"><StudentPractice/></main>);`;
+    it(`UI audit: practice exposes incomplete evidence and distinguishes a refusal in ${engine}`,async()=>{
+      let kind:Parameters<typeof evidenceOutcome>[0]='clarification',posts=0;
+      const image={name:'synthetic.png',mimeType:'image/png',buffer:await sharp({create:{width:64,height:64,channels:3,background:'#fff'}}).png().toBuffer()};
+      const browser=await launch(),page=await browser.newPage({viewport:{width:320,height:740}});
+      try{
+        await auditPage(page,practiceEntry,(_path,method)=>{if(method==='POST')posts++;return {schemaVersion:1,requestId:randomUUID(),status:'finished',phase:'solving',outcome:evidenceOutcome(kind)};});
+        for(const next of ['clarification','partial','review','refusal','complete'] as const){
+          kind=next;await page.locator('input[type=file]').setInputFiles(image);
+          if(next==='refusal'){
+            await browserExpect(page.getByRole('region',{name:'本次请求说明'})).toContainText('本次请求无法处理。');
+            await browserExpect(page.getByRole('heading',{name:'需要更清晰的题图'})).toHaveCount(0);
+          }else if(next==='complete'){
+            await browserExpect(page.getByRole('heading',{name:'答案',exact:true})).toBeVisible();
+            await browserExpect(page.getByRole('region',{name:'题图提示'})).toHaveCount(0);
+          }else{
+            const notice=page.getByRole('region',{name:'题图提示'});await browserExpect(notice).toBeVisible();
+            await browserExpect(notice).toContainText(next==='clarification'?'请补充表格右侧两列。':next==='partial'?'请补拍下方选项。':'图中比例尺数字看不清，请补拍比例尺。');
+            if(next!=='clarification')await browserExpect(page.getByText('合成结论为4。',{exact:true})).toBeVisible();
+            if(next==='partial'){
+              for(const width of [320,390,1440])for(const scheme of ['light','dark']){
+                await page.setViewportSize({width,height:844});await page.evaluate(value=>document.documentElement.dataset.theme=value,scheme);await settle(page);
+                expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+                expect(await page.getByRole('button',{name:'拍下一题',exact:true}).locator('span').evaluate(el=>{const range=document.createRange();range.selectNodeContents(el);return range.getClientRects().length;})).toBe(1);
+                await mkdir('.runtime/ui-audit-20261117/screens',{recursive:true});await page.screenshot({path:`.runtime/ui-audit-20261117/screens/practice-${engine}-${width}-${scheme}.png`,fullPage:true,animations:'disabled'});
+              }
+            }
+            const chooser=page.waitForEvent('filechooser');await notice.getByRole('button',{name:'重拍完整题目',exact:true}).click();await(await chooser).setFiles([]);
+            expect(posts).toBe(['clarification','partial','review'].indexOf(next)+1);
+          }
+          expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+        }
+      }finally{await browser.close();}
+    },30000);
+    it(`UI audit: an invalid replacement photo preserves the previous practice answer in ${engine}`,async()=>{
+      let posts=0;const browser=await launch(),page=await browser.newPage();
+      try{
+        await auditPage(page,practiceEntry,()=>{posts++;return {schemaVersion:1,requestId:randomUUID(),status:'finished',phase:'solving',outcome:evidenceOutcome('complete')};});
+        await page.locator('input[type=file]').setInputFiles({name:'synthetic.png',mimeType:'image/png',buffer:await sharp({create:{width:64,height:64,channels:3,background:'#fff'}}).png().toBuffer()});
+        await browserExpect(page.getByText('合成结论为4。',{exact:true})).toBeVisible();
+        await page.locator('input[type=file]').setInputFiles({name:'invalid.jpg',mimeType:'image/jpeg',buffer:Buffer.alloc(0)});
+        await browserExpect(page.getByRole('alert')).toBeVisible();
+        await browserExpect(page.getByText('合成结论为4。',{exact:true})).toBeVisible();
+        await browserExpect(page.getByRole('button',{name:'拍下一题',exact:true})).toBeEnabled();expect(posts).toBe(1);
+        await page.evaluate(()=>{
+          const original=Blob.prototype.arrayBuffer;
+          Blob.prototype.arrayBuffer=function(){Blob.prototype.arrayBuffer=original;const bytes=original.call(this);return new Promise(resolve=>window.addEventListener('audit-release-image',()=>{void bytes.then(resolve);},{once:true}));};
+        });
+        await page.locator('input[type=file]').setInputFiles({name:'preparing.png',mimeType:'image/png',buffer:await sharp({create:{width:64,height:64,channels:3,background:'#fff'}}).png().toBuffer()});
+        await page.getByRole('button',{name:'停止',exact:true}).click();
+        await page.evaluate(()=>window.dispatchEvent(new Event('audit-release-image')));await settle(page);
+        await browserExpect(page.getByText('合成结论为4。',{exact:true})).toBeVisible();expect(posts).toBe(1);
+        await browserExpect(page.getByRole('alert')).toHaveCount(0);
+      }finally{await browser.close();}
+    },20000);
+    it(`UI audit: teacher can read missing material beside the question in ${engine}`,async()=>{
+      const attempt=syntheticAttempt(),slot=attempt.slots[0];if(!slot)throw new Error('NO_SLOT');
+      slot.status='needs_clarification';slot.presentation=null;
+      const browser=await launch(),page=await browser.newPage({viewport:{width:390,height:844}});
+      try{
+        await auditPage(page,`import{createRoot}from'react-dom/client';import{Monitor}from'./src/browser/monitor.tsx';createRoot(document.getElementById('root')).render(<Monitor id="${attempt.id}" initialSlotId="${slot.id}" onClose={()=>{}}/>);`,
+          path=>path.includes('/snapshot')?attempt:evidenceDetail(slot,'clarification'));
+        const notice=page.getByRole('region',{name:'题图提示'});await browserExpect(notice).toContainText('请补充表格右侧两列。');
+        await browserExpect(notice.getByRole('button')).toHaveCount(0);
+        await page.getByRole('tab',{name:'发消息',exact:true}).click();await browserExpect(notice).toBeVisible();
+        await page.getByRole('textbox',{name:'消息内容'}).fill('请补充表格右侧两列。');
+        await browserExpect(page.getByRole('textbox',{name:'消息内容'})).toHaveValue('请补充表格右侧两列。');
+        await page.evaluate(()=>document.documentElement.dataset.theme='dark');await settle(page);
+        expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+        await mkdir('.runtime/ui-audit-20261117/screens',{recursive:true});await page.screenshot({path:`.runtime/ui-audit-20261117/screens/teacher-${engine}-390-dark.png`,fullPage:true,animations:'disabled'});
+      }finally{await browser.close();}
+    },20000);
+    it(`UI audit: revised answers use warning colors in light and dark themes in ${engine}`,async()=>{
+      const browser=await launch(),page=await browser.newPage({viewport:{width:320,height:740}});
+      try{
+        await auditPage(page,`import{createRoot}from'react-dom/client';import{QuestionNotices}from'./src/browser/components.tsx';import{Feedback}from'@solveflow/web-ui/feedback';createRoot(document.getElementById('root')).render(<main className="student-content"><Feedback tone="warning">等待确认</Feedback>{['warning','info','error'].map(tone=><QuestionNotices key={tone} label={tone} title={tone==='warning'?'答案已修正 · 2 题':tone==='error'?'待处理 · 1 题':'老师发来消息'} tone={tone} emphasis><button>数学第一模块 · 第21题</button></QuestionNotices>)}</main>);`);
+        for(const scheme of ['light','dark'] as const){
+          await page.mouse.move(0,0);
+          await page.evaluate(scheme=>document.documentElement.dataset.theme=scheme,scheme);await settle(page);
+          const summary=page.getByRole('region',{name:'warning',exact:true}).locator('summary');
+          const palette=await page.locator('.feedback.feedback-tone-warning').evaluate(el=>({color:getComputedStyle(el).color,background:getComputedStyle(el).backgroundColor}));
+          expect(await summary.evaluate(el=>({color:getComputedStyle(el).color,background:getComputedStyle(el).backgroundColor}))).toEqual(palette);
+          expect(contrast(palette.color,palette.background)).toBeGreaterThanOrEqual(4.5);
+          expect(await page.getByRole('region',{name:'error',exact:true}).locator('summary').evaluate(el=>getComputedStyle(el).backgroundColor)).toBe('rgb(180, 35, 24)');
+          await summary.click();await browserExpect(summary).toBeFocused();
+          expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+          await mkdir('.runtime/ui-audit-20261117/screens',{recursive:true});await page.screenshot({path:`.runtime/ui-audit-20261117/screens/notices-${engine}-${scheme}.png`,fullPage:true,animations:'disabled'});
+        }
+      }finally{await browser.close();}
+    },20000);
+    it(`UI audit: Chinese composition does not apply a partial search in ${engine}`,async()=>{
+      const browser=await launch(),page=await browser.newPage();
+      try{
+        await auditPage(page,`import{useState}from'react';import{createRoot}from'react-dom/client';import{ListSearch}from'./src/browser/paging.tsx';function App(){const[result,setResult]=useState('未查询');return <><ListSearch label="搜索学生" value="" onSearch={setResult}/><output aria-label="搜索结果">{result}</output></>};createRoot(document.getElementById('root')).render(<App/>);`);
+        const input=page.getByRole('searchbox',{name:'搜索学生'});await input.fill('刘同学');
+        await input.dispatchEvent('keydown',{key:'Enter',code:'Enter',isComposing:true,bubbles:true});
+        await browserExpect(page.getByLabel('搜索结果')).toHaveText('未查询');
+        await input.dispatchEvent('keydown',{key:'Enter',keyCode:229,bubbles:true});
+        await browserExpect(page.getByLabel('搜索结果')).toHaveText('未查询');
+        await input.press('Enter');await browserExpect(page.getByLabel('搜索结果')).toHaveText('刘同学');
+      }finally{await browser.close();}
+    },20000);
+  }
+});
+
 describe('browser synchronization and reading continuity',()=>{
   for (const engine of ['chrome','webkit'] as const) {
     const launch=()=>engine==='chrome'?chromium.launch({executablePath:'/usr/bin/google-chrome'}):webkit.launch();
@@ -283,8 +402,46 @@ describe('browser synchronization and reading continuity',()=>{
         await page.goto('http://127.0.0.1:3199');await page.getByText('STABLE QUESTION',{exact:true}).waitFor();expect(detailReads).toBe(1);
         await page.getByRole('tab',{name:'手动作答',exact:true}).click();const note=page.getByLabel('处理意见',{exact:true});await note.fill('保留教师草稿');const node=await note.elementHandle();
         const second=state.slots[1];if(!second)throw new Error('MISSING_SECOND_SLOT');second.status='verifying';state.lastSeq++;await changed(page,state.id,state.lastSeq);await browserExpect(page.getByRole('button',{name:'数学 · 第2题',exact:true})).toHaveText(/校验/);expect(detailReads).toBe(1);expect(await node?.evaluate(el=>el.isConnected)).toBe(true);await browserExpect(note).toHaveValue('保留教师草稿');
-        first.presentation={answer:'NEW ANSWER',selectedOptions:null,verified:false,simulated:false,humanConfirmed:true,notAppliedReason:null};first.reviewId=randomUUID();state.lastSeq++;await changed(page,state.id,state.lastSeq);await page.getByText('NEW ANSWER',{exact:true}).waitFor();expect(detailReads).toBe(2);await browserExpect(note).toHaveValue('保留教师草稿');
+        first.presentation={answer:'NEW ANSWER',selectedOptions:null,verified:false,simulated:false,humanConfirmed:true,notAppliedReason:null};first.reviewId=randomUUID();state.lastSeq++;await changed(page,state.id,state.lastSeq);await browserExpect(page.getByLabel('填空答案')).toHaveText('NEW ANSWER');await browserExpect(page.getByRole('button',{name:'数学 · 第1题',exact:true}).locator('.section-answer-value')).toHaveText('NEW ANSWER');expect(detailReads).toBe(2);await browserExpect(note).toHaveValue('保留教师草稿');
       }finally{await browser.close();}
+    },20000);
+    it(`keeps teacher attention red when hard errors exist beyond page 1 and avoids duplicate student detail reads on resolution open in ${engine}`,async()=>{
+      const state=syntheticAttempt(),first=state.slots[0];if(!first)throw new Error('MISSING_RESOLUTION_SLOT');
+      const noticeId=randomUUID(),heldSnapshot=gate();
+      state.viewedSlotId=first.id;state.nextSlotId=first.id;
+      first.presentation={answer:'A',selectedOptions:['A'],verified:false,simulated:false,humanConfirmed:false,notAppliedReason:null};
+      state.resolutions=[{id:noticeId,slotId:first.id,moduleId:first.moduleId,moduleTitle:'数学',position:1,revision:1,resolution:'ai_pass',resolvedAt:new Date().toISOString()}];
+      const issueBase={attemptId:state.id,studentId:state.studentId,studentName:state.studentName,title:state.title,slotId:first.id,moduleId:first.moduleId,moduleTitle:'数学',position:1,revision:1,openedAt:new Date().toISOString()};
+      let errorTotal=1,detailReads=0,holdSnapshot=false;
+      const bundle=await syncHarness(`import{createRoot}from'react-dom/client';import{StudentAttempt}from'./src/browser/student.tsx';import{TeacherAttention}from'./src/browser/teacher-attention.tsx';import'./src/browser/notifications.css';createRoot(document.getElementById('root')).render(<><TeacherAttention hidden={false} onOpen={()=>{}} onViewAll={()=>{}} onSpaceChange={()=>{}}/><main className="student-content"><StudentAttempt id="${state.id}" onExit={()=>{}}/></main></>);`);
+      const browser=await launch(),page=await browser.newPage();page.setDefaultTimeout(4000);
+      try{
+        await page.addInitScript(fakeSocket);
+        await page.route('http://127.0.0.1:3199/**',async route=>{
+          const req=route.request(),path=new URL(req.url()).pathname;
+          if(path==='/api/v2/admin/issues')return route.fulfill({json:{items:[{...issueBase,id:randomUUID(),reason:'verification_unknown'}],total:4,errorTotal,nextCursor:'more'}});
+          if(path.endsWith('/snapshot')){if(holdSnapshot)await heldSnapshot.promise;return route.fulfill({json:state});}
+          if(path.endsWith('/navigation'))return route.fulfill({json:{id:state.id,slotId:first.id,navigationVersion:++state.navigationVersion}});
+          if(path==='/api/v2/slots/'+first.id){detailReads++;const resolvedSlot={...first,presentation:{...first.presentation!,verified:true}};return route.fulfill({json:{slot:resolvedSlot,problem:{subject:'math',text:'RESOLVED QUESTION',uncertainties:[]},outcome:null,humanReviews:[],revisions:[]}});}
+          if(path==='/api/v2/resolutions/'+noticeId+'/read'){first.presentation={...first.presentation!,verified:true};state.resolutions=[];state.lastSeq++;return route.fulfill({json:{ok:true}});}
+          return route.fulfill({contentType:path.endsWith('.js')?'text/javascript':'text/html',body:path==='/sync.js'?bundle.js:bundle.html});
+        });
+        await page.goto('http://127.0.0.1:3199');
+        const reminder=page.getByRole('complementary',{name:'教师待处理提醒'});await reminder.waitFor();
+        expect(await reminder.evaluate(el=>el.classList.contains('pending-verification'))).toBe(false);
+        errorTotal=0;await page.evaluate(()=>window.dispatchEvent(new Event('online')));
+        await browserExpect.poll(()=>reminder.evaluate(el=>el.classList.contains('pending-verification'))).toBe(true);
+        const dialog=page.getByRole('dialog',{name:'答案已更新',exact:true});await dialog.waitFor();
+        await browserExpect.poll(()=>detailReads).toBe(1);
+        holdSnapshot=true;
+        await dialog.locator('.alert-links button').first().click();
+        await browserExpect.poll(()=>detailReads).toBe(2);
+        await page.evaluate(()=>new Promise<void>(r=>requestAnimationFrame(()=>r())));
+        expect(detailReads).toBe(2);
+        heldSnapshot.release();
+        await page.getByRole('dialog',{name:'第1题',exact:true}).getByText('RESOLVED QUESTION',{exact:true}).waitFor();
+        expect(detailReads).toBe(2);
+      }finally{heldSnapshot.release();await browser.close();}
     },20000);
     it(`reuses unchanged math while showing the next answer immediately in ${engine}`,async()=>{
       const bundle=await syncHarness(`import{useState}from'react';import{createRoot}from'react-dom/client';import katex from'katex';import{RichText}from'./src/browser/rich-text.tsx';const render=katex.renderToString;katex.renderToString=(...args)=>{document.documentElement.dataset.mathRenders=String(Number(document.documentElement.dataset.mathRenders??0)+1);return render(...args);};function App(){const[n,setN]=useState(0),[text,setText]=useState('答案：$x=29$');return <><output>{n}</output><button onClick={()=>setN(v=>v+1)}>同步</button><button onClick={()=>setText('答案：$x=30$')}>更新答案</button><section aria-label="答案"><RichText text={text}/></section></>};createRoot(document.getElementById('root')).render(<App/>);`);

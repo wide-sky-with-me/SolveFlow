@@ -10,13 +10,15 @@ import { z } from 'zod';
 import { MAX_ANSWER_CHARACTERS } from '@solveflow/contracts/agent';
 import { ExamDetailSchema, formatExamChoiceAnswer, type ExamAttempt } from '@solveflow/contracts/managed-exam';
 import { overviewClass, overviewState, slotState } from './slot-state.js';
-import { SlotStateLegend } from './section-answers.js';
+import { SlotAnswerValue, SlotStateLegend } from './section-answers.js';
 import { RichText } from './rich-text.js';
 import { AnswerSummary } from './answer-summary.js';
 import { api, idResponse, post } from './api.js';
 import { activeStatuses, Dialog, ErrorText, statusLabels, VerificationAlerts } from './components.js';
 import { useAttempt } from './use-attempt.js';
 import { Icon } from '@solveflow/web-ui/icons';
+import { mediaPath } from './image-cache.js';
+import { EnsureImageSession, useImageCache } from './image-session.js';
 import { ImageViewer } from './image-viewer.js';
 import { QuestionContent, QuestionImages } from './question-content.js';
 import { QuestionEvidence } from './question-evidence.js';
@@ -27,7 +29,12 @@ type ReviewDraft = { slotId: string; revision: number; runId: string | null; rev
 function TeacherChoices({ choices, selected, disabled, onSelect }: { choices: NonNullable<ReviewDraft['choices']>; selected: string[]; disabled: boolean; onSelect: (label: string, checked: boolean) => void }) {
     return <fieldset className="review-choices"><legend>{choices.multiple ? '选择答案（可多选）' : '选择答案'}</legend>{choices.options.map(option => <label key={option.label} className={'review-choice' + (selected.includes(option.label) ? ' selected' : '')}><input type={choices.multiple ? 'checkbox' : 'radio'} name="teacher-option" aria-label={option.label} disabled={disabled} checked={selected.includes(option.label)} onChange={event => onSelect(option.label, event.target.checked)}/><b aria-hidden="true">{option.label}</b></label>)}</fieldset>;
 }
-export function Monitor({ id, initialSlotId, onClose }: { id: string; initialSlotId?: string; onClose: () => void }) {
+export function Monitor(props: { id: string; initialSlotId?: string; onClose: () => void }) {
+    return <EnsureImageSession><MonitorBody {...props}/></EnsureImageSession>;
+}
+
+function MonitorBody({ id, initialSlotId, onClose }: { id: string; initialSlotId?: string; onClose: () => void }) {
+    const imageCache = useImageCache();
     const { attempt, error, refresh } = useAttempt(id);
     const [slotId, setSlotId] = useState<string | null>(initialSlotId ?? null), [detail, setDetail] = useState<Detail | null>(null), [failure, setFailure] = useState(''), [busy, setBusy] = useState(false), [draft, setDraft] = useState<ReviewDraft | null>(null);
     const [navigationOpen, setNavigationOpen] = useState(true), [activityOpen, setActivityOpen] = useState(false), [preview, setPreview] = useState<string | null>(null);
@@ -58,6 +65,24 @@ export function Monitor({ id, initialSlotId, onClose }: { id: string; initialSlo
     const reviewDirty = !!draft && (draft.answer !== draft.originalAnswer || !!draft.note);
     const messageDirty = !!messageDraft?.message;
     const editing = reviewDirty || messageDirty;
+    useEffect(() => {
+        if (!attempt || busy || editing) return;
+        const alertIds = attempt.alerts.slice(0, 3).map(item => item.slotId);
+        const index = slotId ? attempt.slots.findIndex(item => item.id === slotId) : -1;
+        const neighborIds = index >= 0 ? [attempt.slots[index + 1]?.id, attempt.slots[index - 1]?.id] : [];
+        const candidates = [...neighborIds, ...alertIds].filter((candidateId): candidateId is string => !!candidateId && candidateId !== slotId);
+        if (!candidates.length) return;
+        const timer = setTimeout(() => {
+            for (const candidateId of new Set(candidates)) {
+                const targetSlot = attempt.slots.find(item => item.id === candidateId);
+                const primary = targetSlot?.images.find(img => img.role === 'primary') ?? targetSlot?.images[0];
+                if (!primary) continue;
+                imageCache.prefetch(mediaPath(primary.id, 'thumbnail'));
+                imageCache.prefetch(mediaPath(primary.id, 'model'));
+            }
+        }, 120);
+        return () => clearTimeout(timer);
+    }, [attempt?.id, slotId, busy, editing, imageCache]);
     function beginMessage() {
         if (!detail) return;
         setMessageDraft({slotId:detail.slot.id,revision:detail.slot.revision,requestId:newRequestId(),message:''});
@@ -124,8 +149,8 @@ export function Monitor({ id, initialSlotId, onClose }: { id: string; initialSlo
           <button className="quiet" onClick={()=>setActivityOpen(true)}><Icon name="history"/>操作记录</button>
         </div>
         {navigationOpen && <><SlotStateLegend/><section id={navigationId} className="question-nav monitor-navigation" aria-label="题目导航">{attempt.modules.map(m => <section key={m.id}><h3>{m.title}</h3><div className="slot-grid">{attempt.slots.filter(s => s.moduleId === m.id).map(s => {
-            const flagged = attempt.alerts.some(a=>a.slotId===s.id), state = overviewState(s, flagged);
-            return <button key={s.id} aria-label={m.title+' · 第'+s.position+'题'} aria-current={s.id===slotId?'step':undefined} className={overviewClass(state)+(s.id===slotId?' current':'')} title={editing ? '有未提交内容，请先保存或取消' : state.detail} disabled={busy||editing} onClick={()=>setSlotId(s.id)}>{s.position}<span className="navigation-phase overview-phase"><span className="slot-state-dot" aria-hidden="true"/>{state.label}</span>{flagged && <span className="section-answer-alert feedback-tone-error" aria-label="待处理">!</span>}</button>;
+            const reason = attempt.alerts.find(a=>a.slotId===s.id)?.reason, state = overviewState(s, reason);
+            return <button key={s.id} aria-label={m.title+' · 第'+s.position+'题'} aria-current={s.id===slotId?'step':undefined} className={overviewClass(state)+(s.id===slotId?' current':'')} title={editing ? '有未提交内容，请先保存或取消' : state.detail} disabled={busy||editing} onClick={()=>setSlotId(s.id)}>{s.position}<SlotAnswerValue slot={s}/><span className="navigation-phase overview-phase"><span className="slot-state-dot" aria-hidden="true"/>{state.label}</span>{reason && <span className="section-answer-alert" aria-label="待处理">!</span>}</button>;
         })}</div></section>)}</section></>}
         {activityOpen && <Dialog title="操作记录" onClose={()=>setActivityOpen(false)}><div className="activity-history monitor-activity">{attempt.activity.length ? <ol>{attempt.activity.map(a=><li key={a.id}><span>{activityLabels[a.action]} {a.moduleTitle}{a.position?' · 第'+a.position+'题':''}{a.affectedCount>1?'（'+a.affectedCount+'题）':''}</span><time dateTime={a.createdAt}>{new Date(a.createdAt).toLocaleTimeString()}</time></li>)}</ol> : <p className="empty">暂无操作记录</p>}</div></Dialog>}
       </>}

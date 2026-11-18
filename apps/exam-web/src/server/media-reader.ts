@@ -6,7 +6,10 @@ import { imageStream } from './image-stream.js';
 
 type Cached = { bytes: Uint8Array; expires: number };
 type Pending = { controller: AbortController; promise: Promise<Uint8Array>; consumers: number; size: number };
-const CACHE_BYTES = 32 * 1024 * 1024, CACHE_ENTRIES = 32, CACHE_TTL_MS = 60000, MAX_PENDING = 8;
+export const MEDIA_CACHE_BYTES = 48 * 1024 * 1024;
+export const MEDIA_CACHE_ENTRIES = 128;
+export const MEDIA_CACHE_TTL_MS = 600_000;
+const CACHE_BYTES = MEDIA_CACHE_BYTES, CACHE_ENTRIES = MEDIA_CACHE_ENTRIES, CACHE_TTL_MS = MEDIA_CACHE_TTL_MS, MAX_PENDING = 8;
 const bytesStream = (bytes: Uint8Array) => new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(bytes); controller.close(); } });
 
 /** Byte reuse only. Every request must finish imageAccess before calling read. */

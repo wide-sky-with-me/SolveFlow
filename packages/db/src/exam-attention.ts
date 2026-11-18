@@ -23,11 +23,11 @@ export async function issueQueue(pool: pg.Pool, actor: ExamUser, raw: unknown) {
         const from = `${incidentFrom} JOIN exam_app.exam_attempts x ON x.id=i.attempt_id JOIN exam_app.exam_assignments a ON a.id=x.assignment_id JOIN exam_app.exam_sittings s ON s.id=a.sitting_id JOIN exam_app.users u ON u.id=i.student_id`;
         const where = `s.archived_at IS NULL AND a.state<>'revoked' AND i.resolved_at IS NULL AND ($1::boolean OR ($2::boolean AND s.manager_id=$4) OR ($3::boolean AND EXISTS(SELECT 1 FROM exam_app.staff_assignments f WHERE f.assignment_id=a.id AND f.staff_id=$4 AND f.revoked_at IS NULL))) AND ($5::uuid IS NULL OR i.student_id=$5) AND ($6::text IS NULL OR i.reason=$6) AND ($7::text='' OR u.display_name ILIKE $7 ESCAPE E'\\\\' OR u.username ILIKE $7 ESCAPE E'\\\\' OR s.title ILIKE $7 ESCAPE E'\\\\' OR m.title ILIKE $7 ESCAPE E'\\\\') AND ($8::uuid IS NULL OR a.sitting_id=$8)`;
         const params = [isAdmin(actor), actor.roles.includes('manager'), actor.roles.includes('support'), actor.id, input.studentId ?? null, input.reason ?? null, input.q?'%'+input.q.replace(/[\\%_]/g,'\\$&')+'%':'', input.sittingId ?? null];
-        const total = await one(c, z.number().int().nonnegative(), `SELECT count(*)::integer AS value FROM ${from} WHERE ${where}`, params);
+        const counts = await one(c, z.strictObject({ total: z.number().int().nonnegative(), errorTotal: z.number().int().nonnegative() }), `SELECT jsonb_build_object('total', count(*)::integer, 'errorTotal', count(*) FILTER (WHERE i.reason NOT IN ('verification_unknown','verification_unavailable'))::integer) AS value FROM ${from} WHERE ${where}`, params);
         const page = await rows(c, ExamIssueQueueItemSchema, `SELECT (${incidentJson} || jsonb_build_object('attemptId',i.attempt_id,'studentId',i.student_id,'studentName',u.display_name,'title',s.title)) AS value FROM ${from} WHERE ${where} AND ($9::timestamptz IS NULL OR (i.opened_at,i.id)>($9::timestamptz,$10::uuid)) ORDER BY i.opened_at,i.id LIMIT $11`, [...params, cursor?.openedAt ?? null, cursor?.id ?? null, input.limit + 1]);
         const items = page.slice(0, input.limit), last = items.at(-1);
         const nextCursor = page.length > input.limit && last ? Buffer.from(JSON.stringify({ openedAt: last.openedAt, id: last.id })).toString('base64url') : null;
-        return ExamIssueQueueSchema.parse({ items, total, nextCursor });
+        return ExamIssueQueueSchema.parse({ items, total: counts.total, errorTotal: counts.errorTotal, nextCursor });
     }, true);
 }
 

@@ -2,11 +2,11 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ExamIssueQueueSchema, type ExamIssueQueueItem } from '@solveflow/contracts/managed-exam';
 import { Icon } from '@solveflow/web-ui/icons';
-import { alertLabels, ErrorText } from './components.js';
+import { alertLabels, awaitingVerification, Feedback } from './components.js';
 import { usePageResource } from './paging.js';
 
 export function TeacherAttention({ hidden, onOpen, onViewAll, onSpaceChange }: { hidden: boolean; onOpen: (item: ExamIssueQueueItem) => void; onViewAll: () => void; onSpaceChange: (space: number) => void }) {
-    const { data, error } = usePageResource(ExamIssueQueueSchema, '/admin/issues?limit=3');
+    const { data, error, refreshManually } = usePageResource(ExamIssueQueueSchema, '/admin/issues?limit=3');
     const [expanded, setExpanded] = useState(false);
     useEffect(() => { if ((data?.total ?? 0) < 2) setExpanded(false); }, [data?.total]);
     const [host, setHost] = useState<Element>(() => document.fullscreenElement ?? document.body);
@@ -27,7 +27,8 @@ export function TeacherAttention({ hidden, onOpen, onViewAll, onSpaceChange }: {
         return () => document.removeEventListener('fullscreenchange', change);
     }, []);
     if (!visible) return null;
-    return createPortal(<aside ref={reminder} className="teacher-attention" aria-label="教师待处理提醒">
+    const pendingOnly = data?.errorTotal !== undefined ? data.errorTotal === 0 : !data?.items.length || data.items.every(item => awaitingVerification(item.reason));
+    return createPortal(<aside ref={reminder} className={'teacher-attention' + (pendingOnly ? ' pending-verification' : '')} aria-label="教师待处理提醒">
       {!!data?.total && <>
         <button className="teacher-attention-heading" aria-label="打开教师待处理提醒" aria-expanded={data.total > 1 ? expanded : undefined} onClick={() => { const first = data.items[0]; if (data.total === 1 && first) onOpen(first); else setExpanded(value => !value); }}>
           <span className="teacher-attention-mark"><Icon name="alert"/></span><strong aria-live="polite">待处理 · {data.total} 题</strong><Icon name={data.total > 1 ? 'chevron-down' : 'chevron-right'}/>
@@ -37,6 +38,6 @@ export function TeacherAttention({ hidden, onOpen, onViewAll, onSpaceChange }: {
         </button>)}</div>}
         {expanded && data.total > 1 && <button className="teacher-attention-all" aria-label="查看全部待处理题" onClick={onViewAll}>查看全部 {data.total} 题<Icon name="chevron-right"/></button>}
       </>}
-      <ErrorText error={error}/>
+      {error && <Feedback tone="warning"><strong>待处理通知暂未同步</strong><p>{error}</p><button type="button" className="quiet" onClick={refreshManually}>重试同步</button></Feedback>}
     </aside>, host);
 }

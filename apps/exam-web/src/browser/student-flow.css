@@ -127,6 +127,15 @@
   text-overflow: ellipsis;
 }
 
+.section-answer-value.section-answer-excerpt {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-weight: 400;
+}
+
 .section-answer-grid>button {
   min-height: 76px;
 }

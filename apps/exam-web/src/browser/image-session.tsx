@@ -8,6 +8,12 @@ export function ImageSession({ children }: {
     useEffect(() => () => cache.dispose(), [cache]);
     return <ImageCacheContext.Provider value={cache}>{children}</ImageCacheContext.Provider>;
 }
+export function EnsureImageSession({ children }: {
+    children: ReactNode;
+}) {
+    const shared = useContext(ImageCacheContext);
+    return shared ? <>{children}</> : <ImageSession>{children}</ImageSession>;
+}
 export function useImageCache() {
     const shared = useContext(ImageCacheContext), [local] = useState(() => new SessionImageCache());
     useEffect(() => () => local.dispose(), [local]);

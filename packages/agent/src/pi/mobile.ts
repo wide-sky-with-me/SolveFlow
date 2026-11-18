@@ -352,7 +352,7 @@ async function phase(input: AgentInput, budget: RunBudget, signal: AbortSignal, 
         } else if (input.role === 'solver') {
           await agent.prompt('最终JSON未通过结构校验。请按系统Schema重新输出完整JSON，补齐必需字段，确保每个步骤/图示恰好归属一道题。需要检查的字段：' + fields.join('、') + '。题型约束：' + constraints + '。answer须为完整作答字符串，选择题selectedOptions须为原标签数组；不把正文写成对象，不把解释或编号当标签。仅修复表示，不能为通过校验擅改题意或删除必要作答。单题省略questions，不能填空数组、null或仅一项；同一道题的小问用problem.response.parts和parts逐项完整解答，不能凑成多道题。真正多题才填2–4项，每个步骤和图恰好归属一题。只有这一次格式修复机会。不要增加题目，不要省略原题小问。');
         } else {
-          const detail = errorMsg === 'DIAGRAM_NOT_VERIFIED' ? '原题或候选包含图表，通过校验必须在checked数组中包含"diagram"。' : '必需包含verdict("pass"|"fail"|"unknown")、checked和issues；每项issue必须给出不同的basis（原图依据或具体缺失位置）与message（影响及纠正或补充要求）；pass时issues为空；完整选择题须填写independentChoices及逐题decisiveEvidence。';
+          const detail = errorMsg === 'DIAGRAM_NOT_VERIFIED' ? '原题或候选包含图表，通过校验必须在checked数组中包含"diagram"。' : `必需包含verdict("pass"|"fail"|"unknown")、checked和issues；每项issue必须给出不同的basis（原图依据或具体缺失位置）与message（影响及纠正或补充要求）；pass时issues为空；完整选择题须填写independentChoices及逐题decisiveEvidence。${constraints ? `具体约束：${constraints}。` : ''}`;
           await agent.prompt(`校验结果未通过结构校验。请按校验Schema重新输出完整JSON对象：${detail}只有这一次格式修复机会。`);
         }
       }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MediaReader } from './media-reader.js';
+import { MEDIA_CACHE_BYTES, MEDIA_CACHE_ENTRIES, MEDIA_CACHE_TTL_MS, MediaReader } from './media-reader.js';
 import { imageStream } from './image-stream.js';
 import type { ExamStorage } from './storage.js';
 
@@ -45,21 +45,22 @@ describe('authorized media byte reader', () => {
         expect(await read(await media.read(access, true, controller().signal))).toEqual(new Uint8Array([3])); expect(calls).toBe(3);
         media.close();
     });
-    it('expires bytes and evicts old entries to keep the 32 MiB budget', async () => {
+    it('expires bytes and evicts old entries to keep the 48 MiB budget', async () => {
         let calls = 0, now = 0;
         const bytes = new Uint8Array(4 * 1024 * 1024), media = new MediaReader(storage(async () => { calls++; return bytes; }), () => now);
+        const maxAt4MiB = MEDIA_CACHE_BYTES / bytes.length;
         const access = (id: number) => ({ key: String(id), byteSize: bytes.length });
-        for (let i = 0; i < 9; i++) await read(await media.read(access(i), true, controller().signal));
-        await read(await media.read(access(8), true, controller().signal)); expect(calls).toBe(9);
-        await read(await media.read(access(0), true, controller().signal)); expect(calls).toBe(10);
-        now = 60001; await read(await media.read(access(8), true, controller().signal)); expect(calls).toBe(11);
+        for (let i = 0; i <= maxAt4MiB; i++) await read(await media.read(access(i), true, controller().signal));
+        await read(await media.read(access(maxAt4MiB), true, controller().signal)); expect(calls).toBe(maxAt4MiB + 1);
+        await read(await media.read(access(0), true, controller().signal)); expect(calls).toBe(maxAt4MiB + 2);
+        now = MEDIA_CACHE_TTL_MS + 1; await read(await media.read(access(maxAt4MiB), true, controller().signal)); expect(calls).toBe(maxAt4MiB + 3);
         media.close();
     });
     it('bounds entry count even when every preview is tiny', async () => {
         let calls = 0; const media = new MediaReader(storage(async () => { calls++; return new Uint8Array([1]); }));
-        for (let i = 0; i < 33; i++) await read(await media.read({ key: String(i), byteSize: 1 }, true, controller().signal));
-        await read(await media.read({ key: '32', byteSize: 1 }, true, controller().signal)); expect(calls).toBe(33);
-        await read(await media.read({ key: '0', byteSize: 1 }, true, controller().signal)); expect(calls).toBe(34); media.close();
+        for (let i = 0; i <= MEDIA_CACHE_ENTRIES; i++) await read(await media.read({ key: String(i), byteSize: 1 }, true, controller().signal));
+        await read(await media.read({ key: String(MEDIA_CACHE_ENTRIES), byteSize: 1 }, true, controller().signal)); expect(calls).toBe(MEDIA_CACHE_ENTRIES + 1);
+        await read(await media.read({ key: '0', byteSize: 1 }, true, controller().signal)); expect(calls).toBe(MEDIA_CACHE_ENTRIES + 2); media.close();
     });
     it('streams overflow reads instead of starting unbounded buffered downloads', async () => {
         let gets = 0, streams = 0, release = () => {};

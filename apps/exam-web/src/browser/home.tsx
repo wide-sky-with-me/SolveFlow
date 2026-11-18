@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import type { ExamDashboard } from '@solveflow/contracts/managed-exam';
 import { Icon } from '@solveflow/web-ui/icons';
 import { CoverageOrbit, Distribution, stateLabels } from './charts.js';
+import { awaitingVerification } from './components.js';
 
 const number = (value: number) => value.toLocaleString('zh-CN');
 
@@ -14,6 +15,7 @@ export function HomeContent({ data, trend, modules, issues, students, onIssues }
     onIssues: () => void;
 }) {
     const { summary } = data;
+    const pendingOnly = summary.attention > 0 && data.issues.some(item => item.count > 0) && data.issues.every(item => !item.count || awaitingVerification(item.reason));
     return <div className="home-content">
       <div className="home-overview-grid">
         <section className="panel home-progress">
@@ -25,7 +27,7 @@ export function HomeContent({ data, trend, modules, issues, students, onIssues }
           <div className="home-statuses">{data.distribution.filter(item=>item.state==='unphotographed'||item.state==='processing'||item.state==='waiting').map(item=><div key={item.state}><span>{stateLabels[item.state]}</span><strong>{number(item.count)}</strong></div>)}</div>
         </section>
         <section className="home-attention" aria-label="学生待处理问题">
-          <button className={'home-attention-total'+(summary.attention?' feedback-tone-error':' feedback-tone-success')} aria-label="查看待处理题" onClick={onIssues}>
+          <button className={'home-attention-total'+(summary.attention?(pendingOnly?' feedback-tone-warning':' feedback-tone-error'):' feedback-tone-success')} aria-label="查看待处理题" onClick={onIssues}>
             <span className="home-attention-icon"><Icon name={summary.attention?'alert':'check'}/></span>
             <span><span>待处理题</span><strong>{number(summary.attention)}<small>题</small></strong></span><Icon name="chevron-right"/>
           </button>

@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { IMAGE_CACHE_BYTES, SessionImageCache, imagePaths } from './image-cache.js';
+import {
+    IMAGE_CACHE_BYTES,
+    IMAGE_CACHE_MAX_ENTRIES,
+    IMAGE_CACHE_MAX_PENDING,
+    IMAGE_CACHE_MAX_PREFETCH,
+    IMAGE_CACHE_MAX_SOURCES,
+    SessionImageCache,
+    imagePaths,
+    mediaPath,
+} from './image-cache.js';
 
 const path=(number=1,view='source')=>`/api/v2/media/00000000-0000-4000-8000-${String(number).padStart(12,'0')}?view=${view}`;
 const picture=(bytes=64)=>new Response(new Uint8Array(bytes),{headers:{'content-type':'image/jpeg'}});
@@ -12,9 +21,11 @@ beforeEach(()=>{
 });
 afterEach(()=>{cache.dispose();vi.restoreAllMocks();vi.unstubAllGlobals();vi.useRealTimers();});
 
-it('derives the clear preview only from an internal source URL',()=>{
+it('derives the clear preview only from an internal source URL and validates media views',()=>{
     expect(imagePaths(path()).preview).toBe(path(1,'model'));
+    expect(mediaPath('00000000-0000-4000-8000-000000000001','thumbnail')).toBe(path(1,'thumbnail'));
     for(const invalid of ['https://example.com/a.jpg','/api/v2/media/not-a-uuid?view=source',path()+'&token=private'])expect(()=>imagePaths(invalid)).toThrow();
+    expect(()=>mediaPath('not-a-uuid','model')).toThrow();
 });
 it('deduplicates downloads, retains completed blobs, and revalidates every reuse',async()=>{
     const a=cache.acquire(path()),b=cache.acquire(path());expect(await a.promise).toEqual(await b.promise);expect(fetcher).toHaveBeenCalledTimes(1);a.release();b.release();
@@ -29,8 +40,8 @@ it('aborts only after the final viewer releases an unfinished request',async()=>
 });
 it('bounds pending downloads and rejects oversized or unsupported image content',async()=>{
     const completions:Array<(response:Response)=>void>=[];fetcher.mockImplementation(()=>new Promise(resolve=>completions.push(resolve)));
-    const pending=Array.from({length:4},(_,i)=>cache.acquire(path(i+1))),settled=Promise.allSettled(pending.map(value=>value.promise));
-    expect(()=>cache.acquire(path(5))).toThrow('正在加载');cache.dispose();for(const finish of completions)finish(picture());
+    const pending=Array.from({length:IMAGE_CACHE_MAX_PENDING},(_,i)=>cache.acquire(path(i+1))),settled=Promise.allSettled(pending.map(value=>value.promise));
+    expect(()=>cache.acquire(path(IMAGE_CACHE_MAX_PENDING+1))).toThrow('正在加载');cache.dispose();for(const finish of completions)finish(picture());
     expect((await settled).every(result=>result.status==='rejected')).toBe(true);
     // Use a separate cache for the completed response constraints.
     const limited=new SessionImageCache();
@@ -42,18 +53,37 @@ it('bounds pending downloads and rejects oversized or unsupported image content'
 });
 it('evicts unpinned originals and never discards images held by an open viewer',async()=>{
     const held=cache.acquire(path());await held.promise;
-    const second=cache.acquire(path(2));await second.promise;second.release();
-    const third=cache.acquire(path(3));await third.promise;expect(cache.has(path())).toBe(true);expect(cache.has(path(2))).toBe(false);third.release();
-    const pinned=cache.acquire(path(4));await pinned.promise;
-    await expect(cache.acquire(path(5)).promise).rejects.toThrow('关闭其他图片');expect(cache.has(path())).toBe(true);held.release();pinned.release();
+    for(let index=2;index<=IMAGE_CACHE_MAX_SOURCES;index++){const temp=cache.acquire(path(index));await temp.promise;temp.release();}
+    const extra=cache.acquire(path(IMAGE_CACHE_MAX_SOURCES+1));await extra.promise;expect(cache.has(path())).toBe(true);expect(cache.has(path(2))).toBe(false);extra.release();
+    const pinned:ReturnType<SessionImageCache['acquire']>[]=[];
+    for(let index=10;index<10+IMAGE_CACHE_MAX_SOURCES-1;index++){const lease=cache.acquire(path(index));await lease.promise;pinned.push(lease);}
+    await expect(cache.acquire(path(99)).promise).rejects.toThrow('关闭其他图片');expect(cache.has(path())).toBe(true);held.release();for(const lease of pinned)lease.release();
 });
 it('keeps encoded cached data within its byte budget and entry count',async()=>{
     fetcher.mockImplementation(async()=>picture(4*1024*1024));
-    for(let index=1;index<=6;index++){const lease=cache.acquire(path(index,'model'));await lease.promise;lease.release();}
-    expect(vi.mocked(URL.revokeObjectURL).mock.calls.length).toBe(2);expect(IMAGE_CACHE_BYTES).toBe(16*1024*1024);
+    const overBudget=IMAGE_CACHE_BYTES/(4*1024*1024)+2;
+    for(let index=1;index<=overBudget;index++){const lease=cache.acquire(path(index,'model'));await lease.promise;lease.release();}
+    expect(vi.mocked(URL.revokeObjectURL).mock.calls.length).toBe(2);expect(IMAGE_CACHE_BYTES).toBe(64*1024*1024);
     cache.dispose();cache=new SessionImageCache();fetcher.mockImplementation(async()=>picture());
-    for(let index=1;index<=10;index++){const lease=cache.acquire(path(index,'model'));await lease.promise;lease.release();}
-    expect(cache.has(path(1,'model'))).toBe(false);expect(cache.has(path(3,'model'))).toBe(true);
+    for(let index=1;index<=IMAGE_CACHE_MAX_ENTRIES+2;index++){const lease=cache.acquire(path(index,'thumbnail'));await lease.promise;lease.release();}
+    expect(cache.has(path(1,'thumbnail'))).toBe(false);expect(cache.has(path(3,'thumbnail'))).toBe(true);
+});
+it('prefetches thumbnails and model previews with bounded concurrency and adopts in-flight prefetches',async()=>{
+    const completions:Array<(response:Response)=>void>=[];fetcher.mockImplementation(()=>new Promise(resolve=>completions.push(resolve)));
+    cache.prefetch(path(1,'source'));expect(fetcher).not.toHaveBeenCalled();
+    cache.prefetch(path(1,'model'));cache.prefetch(path(2,'thumbnail'));cache.prefetch(path(3,'model'));cache.prefetch(path(4,'model'),true);
+    expect(fetcher).toHaveBeenCalledTimes(IMAGE_CACHE_MAX_PREFETCH);
+    // Adopting an in-flight prefetch reuses the single GET without issuing a duplicate request.
+    const adopted=cache.acquire(path(1,'model'));expect(fetcher).toHaveBeenCalledTimes(IMAGE_CACHE_MAX_PREFETCH);
+    completions[0]?.(picture());expect(await adopted.promise).toMatchObject({bytes:64});adopted.release();
+    // Priority item 4 starts ahead of non-priority item 3 once a prefetch slot frees up.
+    await vi.waitFor(()=>expect(fetcher).toHaveBeenCalledTimes(IMAGE_CACHE_MAX_PREFETCH+1));
+    expect(fetcher.mock.calls[2]?.[0]).toBe(path(4,'model'));
+    completions[1]?.(new Response(null,{status:503}));
+    await vi.waitFor(()=>expect(fetcher).toHaveBeenCalledTimes(IMAGE_CACHE_MAX_PREFETCH+2));
+    expect(cache.has(path(2,'thumbnail'))).toBe(false);
+    completions[2]?.(picture());completions[3]?.(picture());
+    await vi.waitFor(()=>expect(cache.has(path(4,'model'))&&cache.has(path(3,'model'))).toBe(true));
 });
 it('denies cached content after permissions are revoked and notifies on expired login',async()=>{
     const initial=cache.acquire(path());await initial.promise;initial.release();

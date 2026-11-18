@@ -130,6 +130,10 @@
   background: var(--feedback-icon-bg);
 }
 
+.question-notices .alert-links .notice-issue {
+  color: var(--feedback-ink);
+}
+
 .notice-question {
   display: grid;
   gap: 2px;
@@ -330,8 +334,17 @@
   border-radius: 15px;
 }
 
+.teacher-attention.pending-verification {
+  border-color: var(--sf-warning-ink);
+}
+.teacher-attention.pending-verification .teacher-attention-heading {
+  background: #765015;
+}
 .teacher-attention-heading:hover {
   background: #a51d14;
+}
+.teacher-attention.pending-verification .teacher-attention-heading:hover {
+  background: #634210;
 }
 
 .teacher-attention-heading strong {
