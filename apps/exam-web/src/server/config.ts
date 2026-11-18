@@ -15,4 +15,6 @@ export async function loadExamConfig() { const file = process.env.SOLVEFLOW_EXAM
     throw new Error('PRODUCTION_REQUIRES_PRIVATE_S3'); if (config.storage.type === 's3' && new URL(config.storage.endpoint).protocol !== 'https:')
     throw new Error('PRIVATE_S3_REQUIRES_HTTPS'); for (const profile of Object.values(config.models?.models ?? {}))
     if (profile && !profile.baseURL.startsWith('https:'))
-        throw new Error('MODELS_REQUIRE_HTTPS'); return config; }
+        throw new Error('MODELS_REQUIRE_HTTPS');
+    const extraMediaAttemptId = z.uuid().optional().parse(process.env.SOLVEFLOW_EXAM_EXTRA_MEDIA_ATTEMPT_ID);
+    return { ...config, extraMediaAttemptId }; }

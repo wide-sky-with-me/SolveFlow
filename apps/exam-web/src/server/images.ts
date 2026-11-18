@@ -20,7 +20,7 @@ export async function normalizeImages(raw: Uint8Array) {
         throw conflict('图片处理后仍过大，请缩小或重拍。');
     return { source, model, thumbnail };
 }
-export async function upload(pool: Pool, storage: ExamStorage, actor: ExamUser, slotId: string, requestId: string, raw: Uint8Array) {
+export async function upload(pool: Pool, storage: ExamStorage, actor: ExamUser, slotId: string, requestId: string, raw: Uint8Array, extraMediaAttemptId?: string) {
     const attemptId = await one(pool, z.uuid(), 'SELECT attempt_id AS value FROM exam_app.question_slots WHERE id=$1', [slotId]);
     await scope(pool, actor, await attemptAssignment(pool, attemptId), true);
     const allowed = await one(pool, z.boolean(), `SELECT a.state IN ('assigned','completed') AND s.state='published' AND now()>=a.opens_at AND (a.closes_at IS NULL OR now()<a.closes_at) AND x.state IN ('in_progress','completed') AND x.ended_at IS NULL AS value FROM exam_app.question_slots q JOIN exam_app.exam_attempts x ON x.id=q.attempt_id JOIN exam_app.exam_assignments a ON a.id=x.assignment_id JOIN exam_app.exam_sittings s ON s.id=a.sitting_id WHERE q.id=$1`, [slotId]);
@@ -40,8 +40,9 @@ export async function upload(pool: Pool, storage: ExamStorage, actor: ExamUser, 
             throw conflict('图片正在上传或已失效，请重试选择。');
         }
         const used = await one(c, z.coerce.number(), "SELECT coalesce(sum(byte_size),0) AS value FROM exam_app.media_assets WHERE owner_user_id=$1 AND state IN ('quarantined','ready','deleting')", [actor.id]);
-        if (used + Object.values(images).reduce((n, v) => n + v.data.length, 0) > 1024 * 1024 * 1024)
-            throw conflict('图片存储已达上限，请联系管理员。');
+        const limitGiB = attemptId === extraMediaAttemptId ? 2 : 1;
+        if (used + Object.values(images).reduce((n, v) => n + v.data.length, 0) > limitGiB * 1024 ** 3)
+            throw conflict(`图片存储已达上限（${limitGiB} GiB），请联系管理员。图片已保留，额度调整后可直接重试。`);
         const daily = await one(c, z.coerce.number(), "SELECT count(*) AS value FROM exam_app.upload_intents WHERE student_id=$1 AND created_at>=date_trunc('day',now())", [actor.id]);
         if (daily >= 500)
             throw conflict('今日上传次数已达上限。');

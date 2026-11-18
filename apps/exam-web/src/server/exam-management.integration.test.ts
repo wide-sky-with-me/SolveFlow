@@ -64,6 +64,37 @@ describe.skipIf(!url)('exam event hierarchy and standalone teacher messages', ()
     async function parent(title: string) { return createExamEvent(pool(), manager, { ...requestId(), title, templateId }); }
     function concrete(title: string, students = [student.id], teachers = [teacher.id]) { return { ...requestId(), title, opensAt: new Date(Date.now() - 60000).toISOString(), closesAt: null, studentIds: students, supportIds: teachers, mode: 'original', wrongCounts: [] }; }
     async function detail(id: string) { return (await examEventDetail(pool(), manager, id)).event; }
+    it('photo storage: a full account can use extra capacity only on its authorized attempt', async () => {
+        const child = await createUser(pool(), manager, { username:'photo_quota', displayName:'图片额度测试', password:'synthetic-password-123', roles:['student'] }, password);
+        const sitting = await createSitting(pool(), manager, { templateId, title:'图片额度', opensAt:new Date(Date.now()-60000).toISOString(), closesAt:null });
+        const assignment = await createAssignment(pool(), manager, { sittingId:sitting.id, studentId:child.id });
+        const attempt = await startAttempt(pool(), child, assignment.id);
+        const slot = (await snapshot(pool(), child, attempt.id)).slots[0];
+        if (!slot) throw new Error('MISSING_PHOTO_SLOT');
+        const fillGiB = () => pool().query(`INSERT INTO exam_app.media_assets(id,owner_user_id,object_key,variant,mime_type,byte_size,width,height,sha256,state,retention_until)
+            SELECT gen_random_uuid(),$1,gen_random_uuid()::text,'source','image/jpeg',8388608,2048,2048,repeat('a',64),'ready',now()+interval '1 day' FROM generate_series(1,128)`, [child.id]);
+        await fillGiB();
+        const image = await sharp({ create:{width:160,height:160,channels:3,background:'white'} }).jpeg().toBuffer();
+        await expect(upload(pool(),storage,child,slot.id,randomUUID(),image,randomUUID())).rejects.toThrow('图片存储已达上限');
+        const browser = await chromium.launch({ executablePath:'/usr/bin/google-chrome' });
+        try {
+            const context = await browser.newContext(), page = await context.newPage();
+            await context.request.post(origin+'/api/v2/auth/login', { headers:{origin}, data:{username:child.username,password:'synthetic-password-123'} });
+            await page.goto(origin);
+            const chooser = page.waitForEvent('filechooser');
+            await page.getByRole('button',{name:'从相册选择',exact:true}).click();
+            await (await chooser).setFiles({name:'question.jpg',mimeType:'image/jpeg',buffer:image});
+            const draft = page.getByRole('dialog',{name:'第1题 · 题图'});
+            await draft.getByRole('button',{name:'保存并解答'}).click();
+            await browserExpect(draft.getByText(/图片存储已达上限/)).toBeVisible();
+            await browserExpect(draft.getByRole('img',{name:'待保存题图1'})).toBeVisible();
+            const key = randomUUID();
+            const extended = await upload(pool(),storage,child,slot.id,key,image,attempt.id);
+            expect(await upload(pool(),storage,child,slot.id,key,image,attempt.id)).toEqual(extended);
+            await fillGiB();
+            await expect(upload(pool(),storage,child,slot.id,randomUUID(),image,attempt.id)).rejects.toThrow('图片存储已达上限');
+        } finally { await browser.close(); }
+    }, 30000);
     async function failedQuestion(name: string) {
         const child = await createUser(pool(), manager, { username: 'message_' + name, displayName: '消息学生' + name, password: 'synthetic-password-123', roles: ['student'] }, password);
         const sitting = await createSitting(pool(), manager, { templateId, title: '消息考试' + name, opensAt: new Date(Date.now() - 60000).toISOString(), closesAt: null });

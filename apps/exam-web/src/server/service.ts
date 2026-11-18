@@ -105,6 +105,7 @@ export interface ExamServiceOptions {
     canSolve?: () => boolean;
     practice?: PracticeJobs;
     modelServices?: ModelServices;
+    extraMediaAttemptId?: string;
 }
 export function createExamService(options: ExamServiceOptions) {
     const { pool, storage, origin } = options;
@@ -189,7 +190,7 @@ export function createExamService(options: ExamServiceOptions) {
     app.post('/api/v2/slots/:id/images', async (c) => { const { user } = await session(c.req.header('cookie')); const id = z.uuid().parse(c.req.param('id')); const requestId = z.uuid().parse(c.req.header('x-request-id')); if (!c.req.header('content-type')?.startsWith('image/'))
         throw new ExamError(415, 'IMAGE_TYPE', '请选择图片。'); if (imageJobs >= 4)
         throw new ExamError(429, 'IMAGE_BUSY', '图片处理较多，请稍后重试。'); imageJobs++; try {
-        return c.json(await upload(pool, storage, user, id, requestId, await readBytes(c.req.raw, EXAM_SOURCE_IMAGE_BYTES)), 201);
+        return c.json(await upload(pool, storage, user, id, requestId, await readBytes(c.req.raw, EXAM_SOURCE_IMAGE_BYTES), options.extraMediaAttemptId), 201);
     }
     finally {
         imageJobs--;

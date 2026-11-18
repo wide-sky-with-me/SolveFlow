@@ -308,7 +308,7 @@ export function StudentAttempt({ id, onExit, focus }: {
                 setDraftError('保存结果暂未确认，图片已保留。请同步并重试。');
             } else {
                 setDraft(current => current?.requestId === value.requestId ? { ...current, submitted: false } : current);
-                setDraftError(error instanceof RequestError && error.status === 409 ? '题图或保存状态已更新，请返回题目同步后重新选图。' : error instanceof Error ? error.message : '保存失败，图片已保留，请重试。');
+                setDraftError(error instanceof Error ? error.message : '保存失败，图片已保留，请重试。');
             }
         } finally {
             if (savingRequest.current === controller) savingRequest.current = null;
