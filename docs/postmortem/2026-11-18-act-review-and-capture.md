@@ -34,6 +34,6 @@
 
 ## 验收范围
 
-共享核验覆盖单题印刷号、缺省原题号单题格式修复、错误题号、范围、小问、独立选项分歧以及确实缺图的情况。学生总览和教师题号导航显示当前材料的选项、短答案或两行正文摘录；教师待处理提醒按全局明确错误数（`errorTotal`）区分红黄。双端题图回看通过登录会话内存缓存复用缩略图与 `model` 预览并后台预热当前及相邻已答题，保留 `no-store` 与 `HEAD` 逐次鉴权。Chrome 与 WebKit 使用隔离 PostgreSQL、合成题图和受控网络完成回归。规则见[ACT 题号与证据](../subsystems/act-transcription.md)、[总览预览](../subsystems/managed-answer-previews.md)、[答案与原图](../subsystems/managed-exam-answers.md)和[题图提交](../subsystems/managed-exam-submissions.md)。
+共享核验在单题模式下直接比对题干、选项、小问与决定性原图依据，完全移除单题印刷题号关联检查（仅同图多题保留按序号配对），保留独立选项分歧与确实缺图的拦截。学生总览和教师题号导航显示当前材料的选项、短答案或两行正文摘录；教师待处理提醒按全局明确错误数（`errorTotal`）区分红黄。双端题图回看通过登录会话内存缓存复用缩略图与 `model` 预览并后台预热当前及相邻已答题，保留 `no-store` 与 `HEAD` 逐次鉴权。Chrome 与 WebKit 使用隔离 PostgreSQL、合成题图和受控网络完成回归。规则见[ACT 题号与证据](../subsystems/act-transcription.md)、[总览预览](../subsystems/managed-answer-previews.md)、[答案与原图](../subsystems/managed-exam-answers.md)和[题图提交](../subsystems/managed-exam-submissions.md)。
 
-考试分支通过契约 295 项、Agent 离线核验与转录 117 项、图片缓存与媒体读取单元 22 项，以及 165 项中心考试集成检查、36 项界面与同步检查、7 项非选择题答案检查（集成与浏览器共 208 项）。考试 Web 构建及文档门禁检查通过。
+考试分支通过契约 293 项、Agent 离线核验与转录 161 项、图片缓存与媒体读取单元 22 项，以及 165 项中心考试集成检查、36 项界面与同步检查、7 项非选择题答案检查（集成与浏览器共 208 项）。考试 Web 构建及文档门禁检查通过。

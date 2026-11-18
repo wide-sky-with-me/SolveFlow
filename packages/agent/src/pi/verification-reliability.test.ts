@@ -20,7 +20,7 @@ it.each([
   { name: 'missing part', coverage: [unit('(a)')] },
   { name: 'duplicate part', coverage: [unit('(a)'), unit('(a)')] },
   { name: 'extra requirement seen in the image', coverage: [unit('(a)'), unit('(b)'), unit('(c)')] },
-  { name: 'unrelated question', coverage: [unit('(a)', 9), unit('(b)', 9)] },
+  { name: 'mismatched part label', coverage: [unit('(a)'), unit('(x)')] },
   { name: 'no substantive check', coverage: [unit('(a)'), { ...unit('(b)'), checked: ['transcription'] }] },
   { name: 'unreadable part', coverage: [unit('(a)'), { ...unit('(b)'), verdict: 'unknown' }] },
 ])('does not publish multipart PASS with $name on either execution path', async ({ coverage }) => {

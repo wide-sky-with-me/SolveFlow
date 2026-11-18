@@ -53,43 +53,19 @@ it('allows an incidental source difference only with a specific observation and 
   expect(assessVerificationCoverage(VerificationSchema.parse({ ...report, evidenceStatus: 'uncertain' }), answer()).verdict).toBe('unknown');
   expect(assessVerificationCoverage(VerificationSchema.parse({ ...report, actTranscription: { ...report.actTranscription, tables: 'fail' } }), answer()).verdict).not.toBe('pass');
 });
-it('accepts the exact printed single-question number and distinguishes an internal mismatch from missing material', () => {
+it('ignores printed questionNumber differences on single-question checks while retaining genuine option disagreements', () => {
   const candidate = answer();
-  candidate.problem.sourceNumber = '55';
-  const item = { questionNumber: 55, verdict: 'pass', checked: ['transcription','logic'] };
-  const review = { ...pass, actTranscription: checks };
-  expect(assessVerificationCoverage(VerificationSchema.parse({ ...review, coverage: [item] }), candidate).verdict).toBe('pass');
-  const other = assessVerificationCoverage(VerificationSchema.parse({ ...review, coverage: [{ ...item, questionNumber: 56 }] }), candidate);
-  expect(other).toMatchObject({ verdict: 'unknown', issues: [{ code: 'REVIEW_INCOMPLETE' }] });
-});
-
-it('binds a printed ACT Item label to the independently checked choice and retains genuine disagreements', () => {
-  const candidate = answer();
-  candidate.problem.sourceNumber = 'Item 55';
   const choice = { questionNumber: 55, selectedOptions: ['B'], decisiveEvidence: 'The first table row gives a ratio of 1 to 7.' };
   const review = { ...pass, evidenceStatus: 'sufficient', actTranscription: checks, independentChoices: [choice],
     coverage: [{ questionNumber: 55, verdict: 'pass', checked: ['transcription', 'logic'] }] };
-  const assess = (value: unknown) => assessVerificationCoverage(VerificationSchema.parse(value), candidate).verdict;
-  expect(assess(review)).toBe('pass');
+  const assess = (value: unknown, target = candidate) => assessVerificationCoverage(VerificationSchema.parse(value), target).verdict;
+  for (const label of [undefined, '55', 'Item 55', 'Item #9', 'Items 55–56']) {
+    const next = AnswerCandidateSchema.parse({ ...candidate, problem: { ...candidate.problem, sourceNumber: label } });
+    expect(assess(review, next)).toBe('pass');
+    expect(assess({ ...review, independentChoices: [{ ...choice, questionNumber: 38 }], coverage: [{ questionNumber: 38, verdict: 'pass', checked: ['transcription', 'logic'] }] }, next)).toBe('pass');
+    expect(parseGeneratedVerification(review, next).verdict).toBe('pass');
+  }
   expect(assess({ ...review, independentChoices: [{ ...choice, selectedOptions: ['D'] }] })).toBe('fail');
-  expect(assess({ ...review, independentChoices: [{ ...choice, questionNumber: 56 }] })).toBe('unknown');
-  for (const label of ['Item #55', '#55', '55.']) {
-    candidate.problem.sourceNumber = label;
-    expect(assess(review)).toBe('pass');
-  }
-  for (const label of ['Items 55–56', '55(b)', 'Module 55']) {
-    candidate.problem.sourceNumber = label;
-    expect(assess(review)).toBe('unknown');
-  }
-});
-
-it('rejects unmatched questionNumber on fresh single-item verification when sourceNumber is absent so repair can omit it', () => {
-  const unlabelled = AnswerCandidateSchema.parse({ ...answer(), problem: { ...answer().problem, sourceNumber: undefined } });
-  const choice = { questionNumber: 45, selectedOptions: ['B'], decisiveEvidence: 'Row 1 gives 1:7.' };
-  const withNumber = { ...pass, evidenceStatus: 'sufficient', actTranscription: checks, independentChoices: [choice], coverage: [{ questionNumber: 45, verdict: 'pass', checked: ['transcription', 'logic'] }] };
-  expect(() => parseGeneratedVerification(withNumber, unlabelled)).toThrow('省略questionNumber');
-  const omitted = { ...withNumber, independentChoices: [{ selectedOptions: ['B'], decisiveEvidence: 'Row 1 gives 1:7.' }], coverage: [{ verdict: 'pass', checked: ['transcription', 'logic'] }] };
-  expect(assessVerificationCoverage(parseGeneratedVerification(omitted, unlabelled), unlabelled, 'act').verdict).toBe('pass');
 });
 
 it('retains an explicit ACT transcript item number when the optional printed label is absent, without printing the single-item fallback', () => {
