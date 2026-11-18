@@ -18,6 +18,7 @@ import { useAttempt } from './use-attempt.js';
 import { Icon } from '@solveflow/web-ui/icons';
 import { ImageViewer } from './image-viewer.js';
 import { QuestionContent, QuestionImages } from './question-content.js';
+import { QuestionEvidence } from './question-evidence.js';
 import { ReviewModeTabs, type ReviewMode } from './review-mode-tabs.js';
 const activityLabels: Record<ExamAttempt['activity'][number]['action'], string> = { select_slot: '切换到', select_module: '进入', skip_slot: '跳过', skip_module: '跳过模块' };
 type Detail = z.infer<typeof ExamDetailSchema>;
@@ -135,6 +136,7 @@ export function Monitor({ id, initialSlotId, onClose }: { id: string; initialSlo
         <div className="review-layout">
           <section className="review-question" aria-label="题目与原图">
             <QuestionImages images={detail.slot.images} onOpen={setPreview}/>
+            {snapshotSlot && !active && !shownAnswer?.humanConfirmed && <QuestionEvidence problem={problem ?? null} outcome={detail.outcome}/>}
             {problem && <QuestionContent problem={problem} selectedOptions={mode === 'manual' && draft?.choices ? draft.options : shownAnswer?.selectedOptions ?? []}/>}
           </section>
           <section className="review-response" aria-label="答案与处理">

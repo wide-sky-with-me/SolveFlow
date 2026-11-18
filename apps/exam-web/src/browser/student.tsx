@@ -373,7 +373,7 @@ export function StudentAttempt({ id, onExit, focus }: {
         {slot.errorCode === 'QUOTA_EXCEEDED' && <ErrorText error="今日调用额度已用完。"/>}
       {slot && <nav className="question-paging" aria-label="逐题导航"><button className="secondary" disabled={busy || navBusy || !previousSlot} onClick={() => { if (previousSlot) void navigate({ action: 'select_slot', slotId: previousSlot.id }); }}><Icon name="chevron-right" className="previous-chevron"/>上一题</button>{active && slot.runId && !closed && <button className="quiet stop-answer" disabled={busy || navBusy} onClick={() => { void api('/runs/' + slot.runId + '/cancel', z.object({ ok: z.boolean() }), { method: 'POST' }).then(() => refresh()).catch(e => setError(e instanceof Error ? e.message : '停止失败。')); }}>停止作答</button>}{atSectionEnd && nextModule && !closed ? <button className="primary" disabled={busy || navBusy} onClick={() => void navigate({ action: 'select_module', moduleId: nextModule.id })}><span className="next-module-label" title={nextModule.title}>进入{nextModule.title}</span><Icon name="chevron-right"/></button> : <button className="primary" disabled={busy || navBusy || !nextSlot} onClick={() => { if (nextSlot) void navigate({ action: 'select_slot', slotId: nextSlot.id }); }}>下一题<Icon name="chevron-right"/></button>}</nav>}
       </div>}
-      {slot && <StudentAnswer key={slot.id} slot={slot} onSync={refresh}/>}
+      {slot && <StudentAnswer key={slot.id} slot={slot} onSync={refresh} onSupplement={() => choose('supplement')} supplementDisabled={closed || busy || navBusy}/>}
 
       {skipped.length > 0 && <button className="quiet skipped-link" onClick={() => { setNavModule(skipped[0]?.moduleId ?? module.id); setNavOpen(true); }}>已跳过 {skipped.length} 题</button>}
     </section>}

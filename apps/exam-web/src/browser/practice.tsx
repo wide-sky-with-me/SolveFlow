@@ -10,6 +10,7 @@ import { RichText } from './rich-text.js';
 import { api, RequestError } from './api.js';
 import { ErrorText, statusLabels } from './components.js';
 import { ImageViewer } from './image-viewer.js';
+import { QuestionEvidence } from './question-evidence.js';
 
 /** A disposable question: no localStorage, IndexedDB, media upload or exam record. */
 export function StudentPractice() {
@@ -58,11 +59,13 @@ export function StudentPractice() {
     event.currentTarget.value = '';
     if (!file || busy) return;
     const token = ++generation.current, controller = new AbortController(); operation.current = controller;
-    const id = newRequestId(); current.current = id;
-    setBusy(true); setError(''); setState(null); setPreview(false);
+    const id = newRequestId();
+    setBusy(true); setError(''); setPreview(false);
     try {
       const source = await browserImage(file, { maxBytes: MAX_SOURCE_IMAGE_BYTES, maxPixels: 20_000_000, signal: controller.signal });
       if (!mounted.current || controller.signal.aborted || generation.current !== token) return;
+      // Keep the previous result until a replacement image has been validated.
+      setState(null); current.current = id;
       if (imageUrl.current) URL.revokeObjectURL(imageUrl.current);
       imageUrl.current = URL.createObjectURL(source); setImage(imageUrl.current);
       try {
@@ -79,16 +82,18 @@ export function StudentPractice() {
     } catch (error) {
       if (mounted.current && !controller.signal.aborted && generation.current === token) {
         setError(error instanceof Error ? error.message : '拍题失败，请重试。');
-        void api('/practice/' + id + '/cancel', ExamPracticeSnapshotSchema, { method: 'POST' }).catch(() => {});
+        if (current.current === id) void api('/practice/' + id + '/cancel', ExamPracticeSnapshotSchema, { method: 'POST' }).catch(() => {});
       }
     } finally {
       if (mounted.current && generation.current === token) { setBusy(false); current.current = null; operation.current = null; }
     }
   }
   async function stop() {
-    const id = current.current; if (!id) return;
+    if (!busy) return;
+    const id = current.current;
     const token = ++generation.current; operation.current?.abort(); operation.current = null; current.current = null;
-    setBusy(false); setState(null); setError('');
+    setBusy(false); if (id) setState(null); setError('');
+    if (!id) return;
     try { await api('/practice/' + id + '/cancel', ExamPracticeSnapshotSchema, { method: 'POST' }); }
     catch (error) { if (mounted.current && generation.current === token) setError(error instanceof Error ? error.message : '停止未确认，请稍后检查。'); }
   }
@@ -99,11 +104,11 @@ export function StudentPractice() {
       {image && <button className="practice-photo" onClick={() => setPreview(true)} aria-label="查看题图"><img src={image} alt="当前题图"/></button>}
       <button className="primary practice-shutter" disabled={busy} onClick={() => choose(true)}><Icon name="camera"/><span>{image ? '拍下一题' : '拍摄题目'}</span></button>
       <button className="quiet" disabled={busy} onClick={() => choose(false)}>从相册选择</button>
-      {busy && <div className="practice-progress" role="status"><span className="practice-spinner"/>{state ? statusLabels[state.phase] ?? '正在处理…' : '正在处理题图…'}<button className="quiet" onClick={() => void stop()}>停止</button></div>}
+      {busy && <div className="practice-progress" role="status"><span className="practice-spinner"/>{state?.status === 'running' ? statusLabels[state.phase] ?? '正在处理…' : '正在处理题图…'}<button className="quiet" onClick={() => void stop()}>停止</button></div>}
     </section>
     <ErrorText error={error}/>
+    {outcome && (outcome.status === 'completed' || outcome.status === 'needs_clarification') && <QuestionEvidence problem={outcome.candidate.problem} outcome={outcome} actionLabel="重拍完整题目" onSupplement={() => choose(true)} disabled={busy}/>}
     {outcome?.status === 'completed' && <section className="card answer-card"><div className="section-head"><h2>答案</h2><span className={'badge ' + (outcome.verified ? 'green' : 'amber')}>{outcome.verified ? 'AI 已核验' : '待核验'}</span></div>{!!outcome.candidate.selectedOptions?.length && <strong className="answer-options">{outcome.candidate.selectedOptions.join('、')}</strong>}<RichText text={outcome.candidate.answer}/><details><summary>题目与解析</summary><RichText text={outcome.candidate.problem.text}/>{outcome.candidate.problem.options?.map(option => <div className="option" key={option.label}><b>{option.label}</b><RichText text={option.text}/></div>)}{outcome.candidate.steps.map((step, index) => <RichText key={index} text={step.explanation}/>)}</details></section>}
-    {outcome?.status === 'needs_clarification' && <section className="card"><h2>需要更清晰的题图</h2>{outcome.candidate.clarificationQuestions.map((text, index) => <p key={index}>{text}</p>)}</section>}
     {(outcome?.status === 'failed' || outcome?.status === 'cancelled') && <ErrorText error={outcome.error.message}/>}
     <input hidden ref={picker} type="file" accept={IMAGE_INPUT_ACCEPT} onChange={event => void picked(event)}/>
     {preview && image && <ImageViewer key={image} src={image} local onClose={() => setPreview(false)}/>}

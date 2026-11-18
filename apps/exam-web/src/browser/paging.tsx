@@ -48,7 +48,7 @@ export function useListQuery() {
 export function ListSearch({value,onSearch,onDraftChange,label='搜索',disabled=false}:{value:string;onSearch:(q:string)=>void;onDraftChange?:(q:string)=>void;label?:string;disabled?:boolean}) {
     const [draft,setDraft]=useState(value);useEffect(()=>setDraft(value),[value]);
     function submit(){onSearch(draft.trim());}
-    return <div className="list-search" role="search"><input type="search" aria-label={label} placeholder={label} maxLength={120} disabled={disabled} value={draft} onChange={e=>{setDraft(e.target.value);if(onDraftChange)onDraftChange(e.target.value);else if(!e.target.value)onSearch('');}} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();e.stopPropagation();submit();}}}/>{onDraftChange?<span className="list-search-mark" aria-hidden="true"><Icon name="search"/></span>:<button type="button" className="icon-button" aria-label={'提交'+label} disabled={disabled} onClick={submit}><Icon name="search"/></button>}</div>;
+    return <div className="list-search" role="search"><input type="search" aria-label={label} placeholder={label} maxLength={120} disabled={disabled} value={draft} onChange={e=>{setDraft(e.target.value);if(onDraftChange)onDraftChange(e.target.value);else if(!e.target.value)onSearch('');}} onKeyDown={e=>{if(e.key==='Enter'&&!e.nativeEvent.isComposing&&e.nativeEvent.keyCode!==229){e.preventDefault();e.stopPropagation();submit();}}}/>{onDraftChange?<span className="list-search-mark" aria-hidden="true"><Icon name="search"/></span>:<button type="button" className="icon-button" aria-label={'提交'+label} disabled={disabled} onClick={submit}><Icon name="search"/></button>}</div>;
 }
 
 type PageMeta={page:number;pageSize:number;total:number};

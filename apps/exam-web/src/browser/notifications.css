@@ -8,23 +8,23 @@
   color: var(--feedback-ink);
 }
 
-.student-notice.feedback-tone-info {
+.student-notice:is(.feedback-tone-info,.feedback-tone-warning) {
   background: var(--feedback-bg);
   color: var(--feedback-ink);
   border-color: var(--feedback-border);
   box-shadow: none;
 }
 
-.student-notice.feedback-tone-info>details>summary {
+.student-notice:is(.feedback-tone-info,.feedback-tone-warning)>details>summary {
   background: var(--feedback-bg);
   color: var(--feedback-ink);
 }
 
-.student-notice.feedback-tone-info>details>summary:hover {
+.student-notice:is(.feedback-tone-info,.feedback-tone-warning)>details>summary:hover {
   background: var(--feedback-icon-bg);
 }
 
-.student-notice.feedback-tone-info>details>summary .feedback-icon {
+.student-notice:is(.feedback-tone-info,.feedback-tone-warning)>details>summary .feedback-icon {
   background: var(--feedback-icon-bg);
   color: var(--feedback-ink);
 }

@@ -19,7 +19,8 @@ export function TeacherAttention({ hidden, onOpen, onViewAll, onSpaceChange }: {
         const observer = new ResizeObserver(measure);
         observer.observe(element); window.addEventListener('resize', measure); measure();
         return () => { observer.disconnect(); window.removeEventListener('resize', measure); };
-    }, [visible, hidden, host, onSpaceChange]);
+    // Reserve expanded space before paint, without waiting for ResizeObserver delivery.
+    }, [visible, hidden, host, onSpaceChange, expanded]);
     useEffect(() => {
         const change = () => setHost(document.fullscreenElement ?? document.body);
         document.addEventListener('fullscreenchange', change);
