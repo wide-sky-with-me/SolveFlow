@@ -64,17 +64,30 @@ describe.skipIf(!url)('exam event hierarchy and standalone teacher messages', ()
     async function parent(title: string) { return createExamEvent(pool(), manager, { ...requestId(), title, templateId }); }
     function concrete(title: string, students = [student.id], teachers = [teacher.id]) { return { ...requestId(), title, opensAt: new Date(Date.now() - 60000).toISOString(), closesAt: null, studentIds: students, supportIds: teachers, mode: 'original', wrongCounts: [] }; }
     async function detail(id: string) { return (await examEventDetail(pool(), manager, id)).event; }
-    it('photo storage: a full account can use extra capacity only on its authorized attempt', async () => {
+    it('photo storage: enforces 1 GiB per attempt without historical attempts blocking new sittings', async () => {
         const child = await createUser(pool(), manager, { username:'photo_quota', displayName:'图片额度测试', password:'synthetic-password-123', roles:['student'] }, password);
-        const sitting = await createSitting(pool(), manager, { templateId, title:'图片额度', opensAt:new Date(Date.now()-60000).toISOString(), closesAt:null });
+        const priorSitting = await createSitting(pool(), manager, { templateId, title:'历史考试图片额度', opensAt:new Date(Date.now()-60000).toISOString(), closesAt:null });
+        const priorAssignment = await createAssignment(pool(), manager, { sittingId:priorSitting.id, studentId:child.id });
+        const priorAttempt = await startAttempt(pool(), child, priorAssignment.id);
+        const priorSlot = (await snapshot(pool(), child, priorAttempt.id)).slots[0];
+        if (!priorSlot) throw new Error('MISSING_PRIOR_PHOTO_SLOT');
+        const fillAttemptGiB = (targetSlotId: string) => pool().query(`WITH inserted AS (
+            INSERT INTO exam_app.media_assets(id,owner_user_id,object_key,variant,mime_type,byte_size,width,height,sha256,state,retention_until)
+            SELECT gen_random_uuid(),$1,gen_random_uuid()::text,'source','image/jpeg',8388608,2048,2048,repeat('a',64),'ready',now()+interval '1 day' FROM generate_series(1,128)
+            RETURNING id, object_key
+          ) INSERT INTO exam_app.upload_intents(id,student_id,slot_id,client_request_id,expected_revision,object_key,max_bytes,state,asset_id,input_sha256,expires_at)
+            SELECT gen_random_uuid(),$1,$2,gen_random_uuid(),0,gen_random_uuid()::text,10485760,'validated',id,repeat('b',64),now()+interval '1 day' FROM inserted`, [child.id, targetSlotId]);
+        await fillAttemptGiB(priorSlot.id);
+        await endExamAttempt(pool(), child, priorAttempt.id);
+        const sitting = await createSitting(pool(), manager, { templateId, title:'当前考试图片额度', opensAt:new Date(Date.now()-60000).toISOString(), closesAt:null });
         const assignment = await createAssignment(pool(), manager, { sittingId:sitting.id, studentId:child.id });
         const attempt = await startAttempt(pool(), child, assignment.id);
         const slot = (await snapshot(pool(), child, attempt.id)).slots[0];
         if (!slot) throw new Error('MISSING_PHOTO_SLOT');
-        const fillGiB = () => pool().query(`INSERT INTO exam_app.media_assets(id,owner_user_id,object_key,variant,mime_type,byte_size,width,height,sha256,state,retention_until)
-            SELECT gen_random_uuid(),$1,gen_random_uuid()::text,'source','image/jpeg',8388608,2048,2048,repeat('a',64),'ready',now()+interval '1 day' FROM generate_series(1,128)`, [child.id]);
-        await fillGiB();
         const image = await sharp({ create:{width:160,height:160,channels:3,background:'white'} }).jpeg().toBuffer();
+        const firstInNewAttempt = await upload(pool(), storage, child, slot.id, randomUUID(), image);
+        expect(firstInNewAttempt.id).toMatch(/^[0-9a-f-]{36}$/);
+        await fillAttemptGiB(slot.id);
         await expect(upload(pool(),storage,child,slot.id,randomUUID(),image,randomUUID())).rejects.toThrow('图片存储已达上限');
         const browser = await chromium.launch({ executablePath:'/usr/bin/google-chrome' });
         try {
@@ -91,7 +104,7 @@ describe.skipIf(!url)('exam event hierarchy and standalone teacher messages', ()
             const key = randomUUID();
             const extended = await upload(pool(),storage,child,slot.id,key,image,attempt.id);
             expect(await upload(pool(),storage,child,slot.id,key,image,attempt.id)).toEqual(extended);
-            await fillGiB();
+            await fillAttemptGiB(slot.id);
             await expect(upload(pool(),storage,child,slot.id,randomUUID(),image,attempt.id)).rejects.toThrow('图片存储已达上限');
         } finally { await browser.close(); }
     }, 30000);

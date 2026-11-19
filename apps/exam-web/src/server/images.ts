@@ -39,10 +39,30 @@ export async function upload(pool: Pool, storage: ExamStorage, actor: ExamUser, 
                 return { existing: old[0].id, assets: [] };
             throw conflict('图片正在上传或已失效，请重试选择。');
         }
-        const used = await one(c, z.coerce.number(), "SELECT coalesce(sum(byte_size),0) AS value FROM exam_app.media_assets WHERE owner_user_id=$1 AND state IN ('quarantined','ready','deleting')", [actor.id]);
+        // Decision: .agents/notes/implemented/architecture/2026-11-19-attempt-scoped-media-quota.md
+        const used = await one(c, z.coerce.number(), `WITH roots AS (
+            SELECT coalesce(m.parent_asset_id,m.id) AS root_id
+            FROM exam_app.upload_intents i
+            JOIN exam_app.question_slots q ON q.id=i.slot_id AND q.student_id=i.student_id
+            JOIN exam_app.media_assets m ON m.id=i.asset_id AND m.owner_user_id=i.student_id
+            WHERE i.student_id=$1 AND q.attempt_id=$2
+            UNION
+            SELECT coalesce(m.parent_asset_id,m.id) AS root_id
+            FROM exam_app.revision_images ri
+            JOIN exam_app.question_revisions rv ON rv.id=ri.revision_id AND rv.student_id=ri.student_id
+            JOIN exam_app.question_slots q ON q.id=rv.slot_id AND q.student_id=rv.student_id
+            JOIN exam_app.media_assets m ON m.id=ri.asset_id AND m.owner_user_id=ri.student_id
+            WHERE ri.student_id=$1 AND q.attempt_id=$2
+          ), family AS (
+            SELECT f.id,f.byte_size FROM roots r JOIN exam_app.media_assets f ON f.id=r.root_id
+            WHERE f.owner_user_id=$1 AND f.state IN ('quarantined','ready','deleting')
+            UNION
+            SELECT f.id,f.byte_size FROM roots r JOIN exam_app.media_assets f ON f.parent_asset_id=r.root_id AND f.parent_asset_id IS NOT NULL
+            WHERE f.owner_user_id=$1 AND f.state IN ('quarantined','ready','deleting')
+          ) SELECT coalesce(sum(byte_size),0) AS value FROM family`, [actor.id, attemptId]);
         const limitGiB = attemptId === extraMediaAttemptId ? 2 : 1;
         if (used + Object.values(images).reduce((n, v) => n + v.data.length, 0) > limitGiB * 1024 ** 3)
-            throw conflict(`图片存储已达上限（${limitGiB} GiB），请联系管理员。图片已保留，额度调整后可直接重试。`);
+            throw conflict(`本场考试图片存储已达上限（${limitGiB} GiB），请联系管理员。图片已保留，额度调整后可直接重试。`);
         const daily = await one(c, z.coerce.number(), "SELECT count(*) AS value FROM exam_app.upload_intents WHERE student_id=$1 AND created_at>=date_trunc('day',now())", [actor.id]);
         if (daily >= 500)
             throw conflict('今日上传次数已达上限。');
