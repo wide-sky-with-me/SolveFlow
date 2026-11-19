@@ -5,7 +5,7 @@ import { EXAM_LABELS } from '@solveflow/contracts/exam';
 import { Select, type SelectOption } from '@solveflow/web-ui/select';
 import { Icon } from '@solveflow/web-ui/icons';
 import { ErrorText, RefreshButton } from './components.js';
-import { StudentProgressTable } from './dashboard.js';
+import { TrackingCardsBoard } from './tracking-cards.js';
 import { RemoteSelect } from './remote-select.js';
 import { assignmentDisplay, formatExamWindow } from './exam-presentation.js';
 import './assignment-history.css';
@@ -17,7 +17,7 @@ type Filter={key:string;label:string;options:SelectOption[]};
 const roles={student:'学生',support:'老师 / 技术支持',manager:'场次管理员',admin:'系统管理员'};
 const states={active:'正常',disabled:'已停用',archived:'已归档'};
 
-function ListPanel<T>({schema,endpoint,label,search,filters=[],render,version=0,scene,initialScene='',actions,params={}}:{schema:z.ZodType<Page<T>>;endpoint:string;label:string;search:string;filters?:Filter[];render:(items:T[])=>ReactNode;version?:number;scene?:boolean;initialScene?:string;actions?:ReactNode;params?:Record<string,string>}) {
+function ListPanel<T>({schema,endpoint,label,search,filters=[],render,version=0,scene,initialScene='',actions,params={},hideOnlineSummary=false}:{schema:z.ZodType<Page<T>>;endpoint:string;label:string;search:string;filters?:Filter[];render:(items:T[],data:Page<T>)=>ReactNode;version?:number;scene?:boolean;initialScene?:string;actions?:ReactNode;params?:Record<string,string>;hideOnlineSummary?:boolean}) {
     const list=useListQuery(),query=useStagedFilters({q:'',sittingId:initialScene});
     const resource=usePageResource(schema,pageUrl(endpoint,{...params,...query.applied,page:list.page,pageSize:list.pageSize}));
     function apply(){query.apply();list.setPage(1);}
@@ -26,8 +26,8 @@ function ListPanel<T>({schema,endpoint,label,search,filters=[],render,version=0,
     useEffect(()=>{if(version)void resource.refresh(true);},[version]);
     return <section className="panel paged-panel" aria-label={label}>
       <div className="list-toolbar"><ListSearch label={search} value={query.draft.q??''} onDraftChange={value=>query.setField('q',value)} onSearch={apply}/>{filters.map(filter=><Select key={filter.key} label={filter.label} value={query.draft[filter.key]??''} onChange={value=>query.setField(filter.key,value)} options={filter.options}/>)}{scene&&<RemoteSelect label="具体考试" allLabel="全部考试" value={query.draft.sittingId??''} onChange={value=>query.setField('sittingId',value)} schema={ExamChoicePageSchema} endpoint="/admin/dashboard/sittings/page"/>}<FilterActions {...query} onApply={apply} onReset={reset}/><RefreshButton busy={resource.refreshing} disabled={resource.loading} onRefresh={resource.refreshManually}/>{actions&&<div className="list-actions">{actions}</div>}</div>
-      <ErrorText error={resource.error}/>{resource.data?.onlineTotal!==undefined&&<div className="list-summary">{resource.data.onlineTotal} 位在线</div>}
-      {!resource.data&&!resource.error&&<p className="empty">正在读取…</p>}{resource.data&&!resource.data.items.length&&<p className="empty">没有匹配记录</p>}{resource.data&&resource.data.items.length>0&&render(resource.data.items)}
+      <ErrorText error={resource.error}/>{!hideOnlineSummary&&resource.data?.onlineTotal!==undefined&&<div className="list-summary">{resource.data.onlineTotal} 位在线</div>}
+      {!resource.data&&!resource.error&&<p className="empty">正在读取…</p>}{resource.data&&!resource.data.items.length&&<p className="empty">没有匹配记录</p>}{resource.data&&resource.data.items.length>0&&render(resource.data.items,resource.data)}
       <Pagination label={label} data={resource.data} pendingPage={list} disabled={resource.loading&&!resource.data} onPage={list.setPage} onPageSize={list.setPageSize}/>
     </section>;
 }
@@ -37,7 +37,7 @@ export function UserList({admin,onEdit,onCreate,version}:{admin:boolean;onEdit:(
 }
 
 export function TrackingList({onWatch,initialScene=''}:{onWatch:(id:string)=>void;initialScene?:string}) {
-    return <ListPanel schema={ExamProgressPageSchema} endpoint="/admin/progress/page" label="学生进度" search="搜索学生或考试" initialScene={initialScene} scene filters={[{key:'status',label:'答题状态',options:[{value:'',label:'全部状态'},{value:'online',label:'在线'},{value:'attention',label:'待处理'},{value:'active',label:'处理中'}]}]} render={items=><StudentProgressTable progress={items} onWatch={onWatch}/>}/>;
+    return <ListPanel schema={ExamProgressPageSchema} endpoint="/admin/progress/page" label="学生进度" search="搜索学生或考试" initialScene={initialScene} scene hideOnlineSummary filters={[{key:'status',label:'答题状态',options:[{value:'',label:'全部状态'},{value:'in_progress',label:'进行中'},{value:'online',label:'在线'},{value:'attention',label:'待处理'},{value:'active',label:'处理中'},{value:'ended',label:'已结束'}]}]} render={(items,data)=><TrackingCardsBoard items={items} total={data.total} onlineTotal={data.onlineTotal} onWatch={onWatch}/>}/>;
 }
 
 export function AssignmentList({version,onWatch,onManage}:{version:number;onWatch:(id:string)=>void;onManage?:(id:string)=>void}) {

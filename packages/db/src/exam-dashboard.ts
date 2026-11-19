@@ -6,13 +6,14 @@ import { z } from 'zod';
 import { ExamDashboardQuerySchema, ExamDashboardSchema, type ExamUser } from '@solveflow/contracts/managed-exam';
 import { forbidden, isAdmin, one, rows, tx } from './exam-store.js';
 import { slotFrom } from './exam-attempts.js';
+import { ongoingAttemptSql } from './exam-list-sql.js';
 import { attemptTimingJson } from './exam-timing.js';
 
 // Aggregate in SQL before pagination; a 500-row management list is not a system total.
 const visible = `permitted AS (
-    SELECT a.id AS assignment_id,a.student_id,u.display_name AS student_name,s.id AS sitting_id,s.title,a.opens_at,a.closes_at,s.template_id,x.id AS attempt_id,t.exam_type,u.state AS student_state,u.auth_version
+    SELECT a.id AS assignment_id,a.student_id,u.display_name AS student_name,s.id AS sitting_id,s.title,a.opens_at,a.closes_at,s.template_id,x.id AS attempt_id,coalesce(x.id IS NOT NULL AND ${ongoingAttemptSql('x')},false) AS ongoing,t.exam_type,u.state AS student_state,u.auth_version
     FROM exam_app.exam_assignments a JOIN exam_app.exam_sittings s ON s.id=a.sitting_id JOIN exam_app.users u ON u.id=a.student_id JOIN exam_app.exam_templates t ON t.id=s.template_id
-    LEFT JOIN LATERAL(SELECT id FROM exam_app.exam_attempts WHERE assignment_id=a.id ORDER BY attempt_no DESC LIMIT 1) x ON true
+    LEFT JOIN LATERAL(SELECT id,ended_at,state FROM exam_app.exam_attempts WHERE assignment_id=a.id ORDER BY attempt_no DESC LIMIT 1) x ON true
     WHERE s.archived_at IS NULL AND a.state<>'revoked' AND ($1::boolean OR ($2::boolean AND s.manager_id=$4) OR ($3::boolean AND EXISTS(SELECT 1 FROM exam_app.staff_assignments f WHERE f.assignment_id=a.id AND f.staff_id=$4 AND f.revoked_at IS NULL)))
 ), visible AS (SELECT * FROM permitted WHERE $5::uuid IS NULL OR sitting_id=$5), slots AS (
     SELECT q.id,q.attempt_id,q.module_id,q.current_revision_id,
@@ -20,7 +21,7 @@ const visible = `permitted AS (
       coalesce(h.id IS NOT NULL AND h.revision_id=q.current_revision_id,false) AS human,
       coalesce(p.display_verified AND NOT(h.id IS NOT NULL AND h.revision_id=q.current_revision_id),false) AS verified,
       (r.id IS NOT NULL AND r.finished_at IS NULL) AS active,
-      EXISTS(SELECT 1 FROM exam_app.verification_incidents i WHERE i.slot_id=q.id AND i.resolved_at IS NULL) AS attention
+      (a.ongoing AND EXISTS(SELECT 1 FROM exam_app.verification_incidents i WHERE i.slot_id=q.id AND i.resolved_at IS NULL)) AS attention
     FROM ${slotFrom} JOIN visible a ON a.attempt_id=q.attempt_id
 )`;
 
@@ -54,7 +55,7 @@ export async function dashboard(pool: pg.Pool, actor: ExamUser, raw: unknown) {
           SELECT p.created_at,false AS human FROM exam_app.answer_presentations p JOIN slots q ON q.id=p.slot_id WHERE p.created_at>=(SELECT min(at) FROM buckets)
           UNION ALL SELECT h.created_at,true FROM exam_app.teacher_reviews h JOIN slots q ON q.id=h.slot_id WHERE h.created_at>=(SELECT min(at) FROM buckets)
         ) SELECT jsonb_build_object('at',b.at,'ai',count(p.created_at) FILTER(WHERE NOT p.human),'human',count(p.created_at) FILTER(WHERE p.human)) AS value FROM buckets b LEFT JOIN publications p ON p.created_at>=b.at AND p.created_at<b.at+interval '5 minutes' GROUP BY b.at ORDER BY b.at`, params);
-        const issues = await rows(c, ExamDashboardSchema.shape.issues.element, `WITH ${visible} SELECT jsonb_build_object('reason',i.reason,'count',count(*)) AS value FROM exam_app.verification_incidents i JOIN visible a ON a.attempt_id=i.attempt_id WHERE i.resolved_at IS NULL GROUP BY i.reason ORDER BY count(*) DESC,i.reason`, params);
+        const issues = await rows(c, ExamDashboardSchema.shape.issues.element, `WITH ${visible} SELECT jsonb_build_object('reason',i.reason,'count',count(*)) AS value FROM exam_app.verification_incidents i JOIN visible a ON a.attempt_id=i.attempt_id WHERE a.ongoing AND i.resolved_at IS NULL GROUP BY i.reason ORDER BY count(*) DESC,i.reason`, params);
         const modules = await rows(c, ExamDashboardSchema.shape.modules.element, `WITH ${visible}, slot_counts AS (
           SELECT module_id,count(*) FILTER(WHERE answered) AS answered,count(*) FILTER(WHERE attention) AS attention FROM slots GROUP BY module_id
         ), module_counts AS (

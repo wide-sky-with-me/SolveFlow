@@ -25,7 +25,7 @@ import type { ModelServices } from './model-services.js';
 import { ExamModelServiceCodeSchema, ExamModelServiceSelectSchema, ExamModelServiceUpdateSchema, ExamModelServiceCheckSchema } from '@solveflow/contracts/exam-model-services';
 import { ExamTeacherMessageCreateSchema } from '@solveflow/contracts/managed-exam';
 import { sendTeacherMessage, teacherMessages, readTeacherMessage } from '@solveflow/db';
-import { createExamEvent, examEventPage, examEventDetail, examEventMembers, updateExamEvent, deleteExamEvent, concreteExamPage, createConcreteExam, updateConcreteExam, deleteConcreteExam, updateAllocation } from '@solveflow/db';
+import { createExamEvent, examEventPage, examEventDetail, examEventMembers, updateExamEvent, deleteExamEvent, concreteExamPage, createConcreteExam, updateConcreteExam, deleteConcreteExam, updateAllocation, listRoleProfiles, updateRoleProfile, updateRoleMembers } from '@solveflow/db';
 function legacyAssignment({ entryState: _entryState, ...value }: z.infer<typeof ExamAssignmentSchema>) { return value; }
 function assignmentResponse(value: Awaited<ReturnType<typeof assignmentPage>>, includeEntry: boolean, includeMessages=false) {
     const {messages,...legacy}=value;
@@ -234,6 +234,9 @@ export function createExamService(options: ExamServiceOptions) {
         throw forbidden(); return c.json(await createUser(pool, user, input, await hashPassword(input.password)), 201); });
     app.post('/api/v2/admin/users/:id', async (c) => { const { user } = await session(c.req.header('cookie')); if (!user.roles.includes('admin'))
         throw forbidden(); const input = ExamUserUpdateSchema.parse(await jsonBody(c.req.raw)); return c.json(await updateUser(pool, user, z.uuid().parse(c.req.param('id')), input, input.password ? await hashPassword(input.password) : undefined)); });
+    app.get('/api/v2/admin/roles', async c => c.json(await listRoleProfiles(pool, (await session(c.req.header('cookie'))).user)));
+    app.post('/api/v2/admin/roles/:code', async c => c.json(await updateRoleProfile(pool, (await session(c.req.header('cookie'))).user, c.req.param('code'), await jsonBody(c.req.raw))));
+    app.post('/api/v2/admin/roles/:code/members', async c => c.json(await updateRoleMembers(pool, (await session(c.req.header('cookie'))).user, c.req.param('code'), await jsonBody(c.req.raw))));
     app.get('/api/v2/admin/templates', async (c) => { const { user } = await session(c.req.header('cookie')); if (!isManager(user))
         throw forbidden(); return c.json(await templates(pool)); });
     app.post('/api/v2/admin/templates', async (c) => c.json(await createTemplate(pool, (await session(c.req.header('cookie'))).user, await jsonBody(c.req.raw)), 201));

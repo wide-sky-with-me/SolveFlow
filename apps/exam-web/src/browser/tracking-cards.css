@@ -1,0 +1,242 @@
+.tracking-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 20px 0;
+}
+
+.tracking-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tracking-view-tabs {
+  margin-bottom: 0;
+}
+
+.tracking-view-tabs > button {
+  min-height: 38px;
+  padding: 7px 14px;
+  font-size: 13px;
+}
+
+.tracking-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 14px 20px 18px;
+}
+
+.tracking-group {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--field);
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+
+.tracking-group-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.tracking-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.tracking-group-title h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.tracking-group-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tracking-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: 12px;
+}
+
+.tracking-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--ui-card-shadow);
+  min-width: 0;
+  transition: border-color var(--ui-fast) ease, box-shadow var(--ui-fast) ease;
+}
+
+.tracking-card.is-clickable {
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .tracking-card.is-clickable:hover {
+    border-color: var(--blue);
+  }
+}
+
+.tracking-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tracking-card-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tracking-card-identity strong {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.tracking-sub {
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.tracking-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.tracking-online {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.tracking-location {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  color: var(--ink);
+}
+
+.tracking-location.is-idle {
+  color: var(--muted);
+}
+
+.tracking-progress-track {
+  margin: 0;
+}
+
+.tracking-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: var(--field);
+  font-variant-numeric: tabular-nums;
+}
+
+.tracking-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tracking-metric > span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tracking-metric > strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.tracking-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+
+.tracking-extra {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tracking-open-btn {
+  min-height: 36px;
+  padding: 6px 12px;
+  font-size: 13px;
+  margin-left: auto;
+}
+
+@media (max-width: 420px) {
+  .tracking-bar {
+    padding: 12px 12px 0;
+  }
+  .tracking-groups {
+    padding: 12px 12px 14px;
+  }
+  .tracking-group {
+    padding: 12px;
+  }
+  .tracking-card {
+    padding: 12px;
+  }
+  .tracking-open-btn {
+    width: 100%;
+  }
+}

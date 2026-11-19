@@ -14,6 +14,7 @@ import { ExamEvents } from './exam-events.js';
 import { SittingAllocations } from './sitting-allocations.js';
 import { TeacherAttention } from './teacher-attention.js';
 import { ModelServicesSettings } from './model-services-settings.js';
+import { RolePermissions } from './role-permissions.js';
 const roleLabels = { student: '学生', support: '老师 / 技术支持', manager: '场次管理员', admin: '系统管理员' };
 export function Admin({ user, collapsed=false, mobileNav=false, onNavClose=()=>{} }:{user:ExamUser;collapsed?:boolean;mobileNav?:boolean;onNavClose?:()=>void}) {
     const [page,setPage]=useState('overview'),[issueFilter,setIssueFilter]=useState(''),[issueScene,setIssueScene]=useState(''),[error,setError]=useState(''),[version,setVersion]=useState(0),[tab,setTab]=useState('sittings'),[trackingScene,setTrackingScene]=useState('');
@@ -49,7 +50,7 @@ export function Admin({ user, collapsed=false, mobileNav=false, onNavClose=()=>{
     {page==='issues'&&<IssueQueue key={JSON.stringify([issueFilter,issueScene])} initialReason={issueFilter} initialSitting={issueScene} onOpen={item=>{setWatchSlot(item.slotId);setWatch(item.attemptId);}}/>}
     {page==='users'&&<UserList version={version} admin={user.roles.includes('admin')} onCreate={()=>{setEditing(null);setDialog('user');setError('');}} onEdit={person=>{setEditing(person);setDialog('user');setError('');}}/>}
     {page==='sittings'&&<><div className="management-tabs" role="tablist" aria-label="考试管理">{[['sittings','场次'],['assignments','分配记录'],['templates','考试模板']].map(([id,title])=><button role="tab" key={id} aria-selected={tab===id} className={tab===id?'selected':''} onClick={()=>setTab(id??'sittings')}>{title}</button>)}</div>{tab==='sittings'?<ExamEvents onManage={setAllocationSitting} createTemplate={dialog==='sitting'?templateChoice:null} onCreateClose={()=>setDialog(null)} onSaved={refresh}/>:tab==='assignments'?<AssignmentList version={version} onWatch={watchStudent} onManage={setAllocationSitting}/>:<TemplateList version={version} actions={<><button className="secondary" onClick={()=>setDialog('template')}>自定义模板</button><button className="primary" onClick={()=>setDialog('catalog')}><Icon name="plus"/>选择考试模板</button></>} onUse={item=>{setTemplateChoice(item.id);setDialog('sitting');setTab('sittings');}}/>}</>}
-    {page==='roles'&&<section className="panel table-wrap"><table><thead><tr><th>角色</th><th>范围</th><th>操作</th></tr></thead><tbody><tr><td>学生</td><td>自己的考试</td><td>拍题、补图、回看</td></tr><tr><td>技术支持</td><td>分配给自己的学生</td><td>跟踪、重答、核验及人工确认</td></tr><tr><td>场次管理员</td><td>管理的场次</td><td>新建学生、发布、分配与统计</td></tr><tr><td>系统管理员</td><td>系统范围</td><td>用户身份、停用与配置</td></tr></tbody></table></section>}
+    {page==='roles'&&user.roles.includes('admin')&&<RolePermissions currentUser={user} onUsersChanged={refresh}/>}
     </div>
     {dialog==='catalog'&&<CatalogPicker onClose={()=>{setDialog(null);void refresh();}}/>}
     {allocationSitting&&<SittingAllocations key={allocationSitting} id={allocationSitting} onClose={()=>setAllocationSitting(null)} onSaved={refresh}/>}

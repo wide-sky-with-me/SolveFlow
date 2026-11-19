@@ -114,7 +114,7 @@ describe.skipIf(!url)('non-choice answer highlights and overview',()=>{
     try{
       expect((await context.request.post(origin+'/api/v2/auth/login',{headers:{origin},data:{username:admin.username,password:'synthetic-password-123'}})).status()).toBe(200);
       await page.goto(origin);await page.getByRole('navigation',{name:'管理导航'}).getByRole('button',{name:'实时跟踪',exact:true}).click();
-      await page.getByRole('row').filter({hasText:student.displayName}).getByRole('button',{name:'查看',exact:true}).click();
+      await page.getByRole('article').filter({hasText:student.displayName}).getByRole('button',{name:'查看',exact:true}).click();
       const monitor=page.getByRole('dialog',{name:student.displayName,exact:true});await monitor.getByRole('button',{name:'数学 · 第1题',exact:true}).click();
       const summary=monitor.locator('.review-current-answer');await browserExpect(summary.locator('.answer-fill')).toHaveText('29');
       const screenshots=join(process.cwd(),'.runtime/platform-audit-20261107/screens');await mkdir(screenshots,{recursive:true});

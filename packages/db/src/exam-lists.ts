@@ -11,7 +11,7 @@ import {
 import { forbidden, isAdmin, one, requireManager, rows, tx, userJson } from './exam-store.js';
 import { templateJson } from './exam-catalog.js';
 import { teacherMessages } from './exam-messages.js';
-import { missedAssignment, availableAssignment, inProgressAssignment, readyAssignment, endedAssignment, assignmentFrom, assignmentJson, progressJson, userScope } from './exam-list-sql.js';
+import { ongoingAttemptSql, missedAssignment, availableAssignment, inProgressAssignment, readyAssignment, endedAssignment, assignmentFrom, assignmentJson, progressJson, userScope } from './exam-list-sql.js';
 
 type PageQuery = { from: string; select: string; where: string; values: unknown[]; order: string; id: string; search: string[] };
 const numeric = z.coerce.number().int().nonnegative();
@@ -19,7 +19,7 @@ const pattern = (value: string) => '%' + value.replace(/[\\%_]/g, '\\$&') + '%';
 const staff = (actor: ExamUser) => { if (actor.state !== 'active' || !actor.roles.some(r=>r==='admin'||r==='manager'||r==='support')) throw forbidden(); };
 const staffScope = `$1::boolean OR ($3::boolean AND s.manager_id=$2) OR ($4::boolean AND EXISTS(SELECT 1 FROM exam_app.staff_assignments f WHERE f.assignment_id=a.id AND f.staff_id=$2 AND f.revoked_at IS NULL))`;
 const scopeValues = (actor: ExamUser): unknown[] => [isAdmin(actor),actor.id,actor.roles.includes('manager'),actor.roles.includes('support')];
-const pending = `EXISTS(SELECT 1 FROM exam_app.verification_incidents i JOIN exam_app.exam_attempts ix ON ix.id=i.attempt_id WHERE ix.assignment_id=a.id AND i.resolved_at IS NULL)`;
+const pending = `EXISTS(SELECT 1 FROM exam_app.verification_incidents i JOIN exam_app.exam_attempts ix ON ix.id=i.attempt_id WHERE ix.assignment_id=a.id AND i.resolved_at IS NULL AND ${ongoingAttemptSql('ix')})`;
 const available = availableAssignment;
 const latestAttempt = `LEFT JOIN LATERAL(SELECT * FROM exam_app.exam_attempts ax WHERE ax.assignment_id=a.id ORDER BY ax.attempt_no DESC LIMIT 1) x ON true`;
 const online = `EXISTS(SELECT 1 FROM exam_app.auth_sessions z WHERE z.user_id=u.id AND u.state='active' AND z.auth_version=u.auth_version AND z.revoked_at IS NULL AND z.last_seen_at>now()-interval '45 seconds' AND z.expires_at>now())`;
@@ -100,8 +100,10 @@ export async function progressPage(pool: pg.Pool, actor: ExamUser, raw: unknown)
     const query: PageQuery={from:assignmentFrom+' '+latestAttempt,select:progressJson,where:'('+staffScope+`) AND a.state<>'revoked' AND s.archived_at IS NULL`,values:scopeValues(actor),order:'a.opens_at DESC,a.id DESC',id:'a.id',search:['u.display_name','u.username','s.title']};
     if(input.sittingId)add(query,p=>`a.sitting_id=${p}`,input.sittingId);
     if(input.status==='online')query.where+=' AND '+online;
+    if(input.status==='in_progress')query.where+=' AND x.id IS NOT NULL AND '+ongoingAttemptSql('x');
     if(input.status==='attention')query.where+=' AND '+pending;
     if(input.status==='active')query.where+=` AND EXISTS(SELECT 1 FROM exam_app.question_slots q JOIN exam_app.answer_runs r ON r.id=q.current_run_id WHERE q.attempt_id=x.id AND r.finished_at IS NULL)`;
+    if(input.status==='ended')query.where+=' AND ('+endedAssignment+')';
     return readPage(pool,ExamProgressPageSchema,input,query,async c=>{
         const values=[...query.values];let where=query.where;
         if(input.q){values.push(pattern(input.q));where+=' AND ('+query.search.map(column=>column+` ILIKE $${values.length} ESCAPE E'\\\\'`).join(' OR ')+')';}

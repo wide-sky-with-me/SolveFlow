@@ -416,7 +416,7 @@ function StudentAttemptBody({ id, onExit, focus }: {
     <StudentExamStatus id={id} title={attempt.title} timing={attempt.timing} onDeadline={refresh}/>
     {!online && <div className="student-connection"><span className="badge amber" role="status">正在重连</span></div>}
     <ExamEndNotice id={id} studentId={attempt.studentId} timing={attempt.timing}/>
-    <VerificationAlerts attempt={attempt} emphasis disabled={busy || navBusy} onSelect={s => { void navigate({ action: 'select_slot', slotId: s.id }); }}/>
+    {!closed && <VerificationAlerts attempt={attempt} emphasis disabled={busy || navBusy} onSelect={s => { void navigate({ action: 'select_slot', slotId: s.id }); }}/>}
     <ResolvedAnswers resolutions={attempt.resolutions} disabled={busy || navBusy} onSelect={notice => void viewResolution(notice)}/>
     <AnswerRevisions notices={attempt.answerRevisions} disabled={busy || navBusy} onSelect={notice => void viewAnswerRevision(notice)}/>
     <ResolutionReminder resolutions={attempt.resolutions} ready={!busy && !navBusy && !pickingImage && !importing && !draft && !preview && !detail && !navOpen} onSelect={notice => void viewResolution(notice)}/>

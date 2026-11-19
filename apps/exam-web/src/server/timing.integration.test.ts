@@ -310,7 +310,7 @@ describe.skipIf(!url)('exam timing and ending', () => {
       for (const [page, username] of [[studentPage, exam.student.username], [teacherPage, 'teacher']] as const) { await page.goto(origin); await page.getByLabel('用户名').fill(username); await page.getByLabel('密码', { exact: true }).fill('synthetic-password-123'); await page.getByRole('button', { name: '登录', exact: true }).click(); }
       await browserExpect(studentPage.getByRole('button', { name: '拍摄第1题', exact: true })).toBeVisible();expect(await studentPage.getByLabel('考试用时').count()).toBe(0);
       await teacherPage.getByRole('navigation', { name: '管理导航' }).getByRole('button', { name: '实时跟踪', exact: true }).click();
-      await teacherPage.getByRole('row').filter({ hasText: exam.student.username }).getByRole('button', { name: '查看', exact: true }).click();
+      await teacherPage.getByRole('article').filter({ hasText: exam.student.username }).getByRole('button', { name: '查看', exact: true }).click();
       const teacherClock = teacherPage.getByRole('dialog').getByLabel('考试用时'); await browserExpect(teacherClock).toContainText('不限时');
       await teacherPage.getByRole('button', { name: '结束考试', exact: true }).click();
       await browserExpect(teacherPage.getByRole('dialog', { name: '结束本场考试？' })).toContainText(exam.student.username);

@@ -7,7 +7,7 @@ import { serve } from '@hono/node-server';
 import { Server } from 'node:http';
 import { chromium, webkit, expect as browserExpect, type Locator } from '@playwright/test';
 import sharp from 'sharp';
-import { connectDatabase, migrate, bootstrap, createUser, createTemplate, createSitting, createAssignment, startAttempt, snapshot, submit, claimJob, publishDraft, finishJob, endExamAttempt, allocationPage, updateAllocation, createExamEvent, examEventDetail, examEventPage, examEventMembers, concreteExamPage, createConcreteExam, updateExamEvent, updateConcreteExam, deleteConcreteExam, deleteExamEvent, sendTeacherMessage, teacherMessages, readTeacherMessage, assignmentPage, updateUser, progressPage, progress, dashboard, dashboardSittingPage, studentChoicePage, sittingPage, sittings, assignments, issueQueue } from '@solveflow/db';
+import { connectDatabase, migrate, bootstrap, createUser, createSession, authenticate, createTemplate, createSitting, createAssignment, startAttempt, snapshot, submit, claimJob, publishDraft, finishJob, endExamAttempt, allocationPage, updateAllocation, createExamEvent, examEventDetail, examEventPage, examEventMembers, concreteExamPage, createConcreteExam, updateExamEvent, updateConcreteExam, deleteConcreteExam, deleteExamEvent, sendTeacherMessage, teacherMessages, readTeacherMessage, assignmentPage, updateUser, progressPage, progress, dashboard, dashboardSittingPage, studentChoicePage, sittingPage, sittings, assignments, issueQueue, listRoleProfiles, updateRoleProfile, updateRoleMembers } from '@solveflow/db';
 import { AnswerCandidateSchema, SolveOutcomeSchema } from '@solveflow/contracts/agent';
 import { ExamTeacherMessagesSchema, type ExamUser } from '@solveflow/contracts/managed-exam';
 import { createExamService, hashPassword } from './service.js';
@@ -385,7 +385,7 @@ describe.skipIf(!url)('exam event hierarchy and standalone teacher messages', ()
             try{
                 await context.request.post(origin+'/api/v2/auth/login',{headers:{origin},data:{username:teacher.username,password:'synthetic-password-123'}});await page.goto(origin);
                 await page.getByRole('navigation',{name:'管理导航'}).getByRole('button',{name:'实时跟踪',exact:true}).click();
-                await page.getByRole('row').filter({hasText:f.child.displayName}).getByRole('button',{name:'查看',exact:true}).click();
+                await page.getByRole('article').filter({hasText:f.child.displayName}).getByRole('button',{name:'查看',exact:true}).click();
                 const monitor=page.getByRole('dialog',{name:f.child.displayName,exact:true});await monitor.getByRole('button',{name:'模块1 · 第2题',exact:true}).click();await monitor.getByRole('tab',{name:'发消息',exact:true}).click();
                 await page.route('**/api/v2/admin/slots/*/messages',async route=>{
                     const body:unknown=route.request().postDataJSON();const value=body&&typeof body==='object'&&'requestId'in body&&typeof body.requestId==='string'&&'message'in body&&typeof body.message==='string'?{requestId:body.requestId,message:body.message}:null;if(!value)throw new Error('NO_MESSAGE_BODY');sent.push(value);
@@ -534,7 +534,7 @@ describe.skipIf(!url)('exam event hierarchy and standalone teacher messages', ()
                 }
                 await t.goto(origin);
                 await t.getByRole('navigation', { name: '管理导航' }).getByRole('button', { name: '实时跟踪', exact: true }).click();
-                await t.getByRole('row').filter({ hasText: f.child.displayName }).getByRole('button', { name: '查看', exact: true }).click();
+                await t.getByRole('article').filter({ hasText: f.child.displayName }).getByRole('button', { name: '查看', exact: true }).click();
                 const monitor = t.getByRole('dialog', { name: f.child.displayName, exact: true });
                 await monitor.getByRole('button', { name: '模块1 · 第2题', exact: true }).click();
                 await monitor.getByRole('tab', { name: '发消息', exact: true }).click();
@@ -716,5 +716,128 @@ describe.skipIf(!url)('exam event hierarchy and standalone teacher messages', ()
         }, 60000);
 
     }
+
+    for (const engine of ['chrome', 'webkit'] as const)
+        it(`console features: ended-exam alert dismissal, grouped tracking cards, and role matrix editing work in ${engine}`, async () => {
+            const endedExam = await failedQuestion('ended_ui_' + engine);
+            const openExam = await failedQuestion('open_ui_' + engine);
+            const dualTarget = await createUser(pool(), admin, { username: 'role_ui_' + engine, displayName: '权限测试员' + engine, password: 'synthetic-password-123', roles: ['support'] }, password);
+            const browser = await (engine === 'chrome' ? chromium.launch({ executablePath: '/usr/bin/google-chrome' }) : webkit.launch());
+            const staffCtx = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+            const pupilCtx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const adminPage = await staffCtx.newPage(), pupilPage = await pupilCtx.newPage(), errors: string[] = [];
+            adminPage.on('pageerror', error => errors.push(error.message));
+            pupilPage.on('pageerror', error => errors.push(error.message));
+            adminPage.setDefaultTimeout(8000);
+            pupilPage.setDefaultTimeout(8000);
+            try {
+                await staffCtx.request.post(origin + '/api/v2/auth/login', { headers: { origin }, data: { username: admin.username, password: 'synthetic-password-123' } });
+                await pupilCtx.request.post(origin + '/api/v2/auth/login', { headers: { origin }, data: { username: endedExam.child.username, password: 'synthetic-password-123' } });
+
+                await pupilPage.goto(origin);
+                await pupilPage.getByRole('region', { name: '待处理核验问题' }).waitFor();
+                await endExamAttempt(pool(), endedExam.child, endedExam.attempt.id);
+                await pupilPage.reload();
+                await pupilPage.getByRole('heading', { name: endedExam.before.title, exact: true }).waitFor();
+                await browserExpect(pupilPage.getByRole('region', { name: '其他考试待处理问题' })).toHaveCount(0);
+                await pupilPage.locator('.assignment-card').filter({ hasText: endedExam.before.title }).getByRole('button').click();
+                await pupilPage.getByText('考试已结束').first().waitFor();
+                await browserExpect(pupilPage.getByRole('region', { name: '待处理核验问题' })).toHaveCount(0);
+                expect((await assignmentPage(pool(), endedExam.child, {}, true)).attentionTotal).toBe(0);
+
+                await adminPage.goto(origin);
+                await adminPage.getByRole('navigation', { name: '管理导航' }).getByRole('button', { name: '待处理题', exact: true }).click();
+                const issuesPanel = adminPage.getByRole('region', { name: '待处理题队列', exact: true });
+                await issuesPanel.getByText(openExam.child.displayName, { exact: true }).waitFor();
+                await browserExpect(issuesPanel.getByText(endedExam.child.displayName, { exact: true })).toHaveCount(0);
+                await issuesPanel.getByRole('combobox', { name: '考试范围', exact: true }).click();
+                await adminPage.getByRole('option', { name: '含已结束考试', exact: true }).click();
+                await issuesPanel.getByRole('button', { name: '查询', exact: true }).click();
+                await issuesPanel.getByText(endedExam.child.displayName, { exact: true }).waitFor();
+
+                await adminPage.getByRole('navigation', { name: '管理导航' }).getByRole('button', { name: '实时跟踪', exact: true }).click();
+                const tracking = adminPage.getByRole('region', { name: '学生进度', exact: true });
+                const search = tracking.getByRole('searchbox', { name: '搜索学生或考试' });
+                await search.fill(openExam.child.displayName);
+                await search.press('Enter');
+                await tracking.getByRole('region', { name: '场次 · ' + openExam.before.title, exact: true }).waitFor();
+                await tracking.getByRole('tab', { name: '按学生分组', exact: true }).click();
+                const studentGroup = tracking.getByRole('region', { name: '学生 · ' + openExam.child.displayName, exact: true });
+                await studentGroup.waitFor();
+                await studentGroup.getByRole('article').filter({ hasText: openExam.before.title }).getByRole('button', { name: '查看', exact: true }).click();
+                const monitor = adminPage.getByRole('dialog', { name: openExam.child.displayName, exact: true });
+                await monitor.waitFor();
+                await monitor.getByRole('button', { name: '关闭', exact: true }).click();
+
+                await adminPage.getByRole('navigation', { name: '管理导航' }).getByRole('button', { name: '角色权限', exact: true }).click();
+                const rolesMain = adminPage.getByRole('region', { name: '角色与权限管理', exact: true });
+                const supportCard = rolesMain.getByRole('article').filter({ hasText: 'support' });
+                await supportCard.getByRole('button', { name: '编辑说明', exact: true }).click();
+                const editDialog = adminPage.getByRole('dialog', { name: /编辑角色说明/ });
+                await editDialog.getByLabel(/职责与协作备注/).fill('值班备注 ' + engine);
+                await editDialog.getByRole('button', { name: '保存说明', exact: true }).click();
+                await supportCard.getByText('值班备注 ' + engine).waitFor();
+
+                const managerCard = rolesMain.getByRole('article').filter({ hasText: 'manager' });
+                await managerCard.getByRole('button', { name: '管理成员', exact: true }).click();
+                const memberDialog = adminPage.getByRole('dialog', { name: /管理角色成员/ });
+                await memberDialog.getByRole('combobox', { name: /批量添加成员/ }).click();
+                const userSearch = memberDialog.getByRole('searchbox', { name: /搜索批量添加成员/ });
+                await userSearch.fill(dualTarget.username);
+                await userSearch.press('Enter');
+                await memberDialog.getByRole('option', { name: new RegExp(dualTarget.displayName) }).click();
+                await adminPage.keyboard.press('Escape');
+                await memberDialog.getByRole('button', { name: /授予/ }).click();
+                const memberSearch = memberDialog.getByRole('searchbox', { name: '筛选当前角色成员' });
+                await memberSearch.fill(dualTarget.username);
+                await memberSearch.press('Enter');
+                const row = memberDialog.getByRole('listitem').filter({ hasText: dualTarget.username });
+                await row.getByRole('button', { name: '移除该角色', exact: true }).click();
+                await browserExpect(row).toHaveCount(0);
+                await memberDialog.getByRole('button', { name: '关闭', exact: true }).click();
+
+                await endExamAttempt(pool(), openExam.child, openExam.attempt.id);
+                expect(errors).toEqual([]);
+            } finally { await staffCtx.close(); await pupilCtx.close(); await browser.close(); }
+        }, 45000);
+
+    it('ended exams and role guards: clears active issue counts on end/deadline and enforces role safety invariants', async () => {
+        const f1 = await failedQuestion('clear_on_end');
+        const f2 = await failedQuestion('clear_on_deadline');
+        expect((await issueQueue(pool(), manager, { sittingId: f1.sitting.id })).total).toBe(1);
+        expect((await dashboard(pool(), manager, { sittingId: f1.sitting.id })).summary.attention).toBe(1);
+        expect((await progressPage(pool(), manager, { sittingId: f1.sitting.id })).items[0]?.attention).toBe(1);
+
+        await endExamAttempt(pool(), f1.child, f1.attempt.id);
+        expect((await issueQueue(pool(), manager, { sittingId: f1.sitting.id })).total).toBe(0);
+        expect((await issueQueue(pool(), manager, { sittingId: f1.sitting.id, includeEnded: '1' })).total).toBe(1);
+        expect((await dashboard(pool(), manager, { sittingId: f1.sitting.id })).summary.attention).toBe(0);
+        expect((await dashboard(pool(), manager, { sittingId: f1.sitting.id })).issues).toEqual([]);
+        expect((await progressPage(pool(), manager, { sittingId: f1.sitting.id })).items[0]?.attention).toBe(0);
+        expect((await assignmentPage(pool(), f1.child, {}, true)).attentionTotal).toBe(0);
+        expect((await assignmentPage(pool(), f1.child, {}, true)).items[0]?.pendingReviewCount).toBe(0);
+
+        await pool().query("UPDATE exam_app.exam_assignments SET closes_at=now()-interval '5 seconds' WHERE id=$1", [f2.assignment.id]);
+        expect((await issueQueue(pool(), manager, { sittingId: f2.sitting.id })).total).toBe(0);
+        expect((await dashboard(pool(), manager, { sittingId: f2.sitting.id })).summary.attention).toBe(0);
+        expect((await assignmentPage(pool(), f2.child, {}, true)).attentionTotal).toBe(0);
+
+        await expect(listRoleProfiles(pool(), manager)).rejects.toThrow();
+        const target = await createUser(pool(), admin, { username: 'role_guard_user', displayName: '单角色守卫用户', password: 'synthetic-password-123', roles: ['student'] }, password);
+        const session = await createSession(pool(), target, 1);
+        await expect(updateRoleMembers(pool(), admin, 'admin', { ...requestId(), action: 'revoke', userIds: [admin.id] })).rejects.toThrow('不能移除自己的系统管理员角色');
+        await expect(updateRoleMembers(pool(), admin, 'student', { ...requestId(), action: 'revoke', userIds: [target.id] })).rejects.toThrow('仅剩该角色');
+
+        const granted = await updateRoleMembers(pool(), admin, 'support', { ...requestId(), action: 'grant', userIds: [target.id] });
+        expect(granted.members.some(m => m.id === target.id) || granted.memberCount >= 1).toBe(true);
+        await expect(authenticate(pool(), session.token)).rejects.toThrow('登录已失效');
+
+        await updateRoleMembers(pool(), admin, 'support', { ...requestId(), action: 'revoke', userIds: [target.id] });
+        const req = requestId();
+        const updated = await updateRoleProfile(pool(), admin, 'manager', { ...req, name: '场次管理员', summary: '自定义管辖说明', note: '考前30分钟核对名单' });
+        expect(updated.summary).toBe('自定义管辖说明');
+        expect(updated.note).toBe('考前30分钟核对名单');
+        expect(await updateRoleProfile(pool(), admin, 'manager', { ...req, name: '场次管理员', summary: '自定义管辖说明', note: '考前30分钟核对名单' })).toEqual(updated);
+    });
 
 });

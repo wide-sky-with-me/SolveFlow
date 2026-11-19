@@ -50,7 +50,7 @@ async function main() {
             console.info(JSON.stringify({ event: 'exam.bootstrap.complete' }));
         }
         else {
-            const version = await database.pool.query('SELECT 1 FROM solveflow_migrations WHERE version=12');
+            const version = await database.pool.query('SELECT 1 FROM solveflow_migrations WHERE version=13');
             if (version.rowCount !== 1)
                 throw new Error('EXAM_MIGRATION_REQUIRED');
             if (storage instanceof PrivateS3Storage)

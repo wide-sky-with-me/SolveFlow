@@ -86,3 +86,4 @@ export * from './exam-allocations.js';
 export * from './exam-model-services.js';
 export * from './exam-messages.js';
 export * from './exam-events.js';
+export * from './exam-roles.js';
